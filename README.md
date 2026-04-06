@@ -96,7 +96,63 @@ Episode truncates at 17,280 ticks (24 hours at 5 s).
 
 > 📖 **Full technical reference** — equations, parameters, and API for all 7 simulators and both environments: [`c2g_env/ENVIRONMENTS.md`](c2g_env/ENVIRONMENTS.md)
 
-The three diagrams below describe (1) the full hierarchical control loop, (2) the internal step function of `C2GFastEnv`, and (3) the Simplex safety shield that can wrap any agent.
+The diagrams below describe (0) a high-level system overview, (1) the full hierarchical control loop, (2) the internal step function of `C2GFastEnv`, and (3) the Simplex safety shield that can wrap any agent.
+
+#### Diagram 0 — High-Level System Overview
+
+A one-glance picture of C2G-Bench: an RL agent hierarchy controls a data center *from the inside*, while the power grid drives it *from the outside*.
+
+```mermaid
+flowchart LR
+    subgraph EXT["External Environment"]
+        direction TB
+        GRD["⚡ Power Grid
+(prices · frequency · voltage)"]
+        WTH["🌤️  Weather & Renewables
+(temp · solar · wind)"]
+    end
+
+    subgraph DC["🏢 Data Center"]
+        direction TB
+        IT["💻  IT Workloads
+(rigid + flexible + GenAI)"]
+        COOL["❄️  HVAC / Cooling
+(2-zone thermal model)"]
+        BESS["🔋  Battery Storage
+(BESS · charge · discharge)"]
+    end
+
+    subgraph HRL["🤖 Hierarchical RL Agent"]
+        direction TB
+        MAC["Macro Agent
+⏱ 15-min ticks
+(market & envelope)"]
+        FST["Fast Agent
+⏱ 5-sec ticks
+(throttle · BESS · HVAC)"]
+        MAC -- "target envelope" --> FST
+    end
+
+    SHIELD["🛡️ Safety Shield
+(freq · voltage · thermal)"]
+
+    EXT -- "market signals
+& forecasts" --> MAC
+    EXT -- "real-time
+f / V / T" --> FST
+    FST -- "control commands" --> SHIELD
+    SHIELD -- "safe actions" --> DC
+    DC -- "observations
+(16-D state)" --> FST
+    FST -- "aggregated KPIs
+(every 180 steps)" --> MAC
+    MAC -- "reward signal" --> MAC
+
+    style EXT  fill:#e8f4fd,stroke:#5b9bd5,color:#000
+    style DC   fill:#e8fde8,stroke:#5bb55b,color:#000
+    style HRL  fill:#fdf3e8,stroke:#d5955b,color:#000
+    style SHIELD fill:#fde8e8,stroke:#d55b5b,color:#000
+```
 
 #### Diagram 1 — Hierarchical RL Control Loop
 
