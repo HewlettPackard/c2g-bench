@@ -1,34 +1,25 @@
 """
-baselines/train_ppo.py  —  PPO Training Script (SB3 + Hydra)
-=============================================================
-All hyperparameters are declared in conf/algo/ppo.yaml and
-conf/scenario/*.yaml.  Hydra handles output-dir creation,
-config snapshotting, and multi-run sweeps automatically.
+baselines/train_shielded_ppo.py  —  PPO with Safety Shield (High-Assurance)
+=============================================================================
+Trains PPO inside a ShieldedEnv: every action the agent takes is filtered
+through the Simplex safety shield before reaching the physics simulator.
+
+This produces a **high-assurance controller** — the resulting policy:
+  1. Learns to avoid unsafe regions (reward shaping from shield overrides)
+  2. Has hard safety guarantees at deployment (shield is always active)
+  3. Reports shield intervention rate as a key metric
+
+The shield intervention rate should decrease over training as the agent
+learns the safe operating envelope.  A well-trained shielded agent
+achieves near-zero intervention rate while maintaining full safety.
 
 Usage
 -----
-  # Single run with defaults (default scenario, ppo algo)
-  python baselines/train_ppo.py
+  python baselines/train_shielded_ppo.py algo=ppo
 
-  # Override scenario
-  python baselines/train_ppo.py scenario=scenario_a
-
-  # Override multiple values inline
-  python baselines/train_ppo.py scenario=scenario_b algo.timesteps=500000 experiment.seed=7
-
-  # Grid sweep over all scenarios × 3 seeds
-  python baselines/train_ppo.py --multirun \\
-      scenario=default,scenario_a,scenario_b,scenario_c \\
-      experiment.seed=1,2,3
-
-Outputs (managed by Hydra)
---------------------------
-  outputs/<algo>_<scenario>/seed_<N>/<timestamp>/
-      .hydra/           — config snapshot (config.yaml, overrides.yaml)
-      episode_metrics.csv
-      checkpoints/
-      best_model/
-      tensorboard/
+  # Compare shielded vs unshielded:
+  python baselines/train_ppo.py              # unshielded
+  python baselines/train_shielded_ppo.py     # shielded
 """
 from __future__ import annotations
 from pathlib import Path
@@ -45,12 +36,14 @@ from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.vec_env import VecNormalize
 
 from c2g_env import C2GFastEnv
+from baselines.safety_shield import SafetyShield, ShieldedEnv
 from baselines.metrics_callback import C2GMetricsCallback
 
 
-def make_env_fn(scenario: str, seed: int):
+def make_shielded_env_fn(scenario: str, seed: int):
     def _init():
-        env = C2GFastEnv(scenario=scenario)
+        base_env = C2GFastEnv(scenario=scenario)
+        env = ShieldedEnv(base_env, shield=SafetyShield())
         env.reset(seed=seed)
         return env
     return _init
@@ -66,11 +59,11 @@ def train(cfg: DictConfig) -> None:
     algo_cfg  = cfg.algo
     log_cfg   = cfg.logging
 
-    print(f"[PPO] scenario={scenario}  seed={seed}  "
-          f"timesteps={algo_cfg.timesteps:,}  n_envs={algo_cfg.n_envs}")
+    print(f"[Shielded-PPO] scenario={scenario}  seed={seed}  "
+          f"timesteps={algo_cfg.timesteps:,}")
 
-    # ── Environments ──────────────────────────────────────────────────────
-    vec_env = make_vec_env(make_env_fn(scenario, seed),
+    # ── Environments (all shielded) ───────────────────────────────────
+    vec_env = make_vec_env(make_shielded_env_fn(scenario, seed),
                            n_envs=algo_cfg.n_envs, seed=seed)
     vec_env = VecNormalize(
         vec_env,
@@ -80,12 +73,12 @@ def train(cfg: DictConfig) -> None:
         clip_reward = algo_cfg.clip_reward,
     )
 
-    eval_env = make_vec_env(make_env_fn(scenario, seed + 999),
+    eval_env = make_vec_env(make_shielded_env_fn(scenario, seed + 999),
                             n_envs=1, seed=seed + 999)
     eval_env = VecNormalize(eval_env, norm_obs=True, norm_reward=False,
                             clip_obs=algo_cfg.clip_obs, training=False)
 
-    # ── Callbacks ─────────────────────────────────────────────────────────
+    # ── Callbacks ─────────────────────────────────────────────────────
     checkpoint_cb = CheckpointCallback(
         save_freq   = max(algo_cfg.eval_freq, 1),
         save_path   = str(out_dir / "checkpoints"),
@@ -106,7 +99,7 @@ def train(cfg: DictConfig) -> None:
         verbose    = 1,
     )
 
-    # ── Model ─────────────────────────────────────────────────────────────
+    # ── Model ─────────────────────────────────────────────────────────
     net_arch = OmegaConf.to_container(algo_cfg.net_arch, resolve=True)
 
     model = PPO(
@@ -128,7 +121,7 @@ def train(cfg: DictConfig) -> None:
         seed            = seed,
     )
 
-    # ── Train ─────────────────────────────────────────────────────────────
+    # ── Train ─────────────────────────────────────────────────────────
     model.learn(
         total_timesteps     = algo_cfg.timesteps,
         callback            = [checkpoint_cb, eval_cb, metrics_cb],
@@ -138,7 +131,7 @@ def train(cfg: DictConfig) -> None:
 
     model.save(str(out_dir / "final_model"))
     vec_env.save(str(out_dir / "vec_normalize.pkl"))
-    print(f"\n[PPO] Training complete → {out_dir.resolve()}")
+    print(f"\n[Shielded-PPO] Training complete → {out_dir.resolve()}")
 
 
 if __name__ == "__main__":

@@ -294,6 +294,16 @@ class MacroGridSignal:
         self._regd_buffer: list[float] = []
         self._window_ticks: int = self._market.window_ticks
 
+        # ── Grid frequency model (simplified swing equation) ──────────
+        # f(t+1) = f(t) + dt/H * (ΔP_supply − ΔP_demand) + damping + noise
+        # Nominal 60 Hz (US/ERCOT/AEMO) or 50 Hz (ENTSO-E)
+        # H = inertia constant in seconds; D = load-damping coefficient
+        self._f_nom: float = 50.0 if market == "entso_de" else 60.0
+        self._f_grid: float = self._f_nom      # current frequency [Hz]
+        self._H_inertia: float = 6.0            # system inertia [s] (typical 4-8s)
+        self._D_damping: float = 1.5            # load-damping coefficient [pu]
+        self._f_noise_std: float = 0.005         # stochastic mismatch noise [Hz]
+
         self._tick: int = 0
 
     # ------------------------------------------------------------------
@@ -343,6 +353,8 @@ class MacroGridSignal:
             "grid_load_mw":  load_mw,
             "load_norm":     load_norm,
             "regd_signal":   regd,
+            "f_grid_hz":     self._f_grid,
+            "f_nom_hz":      self._f_nom,
             "tick":          idx,
         }
 
@@ -351,6 +363,7 @@ class MacroGridSignal:
         self._tick = 0
         self._regd_state = 0.0
         self._regd_buffer = []
+        self._f_grid = self._f_nom
         if seed is not None:
             self._rng = np.random.default_rng(seed)
 
@@ -405,6 +418,61 @@ class MacroGridSignal:
         return float(np.clip(raw_corrected, -1.0, 1.0))
 
     # ------------------------------------------------------------------
+    # Grid frequency model (swing equation approximation)
+    # ------------------------------------------------------------------
+
+    def _step_frequency(self, tracking_deficit_mw: float = 0.0) -> float:
+        """
+        Simplified swing-equation frequency model.
+
+        When the datacenter fails to track the RegD signal (tracking_deficit_mw > 0),
+        it contributes to a supply-demand imbalance that drives frequency down.
+        Good tracking stabilises the grid.
+
+        Parameters
+        ----------
+        tracking_deficit_mw : float
+            Unsigned tracking error in MW.  Positive means the DC delivered
+            *less* than demanded (i.e., net load is higher than scheduled).
+
+        Returns
+        -------
+        float
+            Grid frequency in Hz.
+        """
+        # Supply-demand imbalance due to DC tracking error
+        # Negative ΔP means excess demand → frequency drops
+        delta_p_pu = -tracking_deficit_mw / max(self._load_median, 1.0)
+
+        # Stochastic background grid noise (other generators, load fluctuations)
+        noise = float(self._rng.normal(0.0, self._f_noise_std))
+
+        # Swing equation: df/dt = (1/2H) * (ΔP - D * Δf)
+        delta_f = self._f_grid - self._f_nom
+        df_dt = (1.0 / (2.0 * self._H_inertia)) * (
+            delta_p_pu - self._D_damping * (delta_f / self._f_nom)
+        )
+        self._f_grid += df_dt * self.dt + noise
+
+        # Hard clip to realistic bounds
+        #   UFLS: under-frequency load shedding at 59.5 Hz (US) / 49.5 Hz (EU)
+        #   OFGT: over-frequency at 60.5 Hz / 50.5 Hz
+        f_min = self._f_nom - 0.5
+        f_max = self._f_nom + 0.5
+        self._f_grid = float(np.clip(self._f_grid, f_min, f_max))
+        return self._f_grid
+
+    @property
+    def f_nom(self) -> float:
+        """Nominal grid frequency [Hz]."""
+        return self._f_nom
+
+    @property
+    def f_grid(self) -> float:
+        """Current grid frequency [Hz]."""
+        return self._f_grid
+
+        # ------------------------------------------------------------------
     # LMP proxy from zone load
     # ------------------------------------------------------------------
 

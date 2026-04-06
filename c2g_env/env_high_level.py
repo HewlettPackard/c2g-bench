@@ -26,9 +26,9 @@ unless overridden by ``inner_action_fn`` (optional callback for research):
   • throttle_batch = 1.0   (do not throttle batch by default)
   • hvac_effort    = 0.7   (moderate cooling)
 
-Observation space  (Box, 14-D)
+Observation space  (Box, 16-D)
 ---------------------------------
-Aggregated over the 3 sub-steps to give the grid-manager a stable view:
+Aggregated over the 180 sub-steps to give the grid-manager a stable view:
 
   [0]  temp_A_mean        Mean Zone A temperature / T_safe
   [1]  temp_B_mean        Mean Zone B temperature / T_safe
@@ -44,6 +44,8 @@ Aggregated over the 3 sub-steps to give the grid-manager a stable view:
   [11] thermal_headroom_B (T_safe − T_B_max) / T_safe          ∈ [0, 1]
   [12] commit_prev_norm   Previous macro-action [0] committed
   [13] bess_target_prev   Previous macro-action [1] bess target
+  [14] freq_dev_mean      Mean normalised frequency deviation   ∈ [-1, 1]
+  [15] v_pcc_mean         Mean PCC voltage (per-unit)           ∈ [0, 1.1]
 
 Reward
 ------
@@ -144,16 +146,19 @@ class C2GMacroEnv(gym.Env):
             dtype= np.float32,
         )
         self.observation_space = spaces.Box(
-            low  = np.full(14, -1.0, dtype=np.float32),
-            high = np.full(14,  2.0, dtype=np.float32),
+            low  = np.full(16, -1.0, dtype=np.float32),
+            high = np.full(16,  2.0, dtype=np.float32),
             dtype= np.float32,
         )
         # Override bounds for strictly non-negative features
-        _nonneg = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+        _nonneg = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 15]
         self.observation_space.low[_nonneg]  = 0.0
         self.observation_space.high[_nonneg] = np.array([
-            2.0, 2.0, 1.0, 1.0, 2.0, 1.0, 1.0, 1.0, 2.0, 1.0, 1.0, 1.0, 1.0
+            2.0, 2.0, 1.0, 1.0, 2.0, 1.0, 1.0, 1.0, 2.0, 1.0, 1.0, 1.0, 1.0, 1.1
         ], dtype=np.float32)
+        # freq_dev_mean can be negative (index 14)
+        self.observation_space.low[14]  = -1.0
+        self.observation_space.high[14] =  1.0
 
         # Inner environment
         self._fast_env = C2GFastEnv(
@@ -227,7 +232,7 @@ class C2GMacroEnv(gym.Env):
         for sub in range(_SUBSTEPS):
             if self._inner_action_fn is not None:
                 # Research mode: outer policy generates inner action
-                inner_obs = sub_obs_list[-1] if sub_obs_list else np.zeros(14)
+                inner_obs = sub_obs_list[-1] if sub_obs_list else np.zeros(16)
                 low_action = self._inner_action_fn(inner_obs, action)
             else:
                 low_action = np.array([
@@ -269,6 +274,10 @@ class C2GMacroEnv(gym.Env):
         bess_soc_end = last_obs[2]
         bess_disch_mean = max(float(np.mean(bess_actuals)), 0.0)   # kW discharge
 
+        # Collect freq/voltage from sub-step observations (indices 14, 15)
+        freq_devs = [float(o[14]) for o in sub_obs_list]
+        v_pccs    = [float(o[15]) for o in sub_obs_list]
+
         obs = np.array([
             np.mean(temp_As) / T_safe,                     # 0
             np.mean(temp_Bs) / T_safe,                     # 1
@@ -284,6 +293,8 @@ class C2GMacroEnv(gym.Env):
             max(0.0, (T_safe - max(temp_Bs)) / T_safe),   # 11 headroom_B
             commit_norm,                                   # 12
             (bess_target + 1.0) / 2.0,                    # 13 normalise to [0,1]
+            float(np.mean(freq_devs)),                     # 14 freq_dev_mean
+            float(np.mean(v_pccs)),                        # 15 v_pcc_mean
         ], dtype=np.float32)
 
         # -----------------------------------------------------------------
@@ -345,4 +356,6 @@ class C2GMacroEnv(gym.Env):
             max(0.0, (T_safe - self._fast_env._thermal.temp_B) / T_safe),
             self._prev_commit_norm,
             (self._prev_bess_target + 1.0) / 2.0,
+            0.0,                        # 14 freq_dev_mean (nominal)
+            1.0,                        # 15 v_pcc_mean (nominal)
         ], dtype=np.float32)

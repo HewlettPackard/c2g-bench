@@ -29,9 +29,6 @@ out.txt
 tensorboard/
 logs/
 
-# Large data files (>1 MB) — download with scripts/download_energy.py
-data/processed/energy/
-
 # Jupyter notebook checkpoints
 .ipynb_checkpoints/
 
@@ -40,6 +37,7 @@ data/processed/energy/
 .idea/
 
 # LaTeX build artifacts
+paper/*
 paper/*.aux
 paper/*.bbl
 paper/*.blg

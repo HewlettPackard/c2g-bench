@@ -92,7 +92,7 @@ class TestFastEnvSpaces:
         assert isinstance(fast_env.observation_space, Box)
 
     def test_obs_space_shape(self, fast_env):
-        assert fast_env.observation_space.shape == (14,)
+        assert fast_env.observation_space.shape == (16,)
 
     def test_obs_space_dtype(self, fast_env):
         assert fast_env.observation_space.dtype == np.float32
@@ -113,7 +113,7 @@ class TestFastEnvReset:
 
     def test_reset_obs_shape(self, fast_env):
         obs, _ = fast_env.reset(seed=0)
-        assert obs.shape == (14,)
+        assert obs.shape == (16,)
 
     def test_reset_obs_dtype(self, fast_env):
         obs, _ = fast_env.reset(seed=0)
@@ -148,17 +148,17 @@ class TestFastEnvReset:
     def test_reset_scenario_a(self):
         env = make_fast("scenario_a")
         obs, _ = env.reset(seed=0)
-        assert obs.shape == (14,)
+        assert obs.shape == (16,)
 
     def test_reset_scenario_b(self):
         env = make_fast("scenario_b")
         obs, _ = env.reset(seed=0)
-        assert obs.shape == (14,)
+        assert obs.shape == (16,)
 
     def test_reset_scenario_c(self):
         env = make_fast("scenario_c")
         obs, _ = env.reset(seed=0)
-        assert obs.shape == (14,)
+        assert obs.shape == (16,)
 
 
 # ==========================================================================
@@ -174,7 +174,7 @@ class TestFastEnvStep:
     def test_step_obs_shape(self, fast_env):
         fast_env.reset(seed=1)
         obs, *_ = fast_env.step(fast_env.action_space.sample())
-        assert obs.shape == (14,)
+        assert obs.shape == (16,)
 
     def test_step_obs_dtype(self, fast_env):
         fast_env.reset(seed=1)
@@ -344,7 +344,7 @@ class TestFastEnvEpisode:
         env.reset(seed=0)
         extreme = np.array([5.0, -3.0, -3.0, 10.0], dtype=np.float32)
         obs, rew, term, trunc, info = env.step(extreme)
-        assert obs.shape == (14,) and math.isfinite(rew)
+        assert obs.shape == (16,) and math.isfinite(rew)
 
     def test_observation_space_post_step(self):
         """Every step observation should lie within the declared space."""
@@ -372,7 +372,7 @@ class TestFastEnvScenarios:
         env.reset(seed=0)
         for _ in range(5):
             obs, rew, term, trunc, info = env.step(env.action_space.sample())
-            assert obs.shape == (14,)
+            assert obs.shape == (16,)
             assert math.isfinite(rew)
             if term or trunc:
                 break
@@ -403,7 +403,7 @@ class TestFastEnvScenarios:
         """reset(options={'scenario': 'scenario_a'}) should override default."""
         env = make_fast("default")
         obs, _ = env.reset(seed=0, options={"scenario": "scenario_a"})
-        assert obs.shape == (14,)
+        assert obs.shape == (16,)
 
 
 # ==========================================================================
@@ -423,7 +423,7 @@ class TestMacroEnvSpaces:
         assert macro_env.action_space.high[1] == pytest.approx(1.0)
 
     def test_obs_space_shape(self, macro_env):
-        assert macro_env.observation_space.shape == (14,)
+        assert macro_env.observation_space.shape == (16,)
 
     def test_obs_space_dtype(self, macro_env):
         assert macro_env.observation_space.dtype == np.float32
@@ -440,7 +440,7 @@ class TestMacroEnvReset:
 
     def test_reset_obs_shape(self, macro_env):
         obs, _ = macro_env.reset(seed=0)
-        assert obs.shape == (14,)
+        assert obs.shape == (16,)
 
     def test_reset_info_dict(self, macro_env):
         _, info = macro_env.reset(seed=0)
@@ -469,7 +469,7 @@ class TestMacroEnvStep:
     def test_step_obs_shape(self, macro_env):
         macro_env.reset(seed=0)
         obs, *_ = macro_env.step(macro_env.action_space.sample())
-        assert obs.shape == (14,)
+        assert obs.shape == (16,)
 
     def test_step_reward_finite(self, macro_env):
         macro_env.reset(seed=0)

@@ -2,7 +2,8 @@
 # ══════════════════════════════════════════════════════════════════════════════
 # scripts/run_sweep.sh  —  Full C2G-Bench Training & Evaluation Sweep
 # ══════════════════════════════════════════════════════════════════════════════
-# Runs: 4 scenarios × {PPO, SAC, RuleBased, Random} × 3 seeds = 48 evaluations
+# Runs: 4 scenarios × {PPO, SAC, RuleBased, Random} × 3 seeds    = 48 low-level evals
+#        4 scenarios × {PPO-Macro, HRL, RuleBased-Macro} × 3 seeds = 36 macro evals
 #   - PPO: 300k steps    (~8 min/run  on H100)
 #   - SAC: 200k steps    (~6 min/run)
 #   - Rule-based: no training, evaluation only
@@ -158,6 +159,100 @@ PYEOF
 
 # ── Job counter for parallelism ──────────────────────────────────────────────
 NJOBS=0
+# ── Evaluate a macro-level agent ──────────────────────────────────────────────
+evaluate_macro() {
+    local algo=$1 scenario=$2 seed=$3 model_path=${4:-}
+    echo "[eval-macro] ${algo} / ${scenario} / seed=${seed}"
+
+    $PYTHON - "$algo" "$scenario" "$seed" "$model_path" << 'PYMEOF'
+import sys, time, csv, numpy as np
+from pathlib import Path
+
+algo       = sys.argv[1]
+scenario   = sys.argv[2]
+seed       = int(sys.argv[3])
+model_path = sys.argv[4] if sys.argv[4] else None
+
+from c2g_env import C2GMacroEnv
+
+env = C2GMacroEnv(scenario=scenario)
+
+# Load agent
+if algo == "rule_based_macro":
+    from baselines.rule_based_macro import RuleBasedMacroController
+    agent = RuleBasedMacroController()
+elif algo == "random_macro":
+    class RandomAgent:
+        def predict(self, obs, deterministic=False):
+            return env.action_space.sample(), None
+    agent = RandomAgent()
+else:
+    # RL agent (PPO-Macro or HRL)
+    from stable_baselines3 import PPO as AlgoCls
+    agent = AlgoCls.load(model_path, env=env)
+
+# Run 3 eval episodes and average
+N_EVAL = 3
+all_metrics = []
+for ep in range(N_EVAL):
+    obs, _ = env.reset(seed=seed * 1000 + ep)
+    ep_reward = 0.0
+    steps = 0
+    survived = True
+    t0 = time.time()
+    while True:
+        action, _ = agent.predict(obs, deterministic=True)
+        obs, reward, terminated, truncated, info = env.step(action)
+        ep_reward += reward
+        steps += 1
+        if terminated or truncated:
+            survived = not terminated
+            break
+    wall = time.time() - t0
+
+    all_metrics.append({
+        "total_reward":    ep_reward,
+        "mean_reward":     ep_reward / max(steps, 1),
+        "mean_lmp":        info.get("mean_lmp", 0.0),
+        "committed_mw":    info.get("committed_mw", 0.0),
+        "mean_tracking_err": info.get("mean_tracking_err", 0.0),
+        "survived":        int(survived),
+        "ep_length":       steps,
+        "wall_seconds":    wall,
+    })
+
+avg = {}
+for k in all_metrics[0]:
+    avg[k] = np.mean([m[k] for m in all_metrics])
+
+csv_path = Path("results/sweep_results_macro.csv")
+_header = "algo,scenario,seed,total_reward,mean_reward,mean_lmp,committed_mw,mean_tracking_err,survived,ep_length,wall_seconds"
+import pandas as _pd, io as _io
+if csv_path.exists():
+    _df = _pd.read_csv(csv_path)
+    _df = _df[~((_df.algo == algo) & (_df.scenario == scenario) & (_df.seed == int(seed)))]
+else:
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+    _df = _pd.read_csv(_io.StringIO(_header + "\n"))
+with open(csv_path, "w", newline="") as _f:
+    _df.to_csv(_f, index=False)
+with open(csv_path, "a", newline="") as f:
+    w = csv.writer(f)
+    w.writerow([
+        algo, scenario, seed,
+        f"{avg['total_reward']:.1f}",
+        f"{avg['mean_reward']:.4f}",
+        f"{avg['mean_lmp']:.2f}",
+        f"{avg['committed_mw']:.2f}",
+        f"{avg['mean_tracking_err']:.1f}",
+        f"{avg['survived']:.0f}",
+        f"{avg['ep_length']:.0f}",
+        f"{avg['wall_seconds']:.1f}",
+    ])
+print(f"  reward={avg['total_reward']:.1f}  survived={avg['survived']:.0f}")
+PYMEOF
+}
+
 wait_for_slots() {
     while (( NJOBS >= MAX_PARALLEL )); do
         wait -n 2>/dev/null || true
@@ -263,9 +358,93 @@ done
 wait
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Phase 4: Generate summary table
+# Phase 4: Macro-level Rule-Based & Random baselines
 # ══════════════════════════════════════════════════════════════════════════════
-echo -e "\n▸ Phase 4: Generating results summary …"
+echo -e "\n▸ Phase 4: Evaluating Macro Rule-Based baselines …"
+for scenario in "${SCENARIOS[@]}"; do
+    for seed in "${SEEDS[@]}"; do
+        if $DRY_RUN; then
+            echo "  [dry-run] evaluate rule_based_macro $scenario $seed"
+        else
+            wait_for_slots
+            evaluate_macro "rule_based_macro" "$scenario" "$seed" "" &
+            NJOBS=$((NJOBS + 1))
+        fi
+    done
+done
+wait
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Phase 5: PPO-Macro training + evaluation (macro env, fixed inner defaults)
+# ══════════════════════════════════════════════════════════════════════════════
+echo -e "\n▸ Phase 5: PPO-Macro training (100k steps × 12 runs) …"
+for scenario in "${SCENARIOS[@]}"; do
+    for seed in "${SEEDS[@]}"; do
+        if $DRY_RUN; then
+            echo "  [dry-run] train PPO-Macro $scenario seed=$seed"
+            continue
+        fi
+        wait_for_slots
+        (
+            echo "[train] PPO-Macro / ${scenario} / seed=${seed}"
+            OUT_DIR="outputs/ppo_macro_${scenario}/seed_${seed}"
+            $PYTHON baselines/train_ppo_macro.py \
+                algo=ppo_macro \
+                scenario="${scenario}" \
+                experiment.seed="${seed}" \
+                hydra.run.dir="${OUT_DIR}/\${now:%Y-%m-%d_%H-%M-%S}" \
+                2>&1 | tail -5
+
+            LATEST=$(ls -td "${OUT_DIR}"/*/final_model.zip 2>/dev/null | head -1)
+            if [[ -n "$LATEST" ]]; then
+                MODEL="${LATEST%.zip}"
+                evaluate_macro "ppo_macro" "$scenario" "$seed" "$MODEL"
+            else
+                echo "  [WARN] PPO-Macro ${scenario}/seed_${seed}: no final_model found"
+            fi
+        ) &
+        NJOBS=$((NJOBS + 1))
+    done
+done
+wait
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Phase 6: Hierarchical RL training (low-level PPO → frozen → macro PPO)
+# ══════════════════════════════════════════════════════════════════════════════
+echo -e "\n▸ Phase 6: HRL sequential training (300k + 100k steps × 12 runs) …"
+for scenario in "${SCENARIOS[@]}"; do
+    for seed in "${SEEDS[@]}"; do
+        if $DRY_RUN; then
+            echo "  [dry-run] train HRL $scenario seed=$seed"
+            continue
+        fi
+        wait_for_slots
+        (
+            echo "[train] HRL / ${scenario} / seed=${seed}"
+            OUT_DIR="outputs/hrl_${scenario}/seed_${seed}"
+            $PYTHON baselines/train_hierarchical.py \
+                scenario="${scenario}" \
+                experiment.seed="${seed}" \
+                hydra.run.dir="${OUT_DIR}/\${now:%Y-%m-%d_%H-%M-%S}" \
+                2>&1 | tail -5
+
+            LATEST=$(ls -td "${OUT_DIR}"/*/final_model.zip 2>/dev/null | head -1)
+            if [[ -n "$LATEST" ]]; then
+                MODEL="${LATEST%.zip}"
+                evaluate_macro "hrl" "$scenario" "$seed" "$MODEL"
+            else
+                echo "  [WARN] HRL ${scenario}/seed_${seed}: no final_model found"
+            fi
+        ) &
+        NJOBS=$((NJOBS + 1))
+    done
+done
+wait
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Phase 7: Generate summary table
+# ══════════════════════════════════════════════════════════════════════════════
+echo -e "\n▸ Phase 7: Generating results summary …"
 $PYTHON - << 'PYEOF'
 import pandas as pd
 from pathlib import Path
@@ -285,6 +464,19 @@ cols = ["total_reward", "mean_pue", "max_temp_A", "tracking_rmse_kw", "survived"
 agg = df.groupby(["scenario", "algo"])[cols].agg(["mean", "std"]).round(2)
 print(agg.to_string())
 print()
+
+# Macro-level results (if any)
+csv_macro = Path("results/sweep_results_macro.csv")
+if csv_macro.exists():
+    df2 = pd.read_csv(csv_macro)
+    print(f"\n\nMacro-level runs: {len(df2)}")
+    print(f"Algos: {sorted(df2.algo.unique())}")
+    mcols = ["total_reward", "mean_lmp", "committed_mw", "survived"]
+    avail = [c for c in mcols if c in df2.columns]
+    if avail:
+        magg = df2.groupby(["scenario", "algo"])[avail].agg(["mean", "std"]).round(2)
+        print(magg.to_string())
+    print()
 
 # LaTeX-ready table
 print("═══ LaTeX table rows (paste into paper) ═══")

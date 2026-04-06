@@ -42,7 +42,7 @@ Manages the "Business Handshake." Observes regional market prices, weather forec
 > **Decision:** *"How much flexible MW capacity should I commit to the grid operator for the next 15 minutes?"*
 
 - **Action Space (2-D):** `[commit_norm ∈ [0,1], bess_target ∈ [-1,1]]` — MW commitment and average BESS dispatch.
-- **Observation Space (14-D):** Aggregated over 180 sub-steps — mean temps, SOC, tracking error, spike flag, thermal headroom, LMP, previous action.
+- **Observation Space (16-D):** Aggregated over 180 sub-steps — mean temps, SOC, tracking error, spike flag, thermal headroom, LMP, previous action, mean frequency deviation, mean PCC voltage.
 - **Reward:** mean of sub-step rewards + LMP dispatch revenue − commitment-churn penalty.
 
 ### 4.2. Lower-Level Agent: The Hardware Controller (5 s ticks)
@@ -57,7 +57,7 @@ Executes the physical "Handshake." Receives the real-time frequency regulation s
 | **BESS** | `action[3]` | [-1, 1] | Charge (−) / discharge (+) the 150 MWh battery |
 
 - **Action Space (4-D, continuous):** `[throttle_batch, pump_speed_A, hvac_effort, bess_dispatch]`
-- **Observation Space (14-D, normalised):**
+- **Observation Space (16-D, normalised):**
   | Index | Name | Range | Description |
   |-------|------|-------|-------------|
   | 0 | `temp_A_norm` | [0, 2] | Zone A (liquid-cooled GPU) temperature / T_safe |
@@ -74,14 +74,23 @@ Executes the physical "Handshake." Receives the real-time frequency regulation s
   | 11 | `prev_pump_speed` | [0, 1] | Previous pump speed |
   | 12 | `pue_norm` | [0, 2] | Current Power Usage Effectiveness |
   | 13 | `T_amb_norm` | [0, 1] | Ambient temperature |
+  | 14 | `freq_dev_norm` | [-1, 1] | Normalised grid frequency deviation (swing equation) |
+  | 15 | `v_pcc_pu` | [0, 1.1] | PCC voltage in per-unit (Thévenin model) |
 
 ### 4.3. The NeurIPS Evaluation Metric: The Tracking Reward
 
-$$\text{Reward} = \alpha \cdot \text{throttle} - \beta \cdot \frac{|\Delta P_{\text{demanded}} - \Delta P_{\text{actual}}|}{P_{\text{norm}}} - \gamma \cdot \max(0,\, T - T_{\text{warn}}) - \text{SOC penalty}$$
+$$\text{Reward} = \alpha \cdot \text{throttle} - \beta \cdot \frac{|\Delta P_{\text{demanded}} - \Delta P_{\text{actual}}|}{P_{\text{norm}}} - \gamma \cdot \max(0,\, T - T_{\text{warn}}) - \text{SOC penalty} - \delta_f \cdot \max(0,\, |\Delta f| - 0.2) - \delta_v \cdot \text{volt\_violation}$$
+
+where $\text{volt\_violation} = \max(0,\, 0.95 - v_{\text{pcc}}) + \max(0,\, v_{\text{pcc}} - 1.05)$ and $\delta_f = 2.0$, $\delta_v = 5.0$.
 
 The tracking loop: $\Delta P_{\text{actual}} = (1 - \text{throttle}) \times P_{\text{flex,nom}} + P_{\text{BESS,actual}}$
 
-Episode terminates on thermal fault ($T > 35\degree$C); truncates at 17,280 ticks (24 hours at 5 s).
+**Termination** (episode ends immediately):
+- Thermal fault: $T_A > 35°$C or $T_B > 35°$C
+- Frequency fault: $|f - f_{\text{nom}}| > 0.5$ Hz (UFLS / over-frequency trip)
+- Voltage fault: $v_{\text{pcc}} < 0.90$ pu (under-voltage relay)
+
+Episode truncates at 17,280 ticks (24 hours at 5 s).
 
 ---
 
@@ -148,8 +157,8 @@ C2G-Macro/
 │
 ├── c2g_env/                             # The Core RL Environment
 │   ├── __init__.py                      # Exports C2GFastEnv, C2GMacroEnv
-│   ├── env_low_level.py                 # 5 s physics step — C2GFastEnv (14-D obs, 4-D act)
-│   ├── env_high_level.py                # 15-min market step — C2GMacroEnv (14-D obs, 2-D act)
+│   ├── env_low_level.py                 # 5 s physics step — C2GFastEnv (16-D obs, 4-D act)
+│   ├── env_high_level.py                # 15-min market step — C2GMacroEnv (16-D obs, 2-D act)
 │   ├── config.yaml                      # Centralised env configuration
 │   └── simulators/
 │       ├── workload.py                  # Alibaba trace fusion (batch/DLRM/GenAI)
@@ -170,7 +179,7 @@ C2G-Macro/
 │
 ├── conf/                                # Hydra configuration tree
 │   ├── config.yaml                      # Top-level defaults
-│   ├── algo/                            # ppo.yaml, sac.yaml
+│   ├── algo/                            # ppo.yaml, sac.yaml, ppo_macro.yaml
 │   ├── scenario/                        # default, scenario_a, scenario_b, scenario_c
 │   ├── market/                          # nyiso_nyc, pjm_dom, caiso_pgae, ercot_north, entso_de, aemo_nsw
 │   └── logging/                         # tensorboard.yaml
@@ -178,7 +187,12 @@ C2G-Macro/
 ├── baselines/                           # NeurIPS Evaluation Agents
 │   ├── train_ppo.py                     # SB3 PPO + Hydra + VecNormalize + callbacks
 │   ├── train_sac.py                     # SB3 SAC (off-policy, auto entropy)
+│   ├── train_ppo_macro.py               # PPO on C2GMacroEnv (optional inner policy)
+│   ├── train_hierarchical.py            # Two-phase sequential HRL pipeline
+│   ├── train_shielded_ppo.py            # PPO inside ShieldedEnv (safety-filtered)
 │   ├── rule_based_mpc.py                # Classical threshold controller (SB3-compatible API)
+│   ├── rule_based_macro.py              # Macro-level rule-based controller
+│   ├── safety_shield.py                 # Simplex safety filter (5 hard constraints)
 │   └── metrics_callback.py              # C2GMetricsCallback — per-episode CSV + TensorBoard
 │
 ├── evaluation/                          # Benchmark auditing
@@ -204,7 +218,8 @@ C2G-Macro/
 │   ├── 05_renewable.ipynb               # Wind/solar generation profiles
 │   ├── 06_environments.ipynb            # Gym API demo, scenario comparison
 │   ├── 07_weather.ipynb                 # Weather data: 6 markets, real vs. synthetic
-│   └── 08_energy_markets.ipynb          # Energy load: 6 markets, LDC, diurnal patterns
+│   ├── 08_energy_markets.ipynb          # Energy load: 6 markets, LDC, diurnal patterns
+│   └── 09_frequency_voltage.ipynb       # Grid frequency & PCC voltage safety signals
 │
 ├── paper/                               # NeurIPS 2026 manuscript
 │   ├── main.tex                         # 13-page paper (NeurIPS format)
@@ -212,7 +227,7 @@ C2G-Macro/
 │   ├── neurips2026.sty
 │   └── figures/                         # fig1–fig4 (architecture, simulators, curves, trajectory)
 │
-├── tests/                               # 292 tests (pytest)
+├── tests/                               # 371 tests (pytest)
 │   ├── test_workload.py                 # 26 tests
 │   ├── test_thermal.py                  # 32 tests
 │   ├── test_electrical.py               # 25 tests
@@ -220,7 +235,10 @@ C2G-Macro/
 │   ├── test_renewable.py                # 26 tests
 │   ├── test_weather.py                  # 18 tests
 │   ├── test_gym_api.py                  # 73 tests (API compliance both envs)
-│   └── test_baselines.py                # 26 tests
+│   ├── test_baselines.py                # 26 tests
+│   ├── test_frequency_voltage.py        # 35 tests (freq/voltage safety signals)
+│   ├── test_hierarchical.py             # 17 tests (HRL, macro agents)
+│   └── test_safety_shield.py            # 27 tests (Simplex shield, wrappers)
 │
 └── trained_models/                      # Saved checkpoints from training runs
     └── ppo_default_s42/                 # PPO on default scenario, seed=42
@@ -252,7 +270,7 @@ uv sync --extra dev   # pytest, ruff, mypy
 
 ```bash
 uv run pytest tests/ -q
-# 292 passed
+# 371 passed
 ```
 
 ### Train a single agent
@@ -271,19 +289,40 @@ uv run python baselines/train_sac.py algo=sac scenario=scenario_b
 uv run python baselines/train_ppo.py --multirun \
     scenario=default,scenario_a,scenario_b,scenario_c \
     experiment.seed=1,2,3
+
+# Hierarchical RL — sequential two-phase pipeline
+uv run python baselines/train_hierarchical.py
+
+# Safety-shielded PPO (provable constraint satisfaction)
+uv run python baselines/train_shielded_ppo.py scenario=default
 ```
 
 ### Run the full benchmark sweep
 
 ```bash
-# 4 scenarios × {PPO, SAC, Rule-Based, Random} × 3 seeds
+# Dry-run first — prints all 48 jobs without executing anything:
+bash scripts/run_sweep.sh --dry-run
+
+# Full sweep (default: 4 parallel jobs):
 bash scripts/run_sweep.sh
 
-# Dry-run to see all 48 jobs:
-bash scripts/run_sweep.sh --dry-run
+# Use more parallelism (208 cores available — 16 is safe):
+MAX_PARALLEL=16 bash scripts/run_sweep.sh
 ```
 
-Results are written to `results/sweep_results.csv` and `results/sweep_summary.csv`.
+The sweep runs in 4 phases:
+
+| Phase | Jobs | What runs |
+|-------|------|-----------|
+| 1 | 24 | Rule-Based + Random evaluation only (no training, ~5 min) |
+| 2 | 12 | PPO training (300k steps) + evaluation |
+| 3 | 12 | SAC training (200k steps) + evaluation |
+| 4 | 4  | Macro-level Rule-Based evaluation (4 scenarios) |
+| 5 | 4  | PPO-Macro training (100k steps) + evaluation |
+| 6 | 4  | Hierarchical RL training (Phase 1 low-level → Phase 2 macro) |
+| 7 | 1  | Summary table + LaTeX rows for Table 5 |
+
+Results are written to `results/sweep_results.csv` (one row per run, upserted on re-runs) and `results/sweep_summary.csv` (mean ± std across seeds).
 
 ### Download real-world data (optional — CSVs are bundled)
 
@@ -300,6 +339,60 @@ uv run jupyter lab notebooks/
 
 > **Note:** The optional `nrel-pysam` BESS backend requires `uv pip install nrel-pysam`.
 > The environment automatically falls back to the pure-Python `_SimpleBESSModel` if absent.
+
+---
+
+## 9.5. High-Assurance Safety Controllers
+
+C2G-Bench includes a **Simplex-architecture safety shield** [Sha 2001] that provides **provable hard-constraint satisfaction** for any RL agent, without retraining.
+
+### Safety Shield Design
+
+The shield intercepts every agent action and projects it into the safe subset of the action space in **O(1) time** using analytic worst-case bounds:
+
+| ID | Constraint | Threshold | Shield Response |
+|----|-----------|-----------|-----------------|
+| C1 | $T_A < T_{\text{safe}}$ | 35 °C (margin 1 °C) | Progressive throttle reduction + forced cooling |
+| C2 | $T_B < T_{\text{safe}}$ | 35 °C (margin 1 °C) | Progressive HVAC increase |
+| C3 | SOC ∈ [SOC_min, SOC_max] | [0.10, 0.95] (guard 0.03) | Block discharge at low SOC, block charge at high SOC |
+| C4 | $|\Delta f| < 0.5$ Hz | ±0.4 Hz trigger | Force discharge on under-frequency, charge on over-frequency |
+| C5 | $V_{\text{pcc}} > 0.90$ pu | 0.92 pu trigger | Proportional throttle reduction |
+
+### Three Usage Modes
+
+```python
+# 1. Standalone filter — works with ANY agent
+from baselines.safety_shield import SafetyShield
+shield = SafetyShield()
+safe_action, was_modified, info = shield.filter(raw_action, obs)
+
+# 2. Gymnasium wrapper — agent trains inside safe manifold
+from baselines.safety_shield import ShieldedEnv
+env = ShieldedEnv(C2GFastEnv(scenario="default"))
+
+# 3. SB3-compatible agent wrapper — for evaluation
+from baselines.safety_shield import ShieldedAgent
+safe_agent = ShieldedAgent(trained_agent, env)
+```
+
+### Training with the Shield
+
+```bash
+# PPO inside ShieldedEnv (agent learns within safe manifold)
+uv run python baselines/train_shielded_ppo.py scenario=default experiment.seed=42
+```
+
+### Research Challenges for the Community
+
+The built-in shield is deliberately conservative (O(1), no solver). Researchers are invited to develop more permissive shields using:
+
+- **Control Barrier Functions (CBFs)** — continuous-time safety certificates [Ames 2019]
+- **Hamilton-Jacobi reachability** — compute maximal safe sets offline
+- **Model-Predictive Safety Filters (MPC-SF)** — receding-horizon constrained optimisation
+- **Neural Lyapunov / barrier networks** — learned certificates with formal verification
+- **Constrained RL** — PPO-Lagrangian, CPO, PCPO for soft-constraint satisfaction
+
+The benchmark tracks shield intervention rate (`ShieldStats.intervention_rate`) as a key metric: a lower rate indicates better alignment between agent policy and safety constraints.
 
 ---
 

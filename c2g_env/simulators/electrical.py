@@ -125,6 +125,16 @@ class DatacenterElectrical:
         self.p_lighting_mw = 0.5        # Lighting, fire suppression, etc.
         self.p_network_mw = 1.5         # Networking, storage, control plane
 
+        # ── Grid voltage at PCC (point of common coupling) ──────────
+        # V_nom: nominal bus voltage at the PCC (medium-voltage side of XFMR)
+        # Z_grid_pu: grid Thévenin impedance in per-unit (X/R ~ 10 for transmission)
+        # V_min_safe: under-voltage relay threshold (ANSI C84.1: 0.90 pu)
+        # V_max_safe: over-voltage protection threshold
+        self.V_nom_kv:     float = 138.0   # typical HV feeder [kV]
+        self.Z_grid_pu:    float = 0.04    # grid impedance in pu (stiff grid)
+        self.V_min_safe_pu: float = 0.95   # ANSI C84.1 Range A minimum
+        self.V_max_safe_pu: float = 1.05   # ANSI C84.1 Range A maximum
+
         # ── Cached state (updated each step) ─────────────────────────
         self._last_state = None
 
@@ -286,6 +296,18 @@ class DatacenterElectrical:
         # 8. Power factor and reactive power
         pf, q_mvar = self._composite_pf(p_it_A, p_it_B, p_cooling)
 
+        # 9. Voltage at PCC  (simplified steady-state voltage drop)
+        # ΔV/V ≈ (P·R + Q·X) / V²  in per-unit with S_base = S_xfmr
+        s_base_mva = max(self.S_xfmr_mva, 1.0)
+        p_pu = p_facility / s_base_mva
+        q_pu = q_mvar / s_base_mva
+        # For typical transmission: X/R ≈ 10, so R_pu ≈ Z/√101, X_pu ≈ 10·R_pu
+        xr_ratio = 10.0
+        r_pu = self.Z_grid_pu / np.sqrt(1.0 + xr_ratio ** 2)
+        x_pu = xr_ratio * r_pu
+        v_drop_pu = p_pu * r_pu + q_pu * x_pu
+        v_pcc_pu = float(np.clip(1.0 - v_drop_pu, 0.85, 1.10))
+
         self._last_state = {
             "p_it_A_mw": p_it_A,
             "p_it_B_mw": p_it_B,
@@ -301,6 +323,8 @@ class DatacenterElectrical:
             "q_reactive_mvar": q_mvar,
             "ups_eta_A": ups_eta_A,
             "ups_eta_B": ups_eta_B,
+            "v_pcc_pu": v_pcc_pu,
+            "v_drop_pu": v_drop_pu,
         }
         return self._last_state
 

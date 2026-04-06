@@ -1,40 +1,32 @@
 """
-baselines/train_ppo.py  —  PPO Training Script (SB3 + Hydra)
-=============================================================
-All hyperparameters are declared in conf/algo/ppo.yaml and
-conf/scenario/*.yaml.  Hydra handles output-dir creation,
-config snapshotting, and multi-run sweeps automatically.
+baselines/train_ppo_macro.py  —  PPO on C2GMacroEnv (High-Level Agent)
+=======================================================================
+Trains a PPO agent on the 15-minute macro environment. The macro agent
+decides MW commitment and BESS dispatch target; the inner FastEnv uses
+fixed safe defaults (or a pre-trained low-level policy if specified).
+
+This is the simplest hierarchical baseline: the outer agent learns
+grid-level bidding while the inner control is static.
 
 Usage
 -----
-  # Single run with defaults (default scenario, ppo algo)
-  python baselines/train_ppo.py
+  # Macro-only training (inner uses fixed defaults)
+  python baselines/train_ppo_macro.py algo=ppo_macro
 
-  # Override scenario
-  python baselines/train_ppo.py scenario=scenario_a
+  # Hierarchical: plug in a pre-trained low-level PPO
+  python baselines/train_ppo_macro.py algo=ppo_macro \
+      algo.inner_policy_path=outputs/ppo_default/seed_42/.../final_model
 
-  # Override multiple values inline
-  python baselines/train_ppo.py scenario=scenario_b algo.timesteps=500000 experiment.seed=7
-
-  # Grid sweep over all scenarios × 3 seeds
-  python baselines/train_ppo.py --multirun \\
-      scenario=default,scenario_a,scenario_b,scenario_c \\
-      experiment.seed=1,2,3
-
-Outputs (managed by Hydra)
---------------------------
-  outputs/<algo>_<scenario>/seed_<N>/<timestamp>/
-      .hydra/           — config snapshot (config.yaml, overrides.yaml)
-      episode_metrics.csv
-      checkpoints/
-      best_model/
-      tensorboard/
+  # Multi-run sweep
+  python baselines/train_ppo_macro.py algo=ppo_macro --multirun \
+      scenario=default,scenario_a experiment.seed=1,2,3
 """
 from __future__ import annotations
 from pathlib import Path
 
 import baselines._hydra_compat  # noqa: F401  # Hydra 1.3.x + Python ≥3.14 fix
 
+import numpy as np
 import hydra
 from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig, OmegaConf
@@ -44,17 +36,53 @@ from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback
 from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.vec_env import VecNormalize
 
-from c2g_env import C2GFastEnv
+from c2g_env import C2GMacroEnv
 from baselines.metrics_callback import C2GMetricsCallback
 
 
-def make_env_fn(scenario: str, seed: int):
+# ---------------------------------------------------------------------------
+# Build inner_action_fn from a pre-trained low-level SB3 policy
+# ---------------------------------------------------------------------------
+
+def _make_inner_action_fn(model_path: str):
+    """
+    Load a trained SB3 model and return a callable compatible with
+    ``C2GMacroEnv(inner_action_fn=fn)``.
+
+    The wrapper maps ``(inner_obs, macro_action) → low_action``
+    where ``low_action`` has shape (4,): [throttle, pump, hvac, bess].
+    """
+    from stable_baselines3 import PPO as _PPO, SAC as _SAC
+
+    p = Path(model_path)
+    # Try PPO first, fall back to SAC
+    try:
+        inner_model = _PPO.load(str(p))
+    except Exception:
+        inner_model = _SAC.load(str(p))
+
+    def inner_fn(inner_obs: np.ndarray, macro_action: np.ndarray) -> np.ndarray:
+        action, _ = inner_model.predict(inner_obs, deterministic=True)
+        return action.astype(np.float32)
+
+    return inner_fn
+
+
+# ---------------------------------------------------------------------------
+# Env factory
+# ---------------------------------------------------------------------------
+
+def make_macro_env_fn(scenario: str, seed: int, inner_fn=None):
     def _init():
-        env = C2GFastEnv(scenario=scenario)
+        env = C2GMacroEnv(scenario=scenario, inner_action_fn=inner_fn)
         env.reset(seed=seed)
         return env
     return _init
 
+
+# ---------------------------------------------------------------------------
+# Hydra entry-point
+# ---------------------------------------------------------------------------
 
 @hydra.main(config_path="../conf", config_name="config", version_base="1.3")
 def train(cfg: DictConfig) -> None:
@@ -66,12 +94,23 @@ def train(cfg: DictConfig) -> None:
     algo_cfg  = cfg.algo
     log_cfg   = cfg.logging
 
-    print(f"[PPO] scenario={scenario}  seed={seed}  "
+    # Optional: load pre-trained low-level policy for hierarchical RL
+    inner_fn = None
+    inner_path = algo_cfg.get("inner_policy_path", None)
+    if inner_path is not None and str(inner_path) != "null":
+        inner_fn = _make_inner_action_fn(str(inner_path))
+        print(f"[HRL] Loaded inner policy from {inner_path}")
+    else:
+        print("[Macro] Using fixed inner defaults (throttle=1.0, pump=0.7, hvac=0.7)")
+
+    print(f"[PPO-Macro] scenario={scenario}  seed={seed}  "
           f"timesteps={algo_cfg.timesteps:,}  n_envs={algo_cfg.n_envs}")
 
     # ── Environments ──────────────────────────────────────────────────────
-    vec_env = make_vec_env(make_env_fn(scenario, seed),
-                           n_envs=algo_cfg.n_envs, seed=seed)
+    vec_env = make_vec_env(
+        make_macro_env_fn(scenario, seed, inner_fn),
+        n_envs=algo_cfg.n_envs, seed=seed,
+    )
     vec_env = VecNormalize(
         vec_env,
         norm_obs    = algo_cfg.norm_obs,
@@ -80,8 +119,10 @@ def train(cfg: DictConfig) -> None:
         clip_reward = algo_cfg.clip_reward,
     )
 
-    eval_env = make_vec_env(make_env_fn(scenario, seed + 999),
-                            n_envs=1, seed=seed + 999)
+    eval_env = make_vec_env(
+        make_macro_env_fn(scenario, seed + 999, inner_fn),
+        n_envs=1, seed=seed + 999,
+    )
     eval_env = VecNormalize(eval_env, norm_obs=True, norm_reward=False,
                             clip_obs=algo_cfg.clip_obs, training=False)
 
@@ -138,7 +179,7 @@ def train(cfg: DictConfig) -> None:
 
     model.save(str(out_dir / "final_model"))
     vec_env.save(str(out_dir / "vec_normalize.pkl"))
-    print(f"\n[PPO] Training complete → {out_dir.resolve()}")
+    print(f"\n[PPO-Macro] Training complete → {out_dir.resolve()}")
 
 
 if __name__ == "__main__":

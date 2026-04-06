@@ -22,7 +22,7 @@ The environment is designed for facility-level frequency regulation
   3. Thermal safety              (zero tolerance for temp > T_warn)
   4. BESS health                 (avoid deep discharge below SOC_min + 2%)
 
-Observation space  (14-D, all values normalised to approximately [0, 1])
+Observation space  (16-D, all values normalised to approximately [0, 1])
 ------------------------------------------------------------------------
   [0]  temp_A_norm        = T_A / T_safe
   [1]  temp_B_norm        = T_B / T_safe
@@ -37,6 +37,9 @@ Observation space  (14-D, all values normalised to approximately [0, 1])
   [10] prev_throttle      = throttle from previous step            ∈ [0, 1]
   [11] prev_pump_speed    = pump speed from previous step          ∈ [0, 1]
   [12] pue_norm           = PUE / 2.5
+  [13] T_amb_norm         = ambient temp (weather) normalised      ∈ [0, 1]
+  [14] freq_dev_norm      = (f_grid − f_nom) / 0.5  clipped       ∈ [-1, 1]
+  [15] v_pcc_pu           = PCC voltage per-unit (Thévenin)        ∈ [0, 1.1]
 
 Reward
 ------
@@ -44,10 +47,14 @@ Reward
     − β·|ΔP_demanded_kW − ΔP_actual_kW| / (committed_mw × 1000)
     − γ·[max(0, T_A − T_warn_A) + max(0, T_B − T_warn_B)]
     − soc_penalty   if SOC < SOC_min + 0.02
+    − δ_f·max(0, |Δf| − 0.2)           (frequency penalty, dead-band ±0.2 Hz)
+    − δ_v·volt_violation                 (voltage penalty outside [0.95, 1.05] pu)
 
 Termination
 -----------
-  • ``terminated=True``  if T_A > T_safe **or** T_B > T_safe  (hardware fault)
+  • ``terminated=True``  if T_A > T_safe **or** T_B > T_safe  (thermal fault)
+  • ``terminated=True``  if |f − f_nom| > 0.5 Hz              (UFLS / OFGT)
+  • ``terminated=True``  if v_pcc < 0.90 pu                   (UV relay trip)
   • ``truncated=True``   after ``episode_ticks`` steps (time limit)
 
 Usage
@@ -147,6 +154,8 @@ class C2GFastEnv(gym.Env):
         0.0,  # prev_pump_speed
         0.0,  # pue_norm
         0.0,  # T_amb_norm
+       -1.0,  # freq_dev_norm (normalised frequency deviation)
+        0.0,  # v_pcc_pu (PCC voltage in per-unit)
     ], dtype=np.float32)
 
     _OBS_HIGH = np.array([
@@ -164,6 +173,8 @@ class C2GFastEnv(gym.Env):
         1.0,  # prev_pump_speed
         2.0,  # pue_norm
         1.0,  # T_amb_norm
+        1.0,  # freq_dev_norm
+        1.1,  # v_pcc_pu (slight overvoltage possible)
     ], dtype=np.float32)
 
     def __init__(
@@ -385,6 +396,19 @@ class C2GFastEnv(gym.Env):
         tracking_err_kw = abs(delta_p_demanded_kw - delta_p_actual_kw)
 
         # -----------------------------------------------------------------
+        # 6b. Frequency & voltage signals (safety-critical)
+        # -----------------------------------------------------------------
+        # Swing equation: tracking deficit drives frequency deviation
+        tracking_deficit_mw = (delta_p_demanded_kw - delta_p_actual_kw) / 1_000.0
+        self._grid._step_frequency(tracking_deficit_mw)
+        f_grid_hz = self._grid.f_grid
+        f_nom     = self._grid.f_nom
+
+        # PCC voltage from electrical model (Thévenin equivalent)
+        v_pcc_pu  = float(elec.get("v_pcc_pu", 1.0))
+        v_drop_pu = float(elec.get("v_drop_pu", 0.0))
+
+        # -----------------------------------------------------------------
         # 7. Reward
         # -----------------------------------------------------------------
         alpha      = float(self._rcfg["alpha"])
@@ -399,18 +423,42 @@ class C2GFastEnv(gym.Env):
                        + max(0.0, temp_B - T_warn_B))
         soc_pen = soc_pen_c if bess_out["soc_fraction"] < 0.12 else 0.0
 
+        # Frequency penalty (dead-band ±0.2 Hz)
+        delta_freq_pen_c = float(self._rcfg.get("delta_freq_penalty", 2.0))
+        freq_dev_hz = abs(f_grid_hz - f_nom)
+        freq_pen = delta_freq_pen_c * max(0.0, freq_dev_hz - 0.2)
+
+        # Voltage penalty (ANSI C84.1 Range A: [0.95, 1.05] pu)
+        delta_volt_pen_c = float(self._rcfg.get("delta_volt_penalty", 5.0))
+        volt_pen = delta_volt_pen_c * (
+            max(0.0, 0.95 - v_pcc_pu) + max(0.0, v_pcc_pu - 1.05)
+        )
+
         reward = float(
             alpha  * throttle_batch
             - beta  * (tracking_err_kw / norm_kw)
             - gamma * thermal_pen
             - soc_pen
+            - freq_pen
+            - volt_pen
         )
 
         # -----------------------------------------------------------------
         # 8. Termination / truncation
         # -----------------------------------------------------------------
         T_safe     = self._thermal.T_safe
-        terminated = bool(temp_A > T_safe or temp_B > T_safe)
+        thermal_fault = bool(temp_A > T_safe or temp_B > T_safe)
+
+        # Under-frequency load shedding (UFLS) / over-frequency trip
+        f_ufls = self._grid.f_nom - 0.5   # e.g. 59.5 Hz (US) / 49.5 Hz (EU)
+        f_ofgt = self._grid.f_nom + 0.5   # over-frequency generator trip
+        freq_fault = bool(f_grid_hz < f_ufls or f_grid_hz > f_ofgt)
+
+        # Under-voltage relay trip (ANSI C84.1 Range B violation)
+        v_uvr = 0.90   # 0.90 pu → UPS transfer to battery or relay trip
+        voltage_fault = bool(v_pcc_pu < v_uvr)
+
+        terminated = thermal_fault or freq_fault or voltage_fault
 
         self._tick += 1
         truncated  = self._tick >= self._episode_ticks
@@ -420,7 +468,9 @@ class C2GFastEnv(gym.Env):
         # -----------------------------------------------------------------
         self._prev_throttle  = throttle_batch
         self._prev_pump_speed = pump_speed_A
-        obs = self._build_obs(temp_A, temp_B, bess_out, w, elec, gs)
+        obs = self._build_obs(temp_A, temp_B, bess_out, w, elec, gs,
+                              f_grid_hz=f_grid_hz, f_nom=f_nom,
+                              v_pcc_pu=v_pcc_pu)
 
         info = {
             "tick":                  self._tick,
@@ -444,7 +494,17 @@ class C2GFastEnv(gym.Env):
             "T_amb":                  self._thermal.T_amb,
             "weather_driven":          self._weather_driven,
             "weather_source":          self._weather.source,
-            "thermal_terminated":    terminated,
+            "thermal_fault":         thermal_fault,
+            "freq_fault":            freq_fault,
+            "voltage_fault":         voltage_fault,
+            "terminated":            terminated,
+            "f_grid_hz":             f_grid_hz,
+            "f_nom_hz":              f_nom,
+            "freq_dev_hz":           f_grid_hz - f_nom,
+            "v_pcc_pu":              v_pcc_pu,
+            "v_drop_pu":             v_drop_pu,
+            "freq_penalty":          freq_pen,
+            "volt_penalty":          volt_pen,
             "scenario":              self._scenario,
         }
         return obs, reward, terminated, truncated, info
@@ -464,6 +524,9 @@ class C2GFastEnv(gym.Env):
         w,               # WorkloadState
         elec: dict,
         gs: dict,
+        f_grid_hz: float = 60.0,
+        f_nom: float = 60.0,
+        v_pcc_pu: float = 1.0,
     ) -> np.ndarray:
         T_safe = self._thermal.T_safe
         return np.array([
@@ -481,6 +544,8 @@ class C2GFastEnv(gym.Env):
             self._prev_pump_speed,
             min(elec["pue_dynamic"] / 2.5, 2.0),
             self._weather.temp_norm(self._tick),
+            float(np.clip((f_grid_hz - f_nom) / 0.5, -1.0, 1.0)),  # freq_dev_norm
+            float(np.clip(v_pcc_pu, 0.0, 1.1)),                     # v_pcc_pu
         ], dtype=np.float32)
 
     def _build_obs_at_reset(self) -> np.ndarray:
@@ -502,4 +567,6 @@ class C2GFastEnv(gym.Env):
             1.0,   # prev_pump_speed
             0.6,   # pue_norm
             self._weather.temp_norm(0),  # T_amb_norm at tick 0
+            0.0,   # freq_dev_norm (0 = nominal frequency at reset)
+            1.0,   # v_pcc_pu (nominal voltage at reset)
         ], dtype=np.float32)

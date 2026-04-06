@@ -49,6 +49,8 @@ reward:
   T_warn_A:     33.0   # Zone A warning threshold [°C]  (2°C below T_safe=35)
   T_warn_B:     33.0   # Zone B warning threshold [°C]
   soc_penalty:   0.5   # BESS: penalty per tick when SOC < SOC_min + 2%
+  delta_freq_penalty: 2.0   # Frequency: penalty per Hz deviation beyond ±0.2 Hz dead-band
+  delta_volt_penalty: 5.0   # Voltage: penalty per pu deviation outside [0.95, 1.05] pu
 
 # ------------------------------------------------------------------------------
 # Market presets — grid signal + weather parameters per region

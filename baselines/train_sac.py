@@ -21,6 +21,8 @@ Outputs (managed by Hydra)
 from __future__ import annotations
 from pathlib import Path
 
+import baselines._hydra_compat  # noqa: F401  # Hydra 1.3.x + Python ≥3.14 fix
+
 import hydra
 from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig, OmegaConf
