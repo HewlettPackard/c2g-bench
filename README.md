@@ -92,6 +92,149 @@ The tracking loop: $\Delta P_{\text{actual}} = (1 - \text{throttle}) \times P_{\
 
 Episode truncates at 17,280 ticks (24 hours at 5 s).
 
+### 4.4. Environment Architecture & Data Flow
+
+The three diagrams below describe (1) the full hierarchical control loop, (2) the internal step function of `C2GFastEnv`, and (3) the Simplex safety shield that can wrap any agent.
+
+#### Diagram 1 — Hierarchical RL Control Loop
+
+The two agents operate at different timescales and communicate through the `inner_action_fn` interface.  The macro agent sets a 15-minute *target envelope*; the fast agent executes 180 sub-steps inside that envelope before returning aggregated observations to the macro agent.
+
+```mermaid
+flowchart TD
+    subgraph GRID["🔌 Regional Power Grid"]
+        G1["RegD Regulation Signal\n(every 5 s)"]
+        G2["LMP — Locational Marginal Price\n(every 15 min)"]
+        G3["Grid Frequency f(t)\n(swing equation)"]
+        G4["PCC Voltage V_pcc\n(Thévenin model)"]
+    end
+
+    subgraph MARKET["📈 Market Layer — C2GMacroEnv (15-min ticks)"]
+        MA["Upper-Level Agent\n(Market Orchestrator)\nobs: 16-D aggregated\nact: 2-D [commit_norm, bess_target]"]
+        MR["Macro Reward\nmean sub-step reward\n+ LMP dispatch revenue\n− commitment churn"]
+    end
+
+    subgraph FAST["⚡ Physics Layer — C2GFastEnv (5-s ticks)"]
+        direction TB
+        FA["Lower-Level Agent\n(Hardware Controller)\nobs: 16-D normalised\nact: 4-D continuous"]
+
+        subgraph SIM["Seven Physics Simulators"]
+            S1["🖥️ Workload\nP_base + P_flex"]
+            S2["🌡️ Thermal Twin\nZone A (liquid) · Zone B (air)"]
+            S3["⚡ Electrical Chain\nUPS · PDU · XFMR · PUE"]
+            S4["🔋 BESS\n150 MWh / 50 MW NMC"]
+            S5["📡 Macro-Grid\nAR(1) RegD · LMP proxy"]
+            S6["🌬️ Renewable\n100 MW wind · 75 MW solar"]
+            S7["🌤️ Weather\nNOAA ISD / synthetic"]
+        end
+
+        FR["Fast Reward\nα·throughput − β·tracking_error\n− γ·thermal − δ_soc − δ_f·freq − δ_v·volt"]
+    end
+
+    subgraph SAFETY["🛡️ Safety Shield (optional)"]
+        SH["SafetyShield\nC1 Thermal-A · C2 Thermal-B\nC3 SOC · C4 Frequency · C5 Voltage\nO(1) analytic — no solver"]
+    end
+
+    G1 -->|"regd_signal"| FA
+    G2 -->|"lmp"| MA
+    G3 -->|"freq_dev_norm [14]"| FA
+    G4 -->|"v_pcc_pu [15]"| FA
+
+    MA -->|"inner_action_fn\n(commit_norm, bess_target)"| FA
+    FA -->|"raw action"| SH
+    SH -->|"safe action"| SIM
+    SIM -->|"next state"| FA
+    SIM --> FR
+    FR -->|"step reward"| FA
+    FA -->|"16-D obs (aggregated × 180)"| MA
+    MA --> MR
+```
+
+---
+
+#### Diagram 2 — C2GFastEnv Step Function
+
+A single 5-second `env.step(action)` call flows through all seven simulators in this order:
+
+```mermaid
+flowchart LR
+    ACT["action\n[throttle, pump_A,\nhvac, bess]"]
+
+    ACT --> WL
+    ACT --> TH
+    ACT --> BS
+    ACT --> EL
+
+    subgraph STEP["env.step() — one 5-second tick"]
+        WL["Workload\nP_base, P_flex_nom\n→ P_IT_actual"]
+        TH["Thermal Twin\nexact-exp ODE\n→ T_A, T_B"]
+        EL["Electrical Chain\nUPS+PDU+XFMR losses\n→ P_facility, PUE"]
+        BS["BESS\nSOC update, η(C-rate)\n→ P_BESS_actual"]
+        MG["Macro-Grid\nAR(1) RegD step\n→ ΔP_demanded, LMP"]
+        RN["Renewable\nwind + solar\n→ P_renewable"]
+        WE["Weather\nNOAA ISD or synthetic\n→ T_amb update"]
+        FV["Freq + Voltage\nswing eq → Δf\nThévenin → V_pcc"]
+        RW["Reward\nα·thr − β·err − γ·T\n− δ_soc − δ_f·Δf − δ_v·V"]
+        OB["Observation\n16-D normalised vector"]
+        TM{"Termination\ncheck"}
+    end
+
+    WL --> EL
+    BS --> EL
+    RN --> MG
+    WE --> TH
+    EL --> FV
+    EL --> RW
+    TH --> RW
+    BS --> RW
+    FV --> RW
+    MG --> RW
+    RW --> OB
+    TH --> TM
+    FV --> TM
+    TM -->|"thermal / freq / volt fault"| DONE["episode end"]
+    OB --> OUT["obs, reward,\nterminated, truncated, info"]
+```
+
+---
+
+#### Diagram 3 — Simplex Safety Shield
+
+The shield sits between any agent and the environment. It intercepts every action, checks five hard constraints analytically, and overrides only the components that would violate a constraint — leaving the rest of the action unchanged.
+
+```mermaid
+flowchart TD
+    AG["RL Agent\n(PPO / SAC / Rule-Based / Human)"]
+    AG -->|"raw_action [4-D]"| SH
+
+    subgraph SH["SafetyShield.filter(action, obs)"]
+        direction TB
+        C1{"C1: T_A\n≥ T_safe − 1°C?"}
+        C2{"C2: T_B\n≥ T_safe − 1°C?"}
+        C3{"C3: SOC out of\n[0.13, 0.92]?"}
+        C4{"C4: |Δf| ≥ 0.4 Hz\n& wrong BESS sign?"}
+        C5{"C5: V_pcc\n< 0.92 pu?"}
+
+        C1 -->|"yes"| OV1["Reduce throttle\nForce max pump"]
+        C2 -->|"yes"| OV2["Increase HVAC"]
+        C3 -->|"yes"| OV3["Block discharge / charge"]
+        C4 -->|"yes"| OV4["Force BESS\ncorrective dispatch"]
+        C5 -->|"yes"| OV5["Proportional\nthrottle reduction"]
+
+        C1 -->|"no"| C2
+        C2 -->|"no"| C3
+        C3 -->|"no"| C4
+        C4 -->|"no"| C5
+        C5 -->|"no"| PASS["action unchanged"]
+    end
+
+    OV1 & OV2 & OV3 & OV4 & OV5 & PASS --> SA["safe_action [4-D]"]
+    SA -->|"ShieldStats updated"| ENV["C2GFastEnv"]
+    ENV -->|"obs, reward, info"| AG
+```
+
+---
+
 ---
 
 ## 5. Simulators
