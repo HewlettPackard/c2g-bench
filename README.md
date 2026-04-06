@@ -79,9 +79,9 @@ Executes the physical "Handshake." Receives the real-time frequency regulation s
 
 ### 4.3. The NeurIPS Evaluation Metric: The Tracking Reward
 
-$$\text{Reward} = \alpha \cdot \text{throttle} - \beta \cdot \frac{|\Delta P_{\text{demanded}} - \Delta P_{\text{actual}}|}{P_{\text{norm}}} - \gamma \cdot \max(0,\, T - T_{\text{warn}}) - \text{SOC penalty} - \delta_f \cdot \max(0,\, |\Delta f| - 0.2) - \delta_v \cdot \text{volt\_violation}$$
+$$\mathcal{R} = \alpha \cdot u_{\text{thr}} - \beta \cdot \frac{|\Delta P_{\text{demand}} - \Delta P_{\text{actual}}|}{P_{\text{norm}}} - \gamma \cdot (T - T_{\text{warn}})^{+} - \delta_{\text{soc}} \cdot \mathbf{1}_{\text{soc}} - \delta_f \cdot (|\Delta f| - 0.2)^{+} - \delta_v \cdot \varepsilon_v$$
 
-where $\text{volt\_violation} = \max(0,\, 0.95 - v_{\text{pcc}}) + \max(0,\, v_{\text{pcc}} - 1.05)$ and $\delta_f = 2.0$, $\delta_v = 5.0$.
+where $(x)^{+} = \max(0, x)$, $\varepsilon_v = (0.95 - v_{\text{pcc}})^{+} + (v_{\text{pcc}} - 1.05)^{+}$, and the coefficients are $\alpha{=}1.0$, $\beta{=}2.0$, $\gamma{=}5.0$, $\delta_f{=}2.0$, $\delta_v{=}5.0$.
 
 The tracking loop: $\Delta P_{\text{actual}} = (1 - \text{throttle}) \times P_{\text{flex,nom}} + P_{\text{BESS,actual}}$
 
@@ -136,14 +136,135 @@ Seven independent physics/data modules, all with exact-exponential or analytical
 
 ## 7. Evaluation Scenarios
 
-| Scenario | Challenge | Key Stress |
-|----------|-----------|------------|
-| `default` | Normal operations, 24-hour episode | Baseline — learn to coordinate 4 levers |
-| `scenario_a` | **GenAI Crisis** — massive v2026 serving spike + grid drop signal | IT vs. grid conflict |
-| `scenario_b` | **Thermal Squeeze** — T_amb = 42°C, degraded cooling | Thermal constraint binding |
-| `scenario_c` | **Battery Drain** — long grid anomaly, SOC → 10% floor | BESS management under scarcity |
+C2G-Bench ships four progressively harder 24-hour scenarios (17,280 ticks at 5 s each). Every scenario is fully deterministic when a fixed seed is set and can be combined with any of the six energy markets via a single Hydra override.
 
-Each scenario can be combined with any of the 6 energy markets via Hydra: `scenario=scenario_a market=pjm_dom`.
+```bash
+# Run any scenario × any market
+uv run python baselines/train_ppo.py scenario=scenario_b market=ercot_north
+```
+
+### 7.1 Scene-setting: shared physics
+
+All scenarios share the same underlying simulator stack and reward weights:
+
+| Parameter | Value | Meaning |
+|-----------|-------|---------|
+| Episode length | 17,280 ticks | 24 h × 3,600 s h⁻¹ ÷ 5 s tick⁻¹ |
+| IT capacity | 250 MW | Rigid (GenAI/DLRM) + flexible (Alibaba batch) |
+| BESS | 150 MWh / 50 MW | NMC Li-ion, C-rate derating + capacity fade |
+| Cooling zones | Zone A (liquid, HPE Cray EX) · Zone B (air, HPE ProLiant) | |
+| $T_{\text{safe}}$ | 35 °C | Silicon hard limit → immediate termination |
+| $T_{\text{warn}}$ | 33 °C | Soft threshold → thermal penalty begins |
+| Frequency UFLS | ±0.5 Hz | Under/over-frequency relay → termination |
+| Voltage UV relay | 0.90 pu | Under-voltage → termination |
+
+---
+
+### 7.2 `default` — Baseline Operations
+
+> *"Can the agent learn to coordinate four physical levers under normal grid conditions?"*
+
+The entry-level scenario. Ambient temperature is comfortable (25 °C, NYISO NYC summer), BESS starts at 50 % SOC, and the regulation signal has standard amplitude. No faults are injected. This is the recommended starting point for algorithm development and ablation studies.
+
+| Parameter | Value |
+|-----------|-------|
+| Market | NYISO NYC |
+| Ambient $T_{\text{amb}}$ | 25 °C (weather-driven) |
+| Committed MW | 15 MW |
+| BESS SOC₀ | 50 % |
+| GenAI spike scale | 1.0× (nominal) |
+| Grid stress scale | 1.0× (nominal) |
+| Cooling fault | None |
+
+**Primary challenge:** Learning the basic DVFS ↔ cooling ↔ BESS synergy to track the regulation signal while keeping temperatures below $T_{\text{warn}}$.
+
+**Termination risk:** Low. An untrained random agent survives ≈ 40 % of the episode on average.
+
+---
+
+### 7.3 `scenario_a` — GenAI Crisis
+
+> *"A viral model launch + a grid under-frequency event hit simultaneously. The agent must shed flexible load without starving the BESS."*
+
+This scenario models a **Northern Virginia (PJM DOM)** summer day when a new GPT-class model goes viral. GenAI serving load spikes to **1.8× nominal**, consuming headroom that the agent would otherwise use for regulation. At the same time, the grid issues a sustained under-frequency signal, demanding active discharge. The agent must resolve the conflict between IT throughput and grid support.
+
+| Parameter | Value |
+|-----------|-------|
+| Market | PJM DOM |
+| Ambient $T_{\text{amb}}$ | 30 °C (static) |
+| Committed MW | 20 MW |
+| BESS SOC₀ | 55 % |
+| GenAI spike scale | **1.8×** |
+| Grid stress scale | **1.5×** |
+| Cooling fault | None |
+
+**Primary challenge:** IT vs. grid conflict. The GenAI rigid load is non-throttleable, so the agent must use BESS discharge and batch-job throttling simultaneously — but throttling reduces throughput reward $\alpha \cdot u_{\text{thr}}$, and over-discharging depletes the BESS.
+
+**Termination risk:** Medium–High. Frequency faults are likely if the agent ignores the regulation signal. Thermal faults are possible if cooling is under-prioritised during spikes.
+
+---
+
+### 7.4 `scenario_b` — Thermal Squeeze
+
+> *"Dallas in August: 40 °C ambient, a 30 MW commitment, and a cooling system pushed to its physical limits."*
+
+This scenario targets **ERCOT North (DFW)** during a peak-summer heat wave. The 40 °C ambient temperature drives the cooling COP down by ≈ 30 %, meaning the pump must work harder to achieve the same heat rejection. The committed MW is raised to 30 MW, increasing the power swings the agent must track. GenAI load is nominal, but the thermal margin to $T_{\text{safe}}$ is extremely thin.
+
+| Parameter | Value |
+|-----------|-------|
+| Market | ERCOT North |
+| Ambient $T_{\text{amb}}$ | **40 °C** (static) |
+| Committed MW | **30 MW** |
+| BESS SOC₀ | 60 % |
+| GenAI spike scale | 1.0× (nominal) |
+| Grid stress scale | 1.3× |
+| Cooling fault | None |
+
+**Primary challenge:** Thermal constraint binding. The thermal penalty $\gamma \cdot (T - T_{\text{warn}})^{+}$ dominates the reward signal. The agent must learn aggressive pump-speed scheduling and accept reduced throughput to keep temperatures in the safe band.
+
+**Termination risk:** Very High. A naive agent that ignores the pump lever will hit $T_{\text{safe}} = 35$ °C within the first hour. This scenario is the primary driver of thermal-safety research.
+
+---
+
+### 7.5 `scenario_c` — Battery Drain
+
+> *"Western Sydney summer: the BESS starts nearly empty, the pump is failing, and the grid is stressed."*
+
+This scenario represents a compounding failure in **AEMO NSW**. The BESS begins at only **15 % SOC** (near the 10 % hard floor), leaving almost no discharge capacity for regulation. A simulated CDU pump degradation reduces cooling efficiency to **60 % of nominal**, tightening the thermal margin. GenAI and grid stress are both elevated. The agent must simultaneously ration the BESS, compensate for degraded cooling, and track the regulation signal — with essentially no buffer.
+
+| Parameter | Value |
+|-----------|-------|
+| Market | AEMO NSW |
+| Ambient $T_{\text{amb}}$ | 32 °C (static) |
+| Committed MW | 20 MW |
+| BESS SOC₀ | **15 %** |
+| GenAI spike scale | 1.2× |
+| Grid stress scale | 1.2× |
+| Cooling fault | **Pump degradation (60 % efficiency)** |
+
+**Primary challenge:** Resource scarcity under compound failure. The BESS SOC penalty $\delta_{\text{soc}}$ activates immediately. The agent must switch to DVFS-only regulation while the pump fault is active, and carefully trickle-charge the BESS when the regulation signal allows.
+
+**Termination risk:** Extreme. This is the hardest scenario in the benchmark. A random agent terminates within ≈ 5 % of the episode on average.
+
+---
+
+### 7.6 Scenario × Market grid
+
+All four scenarios can be combined with all six markets, yielding **24 distinct evaluation configurations**. Market selection changes the LMP profile, weather driver, and grid-stress statistics, while scenario selection changes the hardware stress and initial conditions:
+
+| | `nyiso_nyc` | `pjm_dom` | `caiso_pgae` | `ercot_north` | `entso_de` | `aemo_nsw` |
+|-|:-----------:|:---------:|:------------:|:-------------:|:----------:|:----------:|
+| `default` | ★ default | | | | | |
+| `scenario_a` | | ★ default | | | | |
+| `scenario_b` | | | | ★ default | | |
+| `scenario_c` | | | | | | ★ default |
+
+★ = default market for that scenario. Any other cell is a valid cross-market stress test.
+
+```bash
+# Example: Thermal Squeeze under European low-carbon prices
+uv run python baselines/train_ppo.py scenario=scenario_b market=entso_de experiment.seed=1
+```
 
 ---
 
@@ -219,7 +340,8 @@ C2G-Macro/
 │   ├── 06_environments.ipynb            # Gym API demo, scenario comparison
 │   ├── 07_weather.ipynb                 # Weather data: 6 markets, real vs. synthetic
 │   ├── 08_energy_markets.ipynb          # Energy load: 6 markets, LDC, diurnal patterns
-│   └── 09_frequency_voltage.ipynb       # Grid frequency & PCC voltage safety signals
+│   ├── 09_frequency_voltage.ipynb       # Grid frequency & PCC voltage safety signals
+│   └── 10_evaluation_scenarios.ipynb    # Scenario deep dive: params, rollouts, risk, reward
 │
 ├── paper/                               # NeurIPS 2026 manuscript
 │   ├── main.tex                         # 13-page paper (NeurIPS format)
