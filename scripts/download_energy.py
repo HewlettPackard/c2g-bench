@@ -10,6 +10,7 @@ Sources (all free, no API key required)
   ercot_north– EIA Open Data API  (hourly, ERCO respondent)
   entso_de   – Open Power System Data (OPSD, hourly, DE actual load)
   aemo_nsw   – AEMO price & demand monthly CSVs (30-min, NSW1 region)
+  nyiso_nyc  – NYISO OASIS public bulk CSVs (5-min, NYC zone)
 
 Output files: data/processed/energy/{ZONE}.csv
   Columns: Time Stamp, Load   (5-minute intervals, MW)
@@ -18,6 +19,7 @@ Usage
 ─────
     python scripts/download_energy.py [--year 2024] [--markets all]
     python scripts/download_energy.py --markets pjm_dom ercot_north --force
+    python scripts/download_energy.py --markets nyiso_nyc
 """
 
 from __future__ import annotations
@@ -29,6 +31,7 @@ import sys
 import time
 import urllib.parse
 import urllib.request
+import zipfile
 from pathlib import Path
 
 import pandas as pd
@@ -41,6 +44,7 @@ EIA_BASE  = "https://api.eia.gov/v2/electricity/rto/region-data/data"
 EIA_KEY   = "DEMO_KEY"   # free, 25 req/day; register at eia.gov for higher limits
 SMARD_BASE = "https://www.smard.de/app/chart_data/410/DE"   # hourly total consumption
 AEMO_BASE  = "https://aemo.com.au/aemo/data/nem/priceanddemand"
+NYISO_BASE = "https://mis.nyiso.com/public/csv/pal"
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -204,6 +208,53 @@ def download_aemo(year: int, force: bool = False) -> None:
     _save(_to_5min(df_all, "SETTLEMENTDATE", "TOTALDEMAND", year), zone)
 
 
+# ── NYISO  (NYC zone, 5-minute actual load) ────────────────────────────────────────
+
+def download_nyiso(year: int, force: bool = False) -> None:
+    """Download NYISO 5-minute actual load (PAL) for the NYC zone.
+
+    Data source: NYISO OASIS public bulk CSVs (no auth required).
+    URL pattern: https://mis.nyiso.com/public/csv/pal/{YYYYMM}01pal_csv.zip
+    Each monthly ZIP contains daily files:  {YYYYMMDD}pal.csv
+    Columns: Time Stamp, Name, PTID, Load
+    We filter Name == "N.Y.C." and save as data/processed/energy/NYC.csv.
+    """
+    zone = "NYC"
+    out  = OUT_DIR / f"{zone}.csv"
+    if out.exists() and not force:
+        print(f"  [nyiso_nyc] {out.name} exists — skip"); return
+
+    print(f"  [nyiso_nyc] Downloading NYISO PAL 5-min load (NYC zone, {year}) …")
+    frames = []
+    for month in range(1, 13):
+        zip_name = f"{year}{month:02d}01pal_csv.zip"
+        url      = f"{NYISO_BASE}/{zip_name}"
+        print(f"    {zip_name} …", end=" ", flush=True)
+        raw = _get(url, retries=3, timeout=120)
+        with zipfile.ZipFile(io.BytesIO(raw)) as zf:
+            for name in zf.namelist():
+                if not name.endswith(".csv"):
+                    continue
+                with zf.open(name) as f:
+                    df_day = pd.read_csv(f)
+                    # Filter to NYC zone only
+                    if "Name" in df_day.columns:
+                        df_day = df_day[df_day["Name"] == "N.Y.C."]
+                    elif "name" in df_day.columns:
+                        df_day = df_day[df_day["name"].str.upper() == "N.Y.C."]
+                    frames.append(df_day)
+        print(f"{sum(len(f) for f in frames)} rows total", flush=True)
+        time.sleep(0.3)
+
+    df_all = pd.concat(frames, ignore_index=True)
+    # Normalise column names (NYISO uses mixed case)
+    df_all.columns = [c.strip() for c in df_all.columns]
+    ts_col   = next(c for c in df_all.columns if "time" in c.lower() or "timestamp" in c.lower())
+    load_col = next(c for c in df_all.columns if "load" in c.lower())
+    print(f"    {len(df_all):,} 5-min rows for {year} (NYC zone)")
+    _save(_to_5min(df_all, ts_col, load_col, year), zone)
+
+
 # ── main ──────────────────────────────────────────────────────────────────────
 
 DOWNLOADERS = {
@@ -212,6 +263,7 @@ DOWNLOADERS = {
     "ercot_north": lambda year, force: download_eia("ercot_north", year, force),
     "entso_de":    download_entso_de,
     "aemo_nsw":    download_aemo,
+    "nyiso_nyc":   download_nyiso,
 }
 
 
@@ -229,6 +281,7 @@ def main() -> None:
     print(f"US markets: EIA Open Data API (api_key=DEMO_KEY, 25 req/day free)")
     print(f"Germany:    Open Power System Data (OPSD)")
     print(f"Australia:  AEMO price & demand CSVs")
+    print(f"New York:   NYISO OASIS public bulk CSVs (no auth)")
     print(f"Output: {OUT_DIR}\n")
 
     for mkt in targets:
