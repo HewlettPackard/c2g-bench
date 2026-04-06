@@ -3,7 +3,7 @@ name = "c2g-macro"
 version = "0.1.0"
 description = "Hierarchical AI Orchestration for Grid-Interactive Hyperscale Data Centers — NeurIPS 2026 Benchmark"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = "==3.11.*"
 dependencies = [
     # Phase 1 — Physics simulators
     "numpy>=1.26",
