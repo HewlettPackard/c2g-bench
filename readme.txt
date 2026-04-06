@@ -154,3 +154,4 @@ C2G-Macro/
     ├── test_bess_limits.py              # Validates PySAM SOC constraints
     └── test_gym_api.py                  # Validates RL environment compliance
 
+In total there are 7 sections added.
