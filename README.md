@@ -94,6 +94,8 @@ Episode truncates at 17,280 ticks (24 hours at 5 s).
 
 ### 4.4. Environment Architecture & Data Flow
 
+> 📖 **Full technical reference** — equations, parameters, and API for all 7 simulators and both environments: [`c2g_env/ENVIRONMENTS.md`](c2g_env/ENVIRONMENTS.md)
+
 The three diagrams below describe (1) the full hierarchical control loop, (2) the internal step function of `C2GFastEnv`, and (3) the Simplex safety shield that can wrap any agent.
 
 #### Diagram 1 — Hierarchical RL Control Loop
@@ -423,6 +425,7 @@ C2G-Macro/
 │   ├── __init__.py                      # Exports C2GFastEnv, C2GMacroEnv
 │   ├── env_low_level.py                 # 5 s physics step — C2GFastEnv (16-D obs, 4-D act)
 │   ├── env_high_level.py                # 15-min market step — C2GMacroEnv (16-D obs, 2-D act)
+│   ├── ENVIRONMENTS.md                  # 📖 Full environment & simulator reference (equations, params)
 │   ├── config.yaml                      # Centralised env configuration
 │   └── simulators/
 │       ├── workload.py                  # Alibaba trace fusion (batch/DLRM/GenAI)
