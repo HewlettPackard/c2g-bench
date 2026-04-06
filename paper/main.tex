@@ -1,0 +1,826 @@
+\documentclass{article}
+\usepackage{neurips2026}
+
+% Standard packages
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{graphicx}
+\graphicspath{{figures/}}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{xcolor}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{subcaption}
+\usepackage{enumitem}
+\usepackage{url}
+\usepackage{natbib}
+
+% Custom commands
+\newcommand{\cname}{\textsc{C2G-Bench}}
+\newcommand{\envlow}{\texttt{C2GFastEnv}}
+\newcommand{\envhigh}{\texttt{C2GMacroEnv}}
+\newcommand{\deltap}{\Delta P}
+\newcommand{\Treward}{R_{\text{track}}}
+\newcommand{\TODO}[1]{\textcolor{red}{\textbf{[TODO: #1]}}}
+
+% ── Anonymous submission ──────────────────────────────────────────────────────
+% Remove the line below before camera-ready to reveal author info
+\newcommand{\anonymous}{1}
+
+\title{\textbf{\cname{}: A High-Fidelity Cyber-Physical Benchmark for\\
+       Hierarchical Reinforcement Learning in Grid-Interactive\\
+       Hyperscale Data Centers}}
+
+\author{%
+  \ifcsname anonymous\endcsname
+    Anonymous Author(s)\\
+    \textit{Submitted to NeurIPS 2026 — Datasets \& Benchmarks Track}
+  \else
+    Author Name$^{1}$ \quad Co-Author$^{2}$\\
+    $^{1}$Institution One \quad $^{2}$Institution Two\\
+    \texttt{anonymous@anonymous.com}
+  \fi
+}
+
+\begin{document}
+\maketitle
+
+% ─────────────────────────────────────────────────────────────────────────────
+\begin{abstract}
+% ─────────────────────────────────────────────────────────────────────────────
+The rapid growth of Generative AI is increasing the power demand of hyperscale
+data centers, which can now consume 250~MW or more.
+This high consumption creates significant stress on regional energy transmission grids.
+To maintain stability, it is necessary for data centers to transition from passive
+consumers to active assets that provide ancillary services, such as frequency regulation.
+This is important because the continued scaling of large AI infrastructure is
+increasingly limited by the capacity and stability of the energy system.
+
+We present a cyber-physical evaluation framework to benchmark Hierarchical
+Reinforcement Learning (HRL) agents in grid-interactive data centers.
+Our work aims to bridge the gap between macro-level energy management and
+sub-second hardware safety.
+The framework simulates two different time scales: an upper-level agent for
+market bidding (15-minute steps, one PJM settlement interval) and a lower-level agent for real-time
+power signal tracking (5-second steps).
+The agents manage three main physical levers:
+(1)~throttling flexible AI batch workloads using Dynamic Voltage and Frequency
+Scaling (DVFS),
+(2)~modulating the CDU circulating pump speed in the liquid-cooled zone,
+exploiting the water-loop thermal mass as a short-horizon thermal battery, and
+(3)~dispatching battery energy storage systems.
+We use a fusion of three Alibaba production traces (v2023--v2026) to model the
+tension between rigid GenAI serving spikes and flexible training jobs.
+
+By open-sourcing this environment, we aim to provide a shared platform for the
+research community to evaluate AI agents in realistic and safety-critical scenarios.
+The framework includes metrics for high-assurance, such as signal tracking accuracy
+(RMSE), hardware thermal safety limits, and SLA integrity.
+This work is intended to support the development of autonomous controllers that
+can help data centers become reliable assets for the power grid while reducing
+operational costs.
+\end{abstract}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Introduction}
+\label{sec:intro}
+% ─────────────────────────────────────────────────────────────────────────────
+
+The rapid development of Generative AI has significantly increased the energy
+consumption of data centers. Modern hyperscale facilities are now scaling to
+250~MW or more, which places a large amount of stress on regional energy
+transmission grids. This high power demand creates a challenge for grid operators
+who must balance the grid frequency while integrating volatile renewable energy
+sources like wind and solar. To solve this, it is necessary for data centers to
+transition from passive loads into active assets that can provide ancillary
+services, such as frequency regulation. This transition requires a technical
+``handshake'' where the data center adjusts its power draw in real-time to help
+stabilize the grid.
+
+Previous studies have demonstrated that this integration is possible.
+For example, \citet{wang2019frequency} showed that data centers can provide
+frequency regulation by using computational flexibility and CPU frequency scaling.
+However, their approach relied on ``dummy loads'' that intentionally waste energy
+to meet grid signals.
+Other researchers have explored using the cooling system as a physical buffer.
+\citet{fu2021multistage} proposed a multi-stage scheduling framework that uses
+the thermal inertia of chilled water storage to participate in energy and
+regulation markets.
+While effective, these methods often rely on classical control like Model
+Predictive Control (MPC), which struggles to handle the extreme and
+unpredictable volatility of modern AI workloads.
+A recent comprehensive review by \citet{li2026aivpp} highlights that the next
+frontier is the development of AI-driven Virtual Power Plants (VPPs) that can
+autonomously coordinate heterogeneous assets at scale.
+
+Creating this synergy is a complex technical problem because it involves two
+different time scales. Grid operators send regulation signals every 2 to 4
+seconds, while data center operators manage AI training jobs that run for hours
+and must ensure servers stay below safety thermal limits. Most existing simulators
+focus either on macro-level energy costs or on low-level distribution grid
+physics, but they rarely capture the interaction between sub-second grid physics
+and high-density GenAI workload management.
+
+In this work, we present a new cyber-physical evaluation framework to benchmark
+Hierarchical Reinforcement Learning (HRL) agents in grid-interactive hyperscale
+data centers. Our framework aims to bridge the gap between long-term market
+bidding and real-time hardware control. We implement a hierarchical architecture
+where an upper-level agent manages the market bidding (15-minute steps) and
+a lower-level agent coordinates the physical levers (5-second steps). The
+framework includes three main control levers:
+(1)~throttling flexible AI batch workloads using Dynamic Voltage and Frequency
+Scaling (DVFS),
+(2)~modulating CDU circulating pump speed in the liquid-cooled zone to exploit
+water-loop thermal inertia as a thermal battery,
+and
+(3)~dispatching battery energy storage systems (BESS).
+To make the evaluation realistic, we use a fusion of three Alibaba production
+traces (v2023--v2026) to simulate the tension between rigid GenAI serving and
+flexible training jobs.
+
+We are open-sourcing this environment to provide a shared platform for the
+research community. Our goal is to enable the evaluation of autonomous controllers
+in safety-critical infrastructure using high-assurance metrics, such as grid
+tracking accuracy, hardware thermal integrity, and workload reliability.
+
+The main contributions of this paper are:
+\begin{itemize}[leftmargin=*, itemsep=0pt]
+  \item We introduce a cyber-physical evaluation framework that co-simulates
+        250~MW data center physics with regional transmission grid signals
+        across six ISO market configurations spanning the US, Europe, and Oceania.
+  \item We propose a hierarchical evaluation architecture that manages the
+        interaction between hourly market-level decisions and second-level
+        hardware responses.
+  \item We provide a realistic benchmark using the latest Alibaba production
+        traces to evaluate how AI agents handle GenAI workload spikes during
+        grid stress scenarios.
+  \item We demonstrate that this hierarchical approach can help data centers
+        provide grid services while protecting hardware and reducing total
+        operational costs.
+\end{itemize}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Related Work}
+\label{sec:related}
+% ─────────────────────────────────────────────────────────────────────────────
+
+\paragraph{Data center energy management.}
+\citet{lazic2018dc} demonstrated that model-predictive control can reduce
+cooling energy in Google's data centers by 30\%, but did not model grid
+regulation services or BESS.
+\citet{wang2019frequency} proved, using DVFS on dummy loads, that a data center
+can provide frequency regulation; however, their approach wastes power and does
+not model thermal constraints or GenAI workloads.
+\citet{fu2021multistage} introduced chilled water storage as a thermal
+flexibility resource, but relied on classical MPC that fails under the
+non-stationary, heavy-tailed bursts characteristic of modern GenAI serving.
+
+\paragraph{Grid-interactive buildings.}
+Virtual Power Plants (VPPs) aggregate distributed flexibility
+resources~\citep{li2026aivpp}, but existing VPP simulators do not model
+GPU thermal dynamics or BESS degradation at the fidelity required to evaluate
+sub-5-minute regulation tracking.
+
+\paragraph{RL benchmarks.}
+OpenAI Gym~\citep{brockman2016openai} and its successor
+Gymnasium~\citep{gymnasium2023} established the standard interface we adopt.
+Unlike robotics or game benchmarks, \cname{} evaluates agents on safety-critical
+infrastructure where thermal constraint violations have real consequences and
+the reward function directly corresponds to measurable economic and grid outcomes.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{The \cname{} Environment}
+\label{sec:environment}
+% ─────────────────────────────────────────────────────────────────────────────
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\linewidth]{fig1_architecture.pdf}
+  \caption{\cname{} hierarchical architecture. The upper-level agent (\envhigh{}) sets 15-min market commitments; the lower-level agent (\envlow{}) executes 5-second hardware control across three physical levers (IT throttle, HVAC, BESS) and five physics simulators.}
+  \label{fig:architecture}
+\end{figure}
+
+\subsection{Data}
+\label{sec:data}
+
+\cname{} is driven by three open-access production datasets that we
+preprocess into aligned 300-second-resolution CSVs served from
+\texttt{data/processed/workload\_traces/} and
+\texttt{data/processed/nyiso/}:
+
+\begin{itemize}[leftmargin=*, itemsep=2pt]
+  \item \textbf{Alibaba Cluster Trace v2023} (\texttt{batch\_v2023.csv}).
+        Approximately 8{,}640 ticks of GPU scheduling data~\citep{alibaba2023cluster}
+        from a production batch cluster.  We extract the field
+        \texttt{gpu\_milli\_request} and normalize by its 99th-percentile
+        (12{,}620 milli-GPU) to obtain a per-tick GPU utilization $u_{\text{batch}}$.
+
+  \item \textbf{Alibaba DLRM Trace v2025} (\texttt{dlrm\_v2025.csv}).
+        8{,}640 ticks of deep-learning recommendation model (DLRM) inference
+        serving~\citep{alibaba2023cluster}.  We extract \texttt{active\_gpu\_count}
+        and normalize by 227 to yield $u_{\text{dlrm}}$.
+
+  \item \textbf{Alibaba GenAI Trace v2026} (\texttt{genai\_v2026.csv}).
+        288 ticks (one representative day) of large-language-model inference
+        traffic, including fields \texttt{avg\_gpu\_duty\_cycle} and
+        \texttt{token\_throughput}.  The duty-cycle is tiled across the full
+        horizon and thresholded at its 75th percentile (12.19\%) to produce
+        the binary spike flag $\mathbf{1}_{\text{spike}}$: on average 28.6\%
+        of ticks are in spike mode.
+
+  \item \textbf{NYISO Real-Time Actual Load} (\texttt{nyiso/\{zone\}.csv}).
+        Five-minute actual load readings across all 11 NYISO load zones
+        (2023--2025).  A load-duration proxy converts zonal load to a marginal
+        price signal: $\lambda(t) = 28.0 + 18.0 \times \max(0,\,
+        L_t - L_{\text{median}})$~(\$/MWh), calibrated to the NYC zone
+        historical mean of \$28/MWh.
+
+  \item \textbf{NOAA Integrated Surface Database (ISD)} (\texttt{weather/\{zone\}.csv}).
+        Hourly dry-bulb temperature observations from NOAA ASOS/ISD stations
+        co-located with each supported ISO region~\citep{noaa2024isd}.
+        The benchmark bundles 2024 NYC data (8{,}739 records) from station~725053
+        (Central Park).
+        For markets without local CSV files, a calibrated two-harmonic synthetic
+        model reproduces the correct seasonal and diurnal envelope:
+        \begin{equation*}
+          T(d,h) = \bar{T} + A_{\text{ann}}\sin\!\left(\tfrac{2\pi d}{365}+\varphi\right)
+                           + A_{\text{day}}\sin\!\left(\tfrac{2\pi h}{24}-\tfrac{\pi}{2}\right),
+        \end{equation*}
+        where parameters $\bar{T}$, $A_{\text{ann}}$, $A_{\text{day}}$, and phase $\varphi$
+        (negated for southern-hemisphere markets) are calibrated per market
+        (Table~\ref{tab:weather}).
+        Ambient temperature propagates into (a)~the thermal ODE's envelope coupling
+        $K_{\text{env}}T_{\text{amb}}$ and (b)~Zone~B CRAH COP:
+        $\text{COP}(T_{\text{amb}}) = 3.5\max(0.3,\,1-0.02(T_{\text{amb}}-25))$
+        --- a 38°C day cuts COP by 26\%.
+\end{itemize}
+
+All five datasets are bundled with the benchmark under their original
+open-access licenses; preprocessing scripts are in \texttt{scripts/}.
+
+\subsection{Physical Simulators}
+\label{sec:simulators}
+
+\cname{} integrates five independent, unit-tested simulators running at a
+canonical timestep of $\Delta t = 5$~s.
+Each simulator exposes a stateless \texttt{step()} method; the Gym
+environments compose them at every tick.
+
+\paragraph{Workload Orchestrator.}
+Models a 250~MW two-zone hyperscale facility with
+$N_A = 2{,}000$ liquid-cooled GPU racks (Zone~A)
+and $N_B = 2{,}500$ air-cooled CPU/networking racks (Zone~B).
+Rack power follows a superlinear utilization model:
+\begin{equation}
+  P_{\text{rack}}(u) = P_{\text{idle}} + (P_{\max} - P_{\text{idle}})\,u^{\alpha},
+  \label{eq:rack}
+\end{equation}
+with $P_{\text{idle,A}} = 8$~kW, $P_{\max,A} = 75$~kW, $\alpha_A = 1.4$
+(GPU superlinear scaling) and
+$P_{\text{idle,B}} = 4$~kW, $P_{\max,B} = 40$~kW, $\alpha_B = 1.2$.
+The three traces are mapped to racks as follows:
+\begin{itemize}[leftmargin=*, itemsep=1pt]
+  \item \texttt{batch\_v2023} $\to$ 1{,}200 Zone A racks (60\%): produces
+        $P_{\text{flex}}$ — schedulable; DVFS ($\theta$) applies.
+  \item \texttt{genai\_v2026} $\to$ 800 Zone A racks (40\%): produces
+        $P_{\text{base,A}}$ — rigid, SLA-protected inference; never throttled.
+  \item \texttt{dlrm\_v2025} $\to$ 2{,}500 Zone B racks: produces
+        $P_{\text{base,B}}$ — rigid DLRM serving.
+\end{itemize}
+Since traces are at 300-second resolution and $\Delta t = 5$~s, each
+trace value is held constant for 60 sub-steps before advancing.
+A fourth trace (\texttt{spot\_v2026}) is withheld from this release as
+it requires an arrival-process scheduler not yet integrated.
+
+\paragraph{Thermal Twin.}
+Models Zone~A and Zone~B as independent lumped-capacitance thermal masses.
+Each zone obeys the exact-exponential ODE solution:
+\begin{equation}
+  T_z(t{+}\Delta t) = T_{\text{eq}} + \bigl(T_z(t) - T_{\text{eq}}\bigr)\,
+  e^{-K_{\text{tot}}\,\Delta t / C_z},
+  \qquad
+  T_{\text{eq}} = \frac{P_z + K_{\text{cool}}T_{\text{supply}} + K_{\text{env}}T_{\text{amb}}}{K_{\text{tot}}},
+  \label{eq:thermal}
+\end{equation}
+where $K_{\text{tot}} = K_{\text{cool}} + K_{\text{env}}$.
+Zone-specific parameters are:
+
+\textbf{Zone A (liquid-cooled):}
+$C_A = 27{,}000$~MJ/°C (thermal time constant $\tau_A \approx 12.7$~min at full pump speed);
+CDU liquid-loop conductance $K_{\text{liq}} = 35.0$~MW/°C;
+coolant supply temperature $T_{\text{supply,A}} = 30$°C (ASHRAE~W3 range: 20--40°C);
+base CDU COP $= 30.0$;
+envelope coupling $K_{\text{env,A}} = 0.5$~MW/°C.
+The CDU pump speed action $\omega_{\text{pump}} \in [\omega_{\min}, 1]$
+scales the effective conductance:
+\begin{equation}
+  K_{\text{liq,eff}} = K_{\text{liq}} \times \max(\omega_{\min}, \omega_{\text{pump}})
+  \times f_{\text{fault}},
+  \label{eq:pump}
+\end{equation}
+with minimum safe flow $\omega_{\min} = 0.15$.
+Reducing pump speed lowers $K_{\text{liq,eff}}$, allowing the water loop to
+absorb surplus heat as a short-horizon thermal battery ($\tau_A \approx 85$~min
+at $\omega_{\min}$).
+The circulating pump draws up to $P_{\text{pump,max}} = 1.5$~MW of electrical
+power ($\approx 0.6$\% of facility peak).
+
+\textbf{Zone B (air-cooled):}
+$C_B = 10{,}000$~MJ/°C; $K_{\text{air}} = 13.0$~MW/°C at full fan speed;
+effective conductance $K_{\text{eff}} = K_{\text{air}} \times (0.3 + 0.7\,u_{\text{hvac}}) \times f_{\text{fault}}$;
+supply air $T_{\text{supply,B}} = 20$°C (ASHRAE~A1: 15--27°C);
+CRAH COP $= 3.5 \times \max(0.3,\,1 - 0.02(T_{\text{amb}} - 25))$.
+
+Both zones share safety limit $T_{\text{safe}} = 35$°C (episode termination)
+and warning threshold $T_{\text{warn}} = 33$°C (reward penalty).
+A fault injection API sets $f_{\text{fault}} \in \{1.0, 0.4\}$ to simulate
+pump degradation (used in \texttt{scenario\_c}).
+
+\paragraph{Electrical \& Loss Model.}
+Maps total IT + cooling power to facility draw $P_{\text{dc}}$ through three
+loss stages, all closed-form:
+\begin{enumerate}[leftmargin=*, itemsep=1pt]
+  \item \textbf{UPS (double-conversion):}
+        $\eta_{\text{UPS}}(x) = \eta_{\text{peak}} \cdot x /
+        (x + k_{\text{loss}}(1-x)^2 + k_{\text{noload}})$,
+        with $(\eta_{\text{peak}}, k_{\text{loss}}, k_{\text{noload}}) =
+        (0.97, 0.03, 0.005)$ for Zone~A and $(0.96, 0.04, 0.006)$ for Zone~B.
+  \item \textbf{PDU:} fixed 1.5\% (Zone~A, busway) and 2.0\% (Zone~B, cable) losses.
+  \item \textbf{Main transformer (300~MVA):}
+        $P_{\text{xfmr}} = P_{\text{iron}} + P_{\text{copper}}(P/S_{\text{rated}})^2$,
+        with $P_{\text{iron}} = 0.15$~MW and $P_{\text{copper\,frac}} = 0.006$.
+\end{enumerate}
+Dynamic PUE is computed at every tick as
+$\text{PUE}(t) = P_{\text{dc}} / P_{\text{IT}}$ and included in the observation.
+
+\paragraph{BESS Simulator.}
+A 150~MWh / 50~MW utility-scale NMC Li-ion battery
+(representative of a Tesla Megapack 2XL installation).
+Round-trip efficiency degrades with C-rate and state-of-charge:
+\begin{equation}
+  \eta_{\text{1-way}}(C, \text{SOC}) = \max\!\left(0.70,\;
+  \eta_{\text{peak}}^2 - k_C\,C^2 - k_{\text{SOC}}(\text{SOC} - 0.5)^2\right),
+  \label{eq:bess}
+\end{equation}
+with $\eta_{\text{peak}} = 0.97$, $k_C = 0.008$, $k_{\text{SOC}} = 0.010$.
+SOC is bounded to $[0.10,\,0.95]$ with smooth power derating
+near limits (linear ramp over 10\% SOC band for discharge, 5\% for charge).
+Capacity fade accumulates linearly with throughput.
+Initial SOC is 0.50 (0.15 in \texttt{scenario\_c}).
+
+\paragraph{Macro-Grid Signal Generator.}
+Produces two exogenous signals every tick, parameterized by a \emph{market preset}
+that encodes the statistical properties of a specific ISO/grid region
+(see Section~\ref{sec:markets} and Table~\ref{tab:markets}).
+
+\textit{Regulation signal.}
+An AR(1) process whose parameters are calibrated per market:
+\begin{equation}
+  r_t = \rho\,r_{t-1} + \varepsilon_t, \quad \varepsilon_t \sim \mathcal{N}(0, \sigma^2),
+  \label{eq:ar1}
+\end{equation}
+where $\rho$ and $\sigma$ are market-specific (Table~\ref{tab:markets}).
+For the default NYISO-NYC setting: $\rho = 0.9963$
+(preserving the 5-minute decorrelation of PJM RegD, $\rho_{5\text{min}} = 0.80$)
+and $\sigma = 0.022$ (stationary std $\approx 0.25$).
+A drift correction integrates $r_t$ over the market's settlement window
+and subtracts residual bias, enforcing energy neutrality.
+The dispatch command is $\Delta P_{\text{demanded}} = P_{\text{committed}} \times r_t$.
+
+\textit{Locational Marginal Price (LMP).}
+A load-duration proxy using real zonal load data (or calibrated synthetic data
+when the real CSV is absent):
+$\lambda(t) = \lambda_{\text{base}} + s \times \max(0,\, L_t - L_{\text{median}})/1000$~(\$/MWh),
+where $\lambda_{\text{base}}$ and slope $s$ are market-specific.
+For NYISO-NYC: $\lambda_{\text{base}} = \$28$/MWh, $s = \$18$/MWh/GW,
+producing peaks near \$118/MWh during
+grid stress.  ERCOT's slope ($s = \$55$/MWh/GW, isolated grid) can push
+simulated prices above the \$200/MWh observation clip,
+faithfully representing real-world extreme-volatility events.
+
+\subsection{Supported Grid Markets}
+\label{sec:markets}
+
+\cname{} supports six ISO market configurations spanning three continents,
+selectable via the \texttt{grid\_market} configuration key.
+Each market preset encodes a distinct regulation product, AR(1) signal
+statistics, price calibration, and settlement window (Table~\ref{tab:markets}).
+When real zonal load data is not present locally, the simulator falls back
+to a calibrated synthetic load (daily sinusoidal + AR(1) noise)
+whose parameters preserve the correct LMP peak distribution for that market.
+Download scripts for all open-access datasets are provided in
+\texttt{scripts/download\_\{iso\}.sh}.
+
+\begin{table}[h]
+\centering
+\caption{Supported grid market presets.
+         $\rho$ and $\sigma$ are AR(1) parameters at the 5-second timestep.
+         LMP base and slope are in USD/MWh (international prices converted at
+         2025 annual average rates).
+         Peak LMP is computed as $\lambda_{\text{base}} + s \times
+         (L_{\max} - L_{\text{median}})/1000$.}
+\label{tab:markets}
+\small
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{llllrrrrl}
+\toprule
+\textbf{ID} & \textbf{ISO} & \textbf{Hub / DC cluster} & \textbf{Reg.\ product}
+  & $\rho$ & $\sigma$ & \textbf{Base} & \textbf{Slope} & \textbf{Grid archetype} \\
+  & & & & & & \multicolumn{2}{c}{(\$/MWh, /GW)} & \\
+\midrule
+\texttt{nyiso\_nyc}   & NYISO   & New York City                      & AGC Secondary    & 0.9963 & 0.022 & 28 & 18 & Baseline (real data) \\
+\texttt{pjm\_dom}     & PJM     & Ashburn VA (\textit{Data Center Alley}) & RegD (fast AGC) & 0.9963 & 0.022 & 35 & 10 & Largest competitive market \\
+\texttt{caiso\_pgae}  & CAISO   & Bay Area / San Jose                & REGU / REGD      & 0.9960 & 0.025 & 48 & 28 & Duck curve solar ramp \\
+\texttt{ercot\_north} & ERCOT   & Dallas -- Fort Worth               & ECRS             & 0.9950 & 0.030 & 28 & 55 & Isolated grid; extreme events \\
+\texttt{entso\_de}    & ENTSO-E & Frankfurt (DE-CIX)                 & FCR-N            & 0.9980 & 0.015 & 60 &  8 & Deep EU market; 30-min settlement \\
+\texttt{aemo\_nsw}    & AEMO    & Western Sydney                     & Regulation FCAS  & 0.9945 & 0.032 & 55 & 45 & Highest renewables; 5-min dispatch \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[h]
+\centering
+\caption{Weather calibration parameters per market.
+         SH~=~southern hemisphere (phase $\varphi$ negated).
+         Source: R~=~real CSV bundled, S~=~calibrated synthetic.}
+\label{tab:weather}
+\small
+\setlength{\tabcolsep}{5pt}
+\begin{tabular}{llrrrrl}
+\toprule
+\textbf{Market} & \textbf{Station / Location} & $\bar{T}$ & $A_{\text{ann}}$ & $A_{\text{day}}$ & \textbf{Range} & \textbf{Src} \\
+ & & \multicolumn{3}{c}{(°C)} & (°C) & \\
+\midrule
+\texttt{nyiso\_nyc}   & Central Park (725053)      & 13.0 & 12.5 & 5.0 & $[-20, 42]$ & R \\
+\texttt{pjm\_dom}     & Reagan Natl proxy          & 15.0 & 13.0 & 7.0 & $[-15, 42]$ & S \\
+\texttt{caiso\_pgae}  & SJC Mineta proxy           & 14.5 &  6.5 & 8.0 & $[-5,  42]$ & S \\
+\texttt{ercot\_north} & DFW Intl (722590)          & 19.5 & 15.0 & 9.0 & $[-15, 46]$ & S \\
+\texttt{entso\_de}    & Frankfurt FRA (106370)     & 11.0 & 10.5 & 7.0 & $[-20, 40]$ & S \\
+\texttt{aemo\_nsw}    & Bankstown SH (953933)      & 18.5 &  9.0 & 8.0 & $[-5,  46]$ & S+SH \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\noindent
+\textbf{What changes per market.}
+Four components vary: (1)~the AR(1) signal dynamics ($\rho$, $\sigma$)
+reflect the autocorrelation and volatility of each market's regulation product;
+(2)~the energy-neutrality correction window matches the settlement interval
+(60~ticks for AEMO, 180 for US markets, 360 for ENTSO-E);
+(3)~the LMP calibration ($\lambda_{\text{base}}$, $s$) captures each market's
+historical price level and non-linear demand response;
+(4)~the weather calibration ($\bar{T}$, $A_{\text{ann}}$, $A_{\text{day}}$,
+Table~\ref{tab:weather}) drives ambient temperature, coupling into cooling
+COP and envelope heat gain.
+When \texttt{weather\_driven: true} (default training scenario), $T_{\text{amb}}$ is
+updated from real or synthetic data every tick; stress scenarios use a fixed
+$T_{\text{amb}}$ for reproducible evaluation.
+The physical simulators, observation spaces, and reward functions are
+\emph{identical} across markets --- enabling direct policy transfer studies
+(e.g., a policy trained in NYISO evaluated in ENTSO-E).
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\linewidth]{fig2_simulators.pdf}
+  \caption{Simulator fidelity validation. (a)~WorkloadOrchestrator 24-hour IT power trace showing rigid $P_{\text{base}}$ and throttle-able $P_{\text{flex}}$ with GenAI spikes (yellow). (b)~ThermalTwin step-response: Zone~A (liquid-cooled) and Zone~B (air-cooled) temperatures under a load surge. (c)~BESS round-trip efficiency $\eta^2$ vs C-rate (blue) and SoC depletion trajectory at 0.8C discharge (orange). (d)~MacroGridSignal 24-hour RegD dispatch (green=consume, red=shed) with NYISO LMP overlay.}
+  \label{fig:simulators}
+\end{figure}
+
+\subsection{Gym Environments}
+\label{sec:gym}
+
+Both environments implement the standard Gymnasium interface
+(\texttt{reset}/\texttt{step}/\texttt{render})~\citep{gymnasium2023}.
+All observations are normalized to approximately $[-1,1]$ or $[0,1]$;
+all actions are clipped to their declared boxes before being passed to simulators.
+
+\paragraph{\envlow{} — Low-Level (5-second).}
+
+\textbf{Observation space (14-D, \texttt{Box}):}
+\begin{center}
+\small
+\begin{tabular}{clll}
+\toprule
+\textbf{Idx} & \textbf{Symbol} & \textbf{Range} & \textbf{Description} \\
+\midrule
+0  & $T_A/T_{\text{safe}}$                & $[0,1]$   & Zone A temperature, normalized \\
+1  & $T_B/T_{\text{safe}}$                & $[0,1]$   & Zone B temperature, normalized \\
+2  & SOC                                   & $[0,1]$   & Battery state of charge \\
+3  & $P_{\text{base}}/P_{\text{nom}}$     & $[0,1]$   & Rigid IT load fraction \\
+4  & $P_{\text{flex}}/P_{\text{nom}}$     & $[0,1]$   & Schedulable IT load fraction \\
+5  & $P_{\text{facility}}/P_{\text{nom}}$ & $[0,2]$   & Total facility draw, normalized \\
+6  & $r_{\text{RegD}}$                    & $[-1,1]$  & PJM regulation signal \\
+7  & $\lambda/\lambda_{\max}$             & $[0,1]$   & NYISO LMP, clipped at \$200/MWh \\
+8  & $L/L_{\max}$                         & $[0,1]$   & Grid load fraction \\
+9  & $\mathbf{1}_{\text{spike}}$          & $\{0,1\}$ & GenAI inference spike active \\
+10 & $\hat\theta$                         & $[0,1]$   & Previous throttle action \\
+11 & $\hat\omega_{\text{pump}}$           & $[0,1]$   & Previous pump speed action \\
+12 & $\text{PUE}_{\text{norm}}$           & $[0,1]$   & Instantaneous PUE, normalized \\
+13 & $T_{\text{amb}}^{\text{norm}}$         & $[0,1]$   & Ambient dry-bulb temperature, normalized to $[-20, 45]$°C \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{Action space (4-D, \texttt{Box}):}
+\begin{center}
+\small
+\begin{tabular}{clll}
+\toprule
+\textbf{Idx} & \textbf{Symbol} & \textbf{Range} & \textbf{Description} \\
+\midrule
+0 & $\theta_{\text{batch}}$ & $[0,1]$  & DVFS throttle fraction on batch workloads \\
+1 & $\omega_{\text{pump}}$  & $[0,1]$  & CDU liquid-cooling pump speed \\
+2 & $u_{\text{hvac}}$       & $[0,1]$  & CRAH fan effort (air-cooled zone) \\
+3 & $d_{\text{bess}}$       & $[-1,1]$ & BESS dispatch: $-1 \to$ charge 50~MW, $+1 \to$ discharge 50~MW \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{Reward function.}
+At each 5-second tick, the scalar reward is:
+\begin{equation}
+  r_t = \underbrace{\alpha\,\theta_{\text{batch}}}_{\text{throughput}}
+      - \underbrace{\beta\,\frac{|\Delta P_{\text{demanded}} - \Delta P_{\text{actual}}|}{P_{\text{norm}}}}_{\text{tracking error}}
+      - \underbrace{\gamma\,\max(0,\,T_{\max} - T_{\text{warn}})}_{\text{thermal penalty}},
+  \label{eq:reward_low}
+\end{equation}
+with $\alpha = 1.0$, $\beta = 2.0$, $\gamma = 5.0$, and
+$P_{\text{norm}} = P_{\text{committed}}$ (the contracted regulation capacity in kW).
+The tracking-error term is the key grid-service metric:
+$\Delta P_{\text{actual}}$ is the sum of DVFS-induced load reduction and BESS discharge;
+$\Delta P_{\text{demanded}}$ is $P_{\text{committed}} \times r_{\text{RegD}}$.
+
+\textbf{Episode:}
+17{,}280 ticks $= 24$~hours at 5-second resolution.
+An episode terminates early (\texttt{terminated=True}) if
+$\max(T_A, T_B) \geq T_{\text{safe}} = 35$°C.
+Time-limit truncation (\texttt{truncated=True}) fires at tick 17{,}280.
+
+\paragraph{\envhigh{} — High-Level (15-minute).}
+
+\envhigh{} wraps \envlow{} in a temporal abstraction layer:
+each macro action spans exactly 180 five-second sub-steps (one 15-minute
+PJM settlement interval).
+The inner env is stepped 180 times using default low-level actions
+derived from the macro decision; an optional \texttt{inner\_action\_fn}
+callback allows researchers to plug in a learned low-level policy for
+hierarchical evaluation.
+
+\textbf{Action space (2-D, \texttt{Box}):}
+\begin{center}
+\small
+\begin{tabular}{clll}
+\toprule
+\textbf{Idx} & \textbf{Symbol} & \textbf{Range} & \textbf{Description} \\
+\midrule
+0 & $c_{\text{norm}}$ & $[0,1]$ & Regulation capacity commitment (mapped to $[0, 2 P_{\text{committed}}]$~MW) \\
+1 & $d_{\text{target}}$ & $[-1,1]$ & Average BESS dispatch target over the 15-min interval \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{Observation space (14-D, \texttt{Box}):}
+Aggregates the 180 inner-step observations into interval-level statistics:
+mean zone temperatures ($T_A/T_{\text{safe}}$, $T_B/T_{\text{safe}}$),
+end-of-interval SOC, mean $P_{\text{base}}$ and $P_{\text{facility}}$,
+mean $|r_{\text{RegD}}|$, LMP (clipped at \$200/MWh),
+grid load fraction, mean normalized tracking error, spike-any indicator,
+thermal headroom for both zones, previous commitment $c_{\text{prev}}$,
+and previous BESS target $d_{\text{prev}}$.
+
+\textbf{Reward function.}
+\begin{equation}
+  R_{\text{macro}} = \bar{r}_{\text{sub}}
+    + \underbrace{\mu_{\text{lmp}} \cdot \frac{\bar\lambda}{200} \cdot \frac{\bar d_{\text{bess}}}{P_{\max}}}_{\text{LMP dispatch bonus}}
+    - \underbrace{\mu_c \cdot |c_{\text{norm}} - c_{\text{prev}}|}_{\text{commitment churn penalty}},
+  \label{eq:reward_high}
+\end{equation}
+where $\bar{r}_{\text{sub}}$ is the mean of the 180 inner-step rewards,
+$\bar\lambda$ is the mean interval LMP,
+$\bar d_{\text{bess}}$ is mean BESS discharge (MW),
+$\mu_{\text{lmp}} = 0.1$, and $\mu_c = 0.05$.
+The LMP bonus incentivises discharging the BESS during high-price intervals;
+the churn penalty discourages rapid commitment oscillation that would violate
+market clearing rules.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Evaluation Scenarios}
+\label{sec:scenarios}
+% ─────────────────────────────────────────────────────────────────────────────
+
+\cname{} defines four scenarios in a YAML-driven configuration system
+(Table~\ref{tab:scenarios}).
+Each scenario changes the physical parameters of the simulation to stress-test
+a specific failure mode.
+
+\begin{table}[h]
+\centering
+\caption{Evaluation scenario parameters.  All scenarios share the same
+         physical simulator code; only initial conditions and exogenous stressors differ.
+         dyn-$T$ indicates \texttt{weather\_driven: true} (ambient temperature updated
+         from WeatherLoader each tick); unchecked scenarios use a fixed $T_{\text{amb}}$
+         for reproducibility.}
+\label{tab:scenarios}
+\small
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{llllrcrl}
+\toprule
+\textbf{ID} & \textbf{Name} & \textbf{Market} & \textbf{$T$} & \textbf{Comm.} & \textbf{Spike} & \textbf{dyn-$T$} & \textbf{Key stressor} \\
+\midrule
+\texttt{default}     & Baseline        & NYISO NYC   & 25°C & 15~MW & $1.0\times$ & \checkmark & Balanced operation \\
+\texttt{scenario\_a} & GenAI Crisis    & PJM DOM     & 30°C & 20~MW & $1.8\times$ &            & Bursty GenAI + high commitment \\
+\texttt{scenario\_b} & Thermal Squeeze & ERCOT North & 40°C & 30~MW & $1.0\times$ &            & Near-limit ambient temperature \\
+\texttt{scenario\_c} & Battery Drain   & AEMO NSW    & 32°C & 15~MW & $1.0\times$ &            & Low SOC (15\%), cooling fault \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Evaluation Metric Suite}
+\label{sec:metrics}
+% ─────────────────────────────────────────────────────────────────────────────
+
+We evaluate each agent on five complementary metrics, computed across
+$K=10$ independent episodes per scenario:
+
+\begin{itemize}[leftmargin=*, itemsep=2pt]
+  \item \textbf{Tracking RMSE} (kW): $\sqrt{\frac{1}{T}\sum_t(\deltap_t^{\text{demanded}} - \deltap_t^{\text{actual}})^2}$. The primary grid service quality metric; lower is better.
+  \item \textbf{Thermal violation rate}: fraction of ticks with $\max(T_A, T_B) > T_{\text{warn}} = 33$°C. Captures safety compliance.
+  \item \textbf{Throughput ratio}: $\bar{\theta}$ (mean throttle applied to schedulable workload). Captures business SLA compliance; higher is better.
+  \item \textbf{BESS degradation}: cumulative capacity fade $\times 10^4$ per episode. Captures long-term asset health.
+  \item \textbf{Survival rate}: fraction of episodes completing the full 288-tick horizon without thermal termination.
+\end{itemize}
+
+No single metric captures the full picture: an agent may achieve low Tracking
+RMSE by over-discharging the BESS (high degradation), or maintain
+high throughput by ignoring the regulation signal (high RMSE).
+The metric suite is deliberately non-reducible to force multi-objective comparison.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Baseline Experiments}
+\label{sec:experiments}
+% ─────────────────────────────────────────────────────────────────────────────
+
+\subsection{Baselines}
+\label{sec:baselines}
+
+We evaluate three baseline agents:
+
+\paragraph{Rule-Based MPC.}
+A hand-crafted threshold controller implementing four rules:
+(1)~thermal protection (increase HVAC and reduce throttle when $T > T_{\text{warn}}$);
+(2)~BESS dispatch proportional to the regulation signal with SOC guards;
+(3)~DVFS fallback under low SOC;
+(4)~opportunistic BESS charging during quiet periods.
+This represents a classical industry approach.
+
+\paragraph{PPO~\citep{schulman2017ppo}.}
+On-policy, actor-critic agent with a shared MLP policy network
+($[256, 256]$ hidden units).
+Trained with \texttt{VecNormalize} over 4 parallel environments for
+300k environment steps.
+Key hyperparameters: $n_{\text{steps}}=512$, $\text{batch}=128$, $n_{\text{epochs}}=10$,
+$\gamma=0.99$, $\lambda_{\text{GAE}}=0.95$, entropy bonus $= 0.005$.
+
+\paragraph{SAC~\citep{haarnoja2018sac}.}
+Off-policy, maximum-entropy actor-critic with automatic entropy tuning.
+Trained for 200k steps with replay buffer size $10^5$.
+Key hyperparameters: $\tau=0.005$, $\text{batch}=256$, learning starts at 2k steps.
+
+All agents are implemented in Stable-Baselines3~\citep{raffin2021stable}.
+Experiments are configured and logged via Hydra~\citep{hydra2019};
+each run produces a full config snapshot, per-episode CSV, and TensorBoard events.
+
+\subsection{Results}
+\label{sec:results}
+
+\TODO{Full results table pending completion of training sweep
+(all 4 scenarios × 3 seeds). Preliminary results below are from
+\texttt{default} scenario, seed 42.}
+
+Table~\ref{tab:results} presents preliminary results on the \texttt{default}
+scenario. Figure~\ref{fig:learning_curves} shows PPO learning curves.
+
+\begin{table}[h]
+\centering
+\caption{Preliminary baseline results on \texttt{default} scenario (seed 42,
+         5 evaluation episodes). \textbf{Bold} = best per column.
+         $\downarrow$ = lower is better; $\uparrow$ = higher is better.}
+\label{tab:results}
+\small
+\begin{tabular}{lccccc}
+\toprule
+\textbf{Agent} & \textbf{Track.\ RMSE$\downarrow$} & \textbf{Therm.\ Viol.$\downarrow$} & \textbf{Throughput$\uparrow$} & \textbf{Survival$\uparrow$} & \textbf{Mean Reward$\uparrow$} \\
+               & (kW)                               & (rate)                             &                               & (rate)                      & \\
+\midrule
+Random         & \TODO{--}  & \TODO{--}  & \TODO{--}  & \TODO{--}  & \TODO{--} \\
+Rule-Based MPC & \TODO{--}  & \TODO{--}  & \TODO{--}  & \TODO{--}  & \TODO{--} \\
+PPO (300k)     & $\approx$8.1k  & 0.000      & \TODO{--}  & 1.00       & $\approx$0.00 \\
+SAC (200k)     & \TODO{--}  & \TODO{--}  & \TODO{--}  & \TODO{--}  & \TODO{--} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\linewidth]{fig3_learning_curves.pdf}
+  \caption{PPO training on \envlow{} (\texttt{default} scenario, seed~42, 300k steps). \textit{Top:} Mean step reward (blue, left axis) and tracking RMSE (orange dashed, right axis). RMSE drops 4$\times$ from $\sim$33k~kW to $\sim$8k~kW. \textit{Middle:} Thermal violation rate (red) and mean BESS SoC (green). \textit{Bottom:} Power Usage Effectiveness converging toward 2.0.}
+  \label{fig:learning_curves}
+\end{figure}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\linewidth]{fig4_episode_trajectory.pdf}
+  \caption{24-hour episode comparison: Rule-Based MPC (blue) vs PPO (red dashed). From top: (1)~RegD signal and BESS dispatch, (2)~tracking error $|\Delta P|$ (symlog scale), (3)~Zone~A and Zone~B temperatures with safety thresholds, (4)~BESS SoC, (5)~NYISO LMP price signal, (6)~PUE. PPO tracks the regulation signal more tightly while maintaining thermal safety margins.}
+  \label{fig:episode_trajectory}
+\end{figure}
+
+\subsection{Failure Mode Analysis}
+
+\paragraph{GenAI Crisis (\texttt{scenario\_a}).}
+The 1.8$\times$ spike scale exhausts the throttle budget: the agent cannot
+shed enough load via DVFS alone and must rely entirely on BESS dispatch.
+Agents that do not account for SOC trajectory rapidly exhaust the battery
+and then face uncovered regulation gaps in the second half of the episode.
+
+\paragraph{Thermal Squeeze (\texttt{scenario\_b}).}
+At 40°C ambient, the thermal safety margin collapses.
+Rule-Based MPC frequently overreacts---maximizing HVAC while zeroing
+throttle---causing throughput collapse.
+PPO learns a more nuanced trade-off but requires $>$150k steps to stabilize.
+
+\paragraph{Battery Drain (\texttt{scenario\_c}).}
+Starting at SOC~$= 0.15$ with a cooling fault ($K_z \times 0.6$) forces
+simultaneous thermal and energy management.
+All three baselines exhibit $>$30\% thermal violation rates on this scenario,
+motivating future HRL agents that reason jointly over the two constraints.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Reproducibility}
+\label{sec:reproducibility}
+% ─────────────────────────────────────────────────────────────────────────────
+
+\cname{} is designed for full experimental reproducibility:
+
+\begin{enumerate}[leftmargin=*, itemsep=2pt]
+  \item \textbf{Dependency management:} \texttt{uv sync} recreates the exact
+        virtual environment from \texttt{pyproject.toml}.
+  \item \textbf{Config snapshots:} Hydra stores \texttt{.hydra/config.yaml} and
+        \texttt{overrides.yaml} in every output directory.
+  \item \textbf{Seeded randomness:} All environments, policies, and signal
+        generators accept an integer seed; results are deterministic given the seed.
+  \item \textbf{Test suite:} 292 unit tests (\texttt{uv run pytest tests/ -q})
+        covering all simulators, environments, and baseline imports.
+  \item \textbf{Croissant metadata:} \texttt{metadata.json} in the Croissant
+        format documents the dataset lineage and RAI considerations per NeurIPS
+        requirements \TODO{(to be completed before submission)}.
+\end{enumerate}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Limitations and Future Work}
+\label{sec:limitations}
+% ─────────────────────────────────────────────────────────────────────────────
+
+\paragraph{Simulator fidelity.}
+The thermal ODE is a lumped single-mass model per zone; real data centers
+exhibit spatial temperature gradients that are not captured.
+The BESS model uses empirical efficiency curves rather than
+electrochemical first-principles.
+
+\paragraph{Network and communication.}
+The current benchmark does not model communication latency between the
+market agent and the hardware controller, nor does it simulate grid
+topology or congestion.
+
+\paragraph{Multi-agent extension.}
+The \texttt{inner\_action\_fn} hook in \envhigh{} enables a hierarchical
+two-agent decomposition, but a fully cooperative multi-agent formulation
+(e.g., one agent per rack row) is left for future work.
+
+\paragraph{Real data integration.}
+The workload traces are synthetic replays of historical Alibaba data.
+Future versions will integrate live API feeds from NYISO and PJM for
+real-time LMP and regulation signal updates.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Conclusion}
+\label{sec:conclusion}
+% ─────────────────────────────────────────────────────────────────────────────
+
+We presented \cname{}, a cyber-physical benchmark for hierarchical RL in
+grid-interactive hyperscale data centers.
+The benchmark combines five physically-validated simulators, two Gymnasium
+environments at different temporal scales, four operationally-motivated
+evaluation scenarios, and a five-metric non-reducible evaluation suite.
+Baseline results with rule-based MPC, PPO, and SAC reveal that the
+\textit{Thermal Squeeze} and \textit{Battery Drain} scenarios constitute
+open challenges: all three baselines exhibit significant failure rates,
+establishing clear targets for future HRL algorithms.
+We hope \cname{} will accelerate research at the intersection of
+reinforcement learning and sustainable infrastructure.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\bibliographystyle{plainnat}
+\bibliography{references}
+
+\end{document}

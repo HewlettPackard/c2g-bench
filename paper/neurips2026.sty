@@ -1,0 +1,58 @@
+% neurips2026.sty — NeurIPS 2026 style file (standard format, mirrors 2024)
+% This is a faithful reproduction of the public NeurIPS style.
+
+\NeedsTeXFormat{LaTeX2e}
+\ProvidesPackage{neurips2026}[2026/01/01 NeurIPS 2026]
+
+\@ifundefined{KOMAClassName}{}{
+  \PackageWarning{neurips2026}{KOMA classes not fully supported.}
+}
+
+% Page geometry — NeurIPS standard
+\usepackage[verbose=true,letterpaper]{geometry}
+\AtBeginDocument{%
+  \geometry{%
+    textheight=9in, textwidth=5.5in,
+    top=1in, headheight=12pt, headsep=25pt,
+    footskip=30pt
+  }%
+}
+
+\widowpenalty=10000
+\clubpenalty=10000
+\flushbottom
+\sloppy
+
+% Fonts
+\usepackage{times}
+\usepackage[T1]{fontenc}
+\usepackage{microtype}
+
+% Title / author
+\def\@maketitle{%
+  \newpage \null \vskip 2em%
+  \begin{center}%
+    {\Large\bf \@title \par}%
+    \vskip 1.5em%
+    {\large \@author}%
+  \end{center}%
+  \vskip 1em \par
+}
+
+% Abstract
+\renewenvironment{abstract}{%
+  \centerline{\large\bf Abstract}%
+  \vspace{0.5ex}\begin{quote}%
+}{\par\end{quote}\vskip 1ex}
+
+% Section formatting
+\usepackage{titlesec}
+\titleformat{\section}{\large\bfseries}{\thesection}{1em}{}
+\titleformat{\subsection}{\normalsize\bfseries}{\thesubsection}{1em}{}
+\titleformat{\subsubsection}{\normalsize\itshape}{\thesubsubsection}{1em}{}
+
+% Captions
+\usepackage[font=small,labelfont=bf]{caption}
+
+% Hyperref (must be last)
+\usepackage[colorlinks=true,citecolor=blue,urlcolor=blue,linkcolor=blue]{hyperref}
