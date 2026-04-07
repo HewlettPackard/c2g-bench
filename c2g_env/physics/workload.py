@@ -101,12 +101,14 @@ class WorkloadState:
     p_base_kw:      float   # Rigid IT load: GenAI (Zone A) + DLRM (Zone B)  [kW]
     p_base_a_kw:    float   # Zone A rigid load: GenAI inference racks         [kW]
     p_base_b_kw:    float   # Zone B rigid load: DLRM serving racks            [kW]
-    p_flex_nom_kw:  float   # Schedulable batch load at full throttle          [kW]
-    p_flex_kw:      float   # Batch load after DVFS throttle                   [kW]
+    p_flex_nom_kw:  float   # Schedulable batch arrivals this tick             [kW]
+    p_flex_kw:      float   # Batch load actually served (from queue)          [kW]
     p_total_it_kw:  float   # p_base + p_flex                                  [kW]
     throttle:       float   # DVFS factor applied                           [0, 1]
     is_spike_active: bool   # True when GenAI duty cycle > P75 threshold
     tick:           int     # Current trace tick index
+    backlog_kw:     float   # Deferred batch work remaining in queue           [kW]
+    avg_delay_steps: float  # Little's Law average delay (steps)
 
 
 class WorkloadOrchestrator:
@@ -147,6 +149,11 @@ class WorkloadOrchestrator:
         # Traces are at 300-s resolution; this many env steps share each tick.
         self._steps_per_trace_tick: int = max(1, round(300.0 / dt_seconds))
 
+        # Queue state — initialised here, reset in reset()
+        self._backlog_kw:           float = 0.0  # unsatisfied deferred work  [kW]
+        self._delay_accum_kw_steps: float = 0.0  # Little's Law numerator
+        self._total_served_kw:      float = 0.0  # denominator for avg delay
+
         trace_dir = Path(trace_dir)
         traces = self._load_traces(trace_dir)
 
@@ -182,6 +189,10 @@ class WorkloadOrchestrator:
         self._spike_arr = (genai["avg_gpu_duty_cycle"].values > _GENAI_SPIKE_PCT75)
 
         self._n = n
+        # Hardware ceiling — precomputed once
+        self._p_flex_max_kw: float = float(_rack_power_kw(
+            1.0, _ZONE_A_N_RACKS_FLEX, _P_IDLE_A_KW, _P_MAX_A_KW, _ALPHA_A
+        ))
 
     # ------------------------------------------------------------------
     # Public API
@@ -191,40 +202,72 @@ class WorkloadOrchestrator:
         """
         Return the IT power state for the current tick and advance by one step.
 
+        Queue model
+        -----------
+        Batch work that cannot be served is not dropped — it accumulates in
+        ``_backlog_kw`` and is served in future steps when capacity allows.
+        Service capacity per step = p_flex_max_kw × throttle_batch.
+
+        Average delay is estimated via Little's Law:
+            avg_delay_steps = Σ Q(t) / total_served_kw
+
         Parameters
         ----------
         throttle_batch:
             DVFS factor for schedulable batch jobs in [0, 1].
-            1.0 = full speed (max power); 0.0 = fully suspended.
+            1.0 = full capacity; 0.0 = fully suspended (all work deferred).
         """
         throttle_batch = float(np.clip(throttle_batch, 0.0, 1.0))
         # Trace is at 300-s resolution; hold constant across sub-ticks.
         trace_tick = self._tick // self._steps_per_trace_tick
         idx = trace_tick % self._n
 
-        p_base_a  = float(self._p_base_a_arr[idx])
-        p_base_b  = float(self._p_base_b_arr[idx])
-        p_base    = p_base_a + p_base_b
-        p_flex_n  = float(self._p_flex_arr[idx])
-        p_flex    = p_flex_n * throttle_batch
-        is_spike  = bool(self._spike_arr[idx])
+        p_base_a = float(self._p_base_a_arr[idx])
+        p_base_b = float(self._p_base_b_arr[idx])
+        p_base   = p_base_a + p_base_b
+        arrived  = float(self._p_flex_arr[idx])   # new batch work this tick
+        is_spike = bool(self._spike_arr[idx])
+
+        # --- Queue model -------------------------------------------------
+        # Accumulate pre-service backlog for Little's Law numerator
+        self._delay_accum_kw_steps += self._backlog_kw
+
+        # Enqueue new arrivals
+        self._backlog_kw += arrived
+
+        # Serve up to hardware capacity (DVFS throttle limits throughput)
+        capacity_kw = self._p_flex_max_kw * throttle_batch
+        served_kw   = min(self._backlog_kw, capacity_kw)
+        self._backlog_kw  -= served_kw
+        self._total_served_kw += served_kw
+
+        # Little's Law: avg_delay (steps) = Σ Q(t) / total_served_kw
+        avg_delay_steps = (
+            self._delay_accum_kw_steps / self._total_served_kw
+            if self._total_served_kw > 0.0 else 0.0
+        )
 
         self._tick += 1
         return WorkloadState(
-            p_base_kw      = p_base,
-            p_base_a_kw    = p_base_a,
-            p_base_b_kw    = p_base_b,
-            p_flex_nom_kw  = p_flex_n,
-            p_flex_kw      = p_flex,
-            p_total_it_kw  = p_base + p_flex,
-            throttle       = throttle_batch,
-            is_spike_active= is_spike,
-            tick           = idx,
+            p_base_kw       = p_base,
+            p_base_a_kw     = p_base_a,
+            p_base_b_kw     = p_base_b,
+            p_flex_nom_kw   = arrived,
+            p_flex_kw       = served_kw,
+            p_total_it_kw   = p_base + served_kw,
+            throttle        = throttle_batch,
+            is_spike_active = is_spike,
+            tick            = idx,
+            backlog_kw      = self._backlog_kw,
+            avg_delay_steps = avg_delay_steps,
         )
 
     def reset(self, seed: int | None = None) -> None:
-        """Reset trace pointer to the beginning."""
+        """Reset trace pointer and queue state to the beginning."""
         self._tick = 0
+        self._backlog_kw           = 0.0
+        self._delay_accum_kw_steps = 0.0
+        self._total_served_kw      = 0.0
         if seed is not None:
             self._rng = np.random.default_rng(seed)
 
@@ -236,8 +279,7 @@ class WorkloadOrchestrator:
     @property
     def p_flex_max_kw(self) -> float:
         """Theoretical maximum flexible load (all batch racks at peak)."""
-        return float(_rack_power_kw(1.0, _ZONE_A_N_RACKS_FLEX,
-                                    _P_IDLE_A_KW, _P_MAX_A_KW, _ALPHA_A))
+        return self._p_flex_max_kw
 
     @property
     def p_base_range_kw(self) -> tuple[float, float]:

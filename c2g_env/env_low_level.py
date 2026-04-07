@@ -35,6 +35,8 @@ Observation space  (16-D, all values normalised to approximately [0, 1])
   [8]  grid_load_norm     = NYISO zone load / historical max       ∈ [0, 1]
   [9]  is_spike           = GenAI burst flag                       ∈ {0, 1}
   [10] prev_throttle      = throttle from previous step            ∈ [0, 1]
+  ... (indices 11-15: prev_pump_speed, pue_norm, T_amb_norm, freq_dev_norm, v_pcc_pu)
+  [16] backlog_norm       = batch backlog / p_flex_max_kw           ∈ [0, 2]
   [11] prev_pump_speed    = pump speed from previous step          ∈ [0, 1]
   [12] pue_norm           = PUE / 2.5
   [13] T_amb_norm         = ambient temp (weather) normalised      ∈ [0, 1]
@@ -156,6 +158,7 @@ class C2GFastEnv(gym.Env):
         0.0,  # T_amb_norm
        -1.0,  # freq_dev_norm (normalised frequency deviation)
         0.0,  # v_pcc_pu (PCC voltage in per-unit)
+        0.0,  # backlog_norm (batch queue depth / p_flex_max_kw)
     ], dtype=np.float32)
 
     _OBS_HIGH = np.array([
@@ -175,6 +178,7 @@ class C2GFastEnv(gym.Env):
         1.0,  # T_amb_norm
         1.0,  # freq_dev_norm
         1.1,  # v_pcc_pu (slight overvoltage possible)
+        2.0,  # backlog_norm (capped at 2 × p_flex_max)
     ], dtype=np.float32)
 
     def __init__(
@@ -471,6 +475,11 @@ class C2GFastEnv(gym.Env):
             max(0.0, 0.95 - v_pcc_pu) + max(0.0, v_pcc_pu - 1.05)
         )
 
+        sla_backlog_pen_c = float(self._rcfg.get("sla_backlog_penalty", 2.0))
+        backlog_pen = sla_backlog_pen_c * (
+            w.backlog_kw / self._workload.p_flex_max_kw
+        )
+
         reward = float(
             alpha  * throttle_batch
             - beta  * (tracking_err_kw / norm_kw)
@@ -478,6 +487,7 @@ class C2GFastEnv(gym.Env):
             - soc_pen
             - freq_pen
             - volt_pen
+            - backlog_pen
         )
 
         # -----------------------------------------------------------------
@@ -525,6 +535,8 @@ class C2GFastEnv(gym.Env):
             "lmp":                   gs["lmp_usd_mwh"],
             "regd_signal":           gs["regd_signal"],
             "reward":                reward,
+            "backlog_kw":            w.backlog_kw,
+            "avg_delay_steps":       w.avg_delay_steps,
             "is_spike":              w.is_spike_active,
             "pump_speed_A":          pump_speed_A,
             "p_pump_mw":             p_pump_mw,
@@ -583,6 +595,7 @@ class C2GFastEnv(gym.Env):
             self._weather.temp_norm(self._tick),
             float(np.clip((f_grid_hz - f_nom) / 0.5, -1.0, 1.0)),  # freq_dev_norm
             float(np.clip(v_pcc_pu, 0.0, 1.1)),                     # v_pcc_pu
+            min(w.backlog_kw / self._workload.p_flex_max_kw, 2.0),  # backlog_norm
         ], dtype=np.float32)
 
     def _build_obs_at_reset(self) -> np.ndarray:
@@ -597,7 +610,10 @@ class C2GFastEnv(gym.Env):
 
         # ── Peek workload tick 0 (advance then rewind) ───────────────────
         w = self._workload.step(1.0)     # full throttle → nominal p_flex
-        self._workload._tick = 0         # rewind
+        self._workload._tick = 0
+        self._workload._backlog_kw           = 0.0   # reset queue after peek
+        self._workload._delay_accum_kw_steps = 0.0
+        self._workload._total_served_kw      = 0.0
 
         # ── Peek grid tick 0 (advance then rewind) ───────────────────────
         gs = self._grid.step()
@@ -643,4 +659,5 @@ class C2GFastEnv(gym.Env):
             self._weather.temp_norm(0),
             0.0,   # freq_dev_norm (nominal frequency at reset)
             1.0,   # v_pcc_pu (nominal voltage at reset)
+            0.0,   # backlog_norm (no deferred work at reset)
         ], dtype=np.float32)

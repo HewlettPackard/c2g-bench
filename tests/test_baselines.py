@@ -53,7 +53,7 @@ class TestRuleBasedController:
     def test_thermal_protection_high_temp(self):
         """At critical temperature, throttle → 0 and hvac → 1."""
         ctrl = RuleBasedController()
-        obs = np.zeros(16, dtype=np.float32)
+        obs = np.zeros(17, dtype=np.float32)
         obs[0] = 0.99   # temp_A nearly at T_safe
         obs[1] = 0.99   # temp_B nearly at T_safe
         action, _ = ctrl.predict(obs)
@@ -63,7 +63,7 @@ class TestRuleBasedController:
     def test_bess_follows_regd(self):
         """Positive regd → BESS discharge (positive action)."""
         ctrl = RuleBasedController()
-        obs = np.zeros(16, dtype=np.float32)
+        obs = np.zeros(17, dtype=np.float32)
         obs[2] = 0.5    # SOC=50%, no saturation
         obs[6] = 0.5    # positive regd signal
         action, _ = ctrl.predict(obs)
@@ -72,7 +72,7 @@ class TestRuleBasedController:
     def test_bess_soc_guard_low(self):
         """With SOC nearly empty, BESS should not discharge much."""
         ctrl = RuleBasedController()
-        obs = np.zeros(16, dtype=np.float32)
+        obs = np.zeros(17, dtype=np.float32)
         obs[2] = 0.05   # SOC=5%, near empty
         obs[6] = 0.8    # strong regd signal asking for discharge
         action, _ = ctrl.predict(obs)
@@ -82,7 +82,7 @@ class TestRuleBasedController:
     def test_bess_soc_guard_high(self):
         """With SOC nearly full, BESS should not charge much."""
         ctrl = RuleBasedController()
-        obs = np.zeros(16, dtype=np.float32)
+        obs = np.zeros(17, dtype=np.float32)
         obs[2] = 0.95   # SOC=95%, nearly full
         obs[6] = -0.8   # grid asking us to charge
         action, _ = ctrl.predict(obs)

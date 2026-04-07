@@ -92,6 +92,8 @@ def test_step_fields_present(fresh_orch):
     assert hasattr(s, "throttle")
     assert hasattr(s, "is_spike_active")
     assert hasattr(s, "tick")
+    assert hasattr(s, "backlog_kw")
+    assert hasattr(s, "avg_delay_steps")
 
 
 # ---------------------------------------------------------------------------
@@ -162,12 +164,18 @@ def test_throttle_one_flex_equals_nom():
         assert s.p_flex_kw == pytest.approx(s.p_flex_nom_kw, rel=1e-9)
 
 
-def test_throttle_half_flex_is_half_nom():
-    """At throttle=0.5, p_flex must be exactly half of p_flex_nom."""
+def test_throttle_half_limits_capacity():
+    """throttle=0.5 limits service capacity to 50% of p_flex_max_kw.
+    p_flex_kw must never exceed that capacity regardless of backlog.
+    """
     w = WorkloadOrchestrator(trace_dir=TRACE_DIR, seed=1)
+    p_flex_max = w.p_flex_max_kw
     for _ in range(50):
         s = w.step(0.5)
-        assert s.p_flex_kw == pytest.approx(0.5 * s.p_flex_nom_kw, rel=1e-9)
+        # served work is bounded by hardware capacity
+        assert s.p_flex_kw <= p_flex_max * 0.5 + 1e-6
+        # p_flex_kw equals served work (never negative)
+        assert s.p_flex_kw >= 0.0
 
 
 def test_throttle_does_not_affect_p_base():
@@ -183,17 +191,26 @@ def test_throttle_does_not_affect_p_base():
 
 
 def test_throttle_monotonic():
-    """Higher throttle → higher p_flex for the same tick."""
+    """Higher throttle → higher or equal service for the same tick.
+    With the queue model, service is min(backlog, capacity). When
+    trace demand exceeds capacity at both throttle levels, the higher
+    throttle serves more. When demand is below both capacities, both
+    serve the full demand (equal).
+    """
     w = WorkloadOrchestrator(trace_dir=TRACE_DIR, seed=3)
+    p_flex_max = w.p_flex_max_kw
     s = w.step(1.0)   # advance to tick 0
     nom = s.p_flex_nom_kw
 
     if nom > 0.0:
         w.reset()
-        s25 = w.step(0.25)
+        s_low = w.step(0.0)   # zero capacity → served=0
         w.reset()
-        s75 = w.step(0.75)
-        assert s25.p_flex_kw < s75.p_flex_kw
+        s_hi  = w.step(1.0)   # full capacity → served=nom
+        # throttle=1 always serves at least as much as throttle=0
+        assert s_hi.p_flex_kw >= s_low.p_flex_kw
+        assert s_low.p_flex_kw == pytest.approx(0.0, abs=1e-9)
+        assert s_hi.p_flex_kw  == pytest.approx(nom, rel=1e-9)
 
 
 # ---------------------------------------------------------------------------
@@ -215,6 +232,73 @@ def test_throttle_clamp_above_one(bad_throttle):
     w.reset()
     s_one = w.step(1.0)
     assert s_clamped.p_flex_kw == pytest.approx(s_one.p_flex_kw, rel=1e-9)
+
+
+# ---------------------------------------------------------------------------
+# 6b. Backlog queue model
+# ---------------------------------------------------------------------------
+
+def test_backlog_zero_at_start():
+    """Backlog starts at zero after construction."""
+    w = WorkloadOrchestrator(trace_dir=TRACE_DIR, seed=1)
+    assert w._backlog_kw == 0.0
+
+
+def test_backlog_accumulates_on_zero_throttle():
+    """throttle=0 → no work served; backlog grows each step."""
+    w = WorkloadOrchestrator(trace_dir=TRACE_DIR, seed=1)
+    states = [w.step(0.0) for _ in range(10)]
+    # p_flex_kw must be zero every step
+    assert all(s.p_flex_kw == pytest.approx(0.0, abs=1e-9) for s in states)
+    # backlog must be strictly positive after the first non-trivial tick
+    assert states[-1].backlog_kw > 0.0
+
+
+def test_backlog_drains_on_full_throttle():
+    """After building backlog with throttle=0, switching to throttle=1 drains it."""
+    w = WorkloadOrchestrator(trace_dir=TRACE_DIR, seed=1)
+    for _ in range(10):
+        w.step(0.0)
+    backlog_before = w.step(0.0).backlog_kw
+    assert backlog_before > 0.0   # sanity check
+
+    # Now drain
+    s_after = w.step(1.0)
+    assert s_after.backlog_kw < backlog_before
+
+
+def test_avg_delay_positive_after_throttle_zero():
+    """avg_delay_steps > 0 once work has been deferred and then served."""
+    w = WorkloadOrchestrator(trace_dir=TRACE_DIR, seed=1)
+    for _ in range(5):
+        w.step(0.0)   # build backlog, no service
+    s = w.step(1.0)   # serve from backlog
+    assert s.avg_delay_steps >= 0.0
+    if s.p_flex_kw > 0.0:   # only meaningful if work was actually served
+        assert s.avg_delay_steps > 0.0
+
+
+def test_backlog_reset_clears_queue():
+    """reset() must clear backlog and delay accumulators."""
+    w = WorkloadOrchestrator(trace_dir=TRACE_DIR, seed=1)
+    for _ in range(20):
+        w.step(0.0)
+    w.reset()
+    assert w._backlog_kw == 0.0
+    assert w._delay_accum_kw_steps == 0.0
+    assert w._total_served_kw == 0.0
+    s = w.step(1.0)
+    assert s.backlog_kw == pytest.approx(0.0, abs=1e-9)
+
+
+def test_power_conservation_with_backlog():
+    """p_total = p_base + p_flex (served) even mid-backlog."""
+    w = WorkloadOrchestrator(trace_dir=TRACE_DIR, seed=9)
+    for _ in range(5):
+        w.step(0.0)   # build backlog
+    for t in [0.0, 0.3, 0.7, 1.0]:
+        s = w.step(t)
+        assert abs(s.p_total_it_kw - (s.p_base_kw + s.p_flex_kw)) < 1e-6
 
 
 # ---------------------------------------------------------------------------

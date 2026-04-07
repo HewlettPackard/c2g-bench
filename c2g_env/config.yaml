@@ -51,6 +51,7 @@ reward:
   soc_penalty:   0.5   # BESS: penalty per tick when SOC < SOC_min + 2%
   delta_freq_penalty: 2.0   # Frequency: penalty per Hz deviation beyond ±0.2 Hz dead-band
   delta_volt_penalty: 5.0   # Voltage: penalty per pu deviation outside [0.95, 1.05] pu
+  sla_backlog_penalty: 2.0  # SLA: penalty per unit of normalised batch backlog
 
 # ------------------------------------------------------------------------------
 # Market presets — grid signal + weather parameters per region

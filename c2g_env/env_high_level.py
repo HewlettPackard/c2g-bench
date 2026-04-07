@@ -46,6 +46,7 @@ Aggregated over the 180 sub-steps to give the grid-manager a stable view:
   [13] bess_target_prev   Previous macro-action [1] bess target
   [14] freq_dev_mean      Mean normalised frequency deviation   ∈ [-1, 1]
   [15] v_pcc_mean         Mean PCC voltage (per-unit)           ∈ [0, 1.1]
+  [16] backlog_norm_mean  Mean batch queue depth / p_flex_max   ∈ [0, 2]
 
 Reward
 ------
@@ -146,15 +147,15 @@ class C2GMacroEnv(gym.Env):
             dtype= np.float32,
         )
         self.observation_space = spaces.Box(
-            low  = np.full(16, -1.0, dtype=np.float32),
-            high = np.full(16,  2.0, dtype=np.float32),
+            low  = np.full(17, -1.0, dtype=np.float32),
+            high = np.full(17,  2.0, dtype=np.float32),
             dtype= np.float32,
         )
         # Override bounds for strictly non-negative features
-        _nonneg = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 15]
+        _nonneg = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 15, 16]
         self.observation_space.low[_nonneg]  = 0.0
         self.observation_space.high[_nonneg] = np.array([
-            2.0, 2.0, 1.0, 1.0, 2.0, 1.0, 1.0, 1.0, 2.0, 1.0, 1.0, 1.0, 1.0, 1.1
+            2.0, 2.0, 1.0, 1.0, 2.0, 1.0, 1.0, 1.0, 2.0, 1.0, 1.0, 1.0, 1.0, 1.1, 2.0
         ], dtype=np.float32)
         # freq_dev_mean can be negative (index 14)
         self.observation_space.low[14]  = -1.0
@@ -224,15 +225,16 @@ class C2GMacroEnv(gym.Env):
         regd_abs, lmps, load_norms = [], [], []
         track_errs    = []
         bess_actuals  = []
-        spike_any     = False
-        terminated    = False
-        truncated     = False
+        spike_any      = False
+        backlog_norms  = []
+        terminated     = False
+        truncated      = False
         last_info: dict = {}
 
         for sub in range(_SUBSTEPS):
             if self._inner_action_fn is not None:
                 # Research mode: outer policy generates inner action
-                inner_obs = sub_obs_list[-1] if sub_obs_list else np.zeros(16)
+                inner_obs = sub_obs_list[-1] if sub_obs_list else np.zeros(17)
                 low_action = self._inner_action_fn(inner_obs, action)
             else:
                 low_action = np.array([
@@ -254,6 +256,9 @@ class C2GMacroEnv(gym.Env):
             track_errs.append(info["tracking_err_kw"])
             bess_actuals.append(info["bess_actual_kw"])
             spike_any = spike_any or bool(info["is_spike"])
+            backlog_norms.append(min(
+                info["backlog_kw"] / self._fast_env._workload.p_flex_max_kw, 2.0
+            ))
             last_info = info
 
             if term or trunc:
@@ -295,6 +300,7 @@ class C2GMacroEnv(gym.Env):
             (bess_target + 1.0) / 2.0,                    # 13 normalise to [0,1]
             float(np.mean(freq_devs)),                     # 14 freq_dev_mean
             float(np.mean(v_pccs)),                        # 15 v_pcc_mean
+            float(np.mean(backlog_norms)),                 # 16 backlog_norm_mean
         ], dtype=np.float32)
 
         # -----------------------------------------------------------------
@@ -324,6 +330,7 @@ class C2GMacroEnv(gym.Env):
             "temp_A_max":         max(temp_As),
             "temp_B_max":         max(temp_Bs),
             "bess_soc_end":       bess_soc_end,
+            "backlog_norm_mean":  float(np.mean(backlog_norms)),
             "sub_steps_run":      len(sub_rewards),
             "scenario":           self._scenario,
             "last_inner_info":    last_info,
@@ -358,4 +365,5 @@ class C2GMacroEnv(gym.Env):
             (self._prev_bess_target + 1.0) / 2.0,
             0.0,                        # 14 freq_dev_mean (nominal)
             1.0,                        # 15 v_pcc_mean (nominal)
+            0.0,                        # 16 backlog_norm_mean (no deferred work at reset)
         ], dtype=np.float32)

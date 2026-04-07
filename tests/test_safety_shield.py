@@ -33,7 +33,7 @@ class TestSafetyShieldBasic:
 
     def _safe_obs(self):
         """Obs representing a completely safe state."""
-        obs = np.zeros(16, dtype=np.float32)
+        obs = np.zeros(17, dtype=np.float32)
         obs[0] = 28.0 / 35.0   # temp_A_norm ~ 0.8 (safe)
         obs[1] = 27.0 / 35.0   # temp_B_norm
         obs[2] = 0.5            # soc
@@ -76,7 +76,7 @@ class TestThermalOverride:
 
     def test_high_temp_reduces_throttle(self):
         shield = SafetyShield()
-        obs = np.zeros(16, dtype=np.float32)
+        obs = np.zeros(17, dtype=np.float32)
         obs[0] = 34.5 / 35.0  # temp_A very close to T_safe
         obs[1] = 28.0 / 35.0
         obs[2] = 0.5
@@ -90,7 +90,7 @@ class TestThermalOverride:
 
     def test_at_tsafe_full_override(self):
         shield = SafetyShield()
-        obs = np.zeros(16, dtype=np.float32)
+        obs = np.zeros(17, dtype=np.float32)
         obs[0] = 35.0 / 35.0  # exactly at T_safe
         obs[1] = 28.0 / 35.0
         obs[2] = 0.5
@@ -103,7 +103,7 @@ class TestThermalOverride:
 
     def test_cool_temp_no_thermal_override(self):
         shield = SafetyShield()
-        obs = np.zeros(16, dtype=np.float32)
+        obs = np.zeros(17, dtype=np.float32)
         obs[0] = 25.0 / 35.0  # well below T_shield
         obs[1] = 25.0 / 35.0
         obs[2] = 0.5
@@ -118,7 +118,7 @@ class TestSOCOverride:
 
     def test_low_soc_blocks_discharge(self):
         shield = SafetyShield()
-        obs = np.zeros(16, dtype=np.float32)
+        obs = np.zeros(17, dtype=np.float32)
         obs[0] = 25.0 / 35.0
         obs[1] = 25.0 / 35.0
         obs[2] = 0.12  # near soc_min + guard
@@ -131,7 +131,7 @@ class TestSOCOverride:
 
     def test_high_soc_blocks_charge(self):
         shield = SafetyShield()
-        obs = np.zeros(16, dtype=np.float32)
+        obs = np.zeros(17, dtype=np.float32)
         obs[0] = 25.0 / 35.0
         obs[1] = 25.0 / 35.0
         obs[2] = 0.93  # near soc_max - guard
@@ -143,7 +143,7 @@ class TestSOCOverride:
 
     def test_mid_soc_no_override(self):
         shield = SafetyShield()
-        obs = np.zeros(16, dtype=np.float32)
+        obs = np.zeros(17, dtype=np.float32)
         obs[0] = 25.0 / 35.0
         obs[1] = 25.0 / 35.0
         obs[2] = 0.5  # healthy SOC
@@ -159,7 +159,7 @@ class TestFrequencyOverride:
     def test_under_freq_blocks_charge(self):
         """Under-frequency + agent wants to charge → override to discharge."""
         shield = SafetyShield()
-        obs = np.zeros(16, dtype=np.float32)
+        obs = np.zeros(17, dtype=np.float32)
         obs[0] = 25.0 / 35.0
         obs[1] = 25.0 / 35.0
         obs[2] = 0.5
@@ -174,7 +174,7 @@ class TestFrequencyOverride:
     def test_over_freq_blocks_discharge(self):
         """Over-frequency + agent wants to discharge → override to charge."""
         shield = SafetyShield()
-        obs = np.zeros(16, dtype=np.float32)
+        obs = np.zeros(17, dtype=np.float32)
         obs[0] = 25.0 / 35.0
         obs[1] = 25.0 / 35.0
         obs[2] = 0.5
@@ -187,7 +187,7 @@ class TestFrequencyOverride:
 
     def test_nominal_freq_no_override(self):
         shield = SafetyShield()
-        obs = np.zeros(16, dtype=np.float32)
+        obs = np.zeros(17, dtype=np.float32)
         obs[0] = 25.0 / 35.0
         obs[1] = 25.0 / 35.0
         obs[2] = 0.5
@@ -202,7 +202,7 @@ class TestVoltageOverride:
 
     def test_low_voltage_reduces_throttle(self):
         shield = SafetyShield()
-        obs = np.zeros(16, dtype=np.float32)
+        obs = np.zeros(17, dtype=np.float32)
         obs[0] = 25.0 / 35.0
         obs[1] = 25.0 / 35.0
         obs[2] = 0.5
@@ -216,7 +216,7 @@ class TestVoltageOverride:
 
     def test_nominal_voltage_no_override(self):
         shield = SafetyShield()
-        obs = np.zeros(16, dtype=np.float32)
+        obs = np.zeros(17, dtype=np.float32)
         obs[0] = 25.0 / 35.0
         obs[1] = 25.0 / 35.0
         obs[2] = 0.5
@@ -240,7 +240,7 @@ class TestShieldedEnv:
 
     def test_reset_returns_obs_info(self, senv):
         obs, info = senv.reset(seed=0)
-        assert obs.shape == (16,)
+        assert obs.shape == (17,)
 
     def test_step_returns_5_tuple(self, senv):
         senv.reset(seed=0)
@@ -255,7 +255,7 @@ class TestShieldedEnv:
         assert "shield_stats" in info
 
     def test_spaces_match_base(self, senv):
-        assert senv.observation_space.shape == (16,)
+        assert senv.observation_space.shape == (17,)
         assert senv.action_space.shape == (4,)
 
     def test_shield_stats_accessible(self, senv):
@@ -271,7 +271,7 @@ class TestShieldedAgent:
         from baselines.rule_based_mpc import RuleBasedController
         agent = RuleBasedController()
         safe_agent = ShieldedAgent(agent)
-        obs = np.zeros(16, dtype=np.float32)
+        obs = np.zeros(17, dtype=np.float32)
         obs[0] = 25.0 / 35.0
         obs[1] = 25.0 / 35.0
         obs[2] = 0.5
