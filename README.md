@@ -97,7 +97,7 @@ Manages the "Business Handshake." Observes regional market prices, weather forec
 > **Decision:** *"How much flexible MW capacity should I commit to the grid operator for the next 15 minutes?"*
 
 - **Action Space (2-D):** `[commit_norm ∈ [0,1], bess_target ∈ [-1,1]]` — MW commitment and average BESS dispatch.
-- **Observation Space (16-D):** Aggregated over 180 sub-steps — mean temps, SOC, tracking error, spike flag, thermal headroom, LMP, previous action, mean frequency deviation, mean PCC voltage.
+- **Observation Space (17-D):** Aggregated over 180 sub-steps — mean temps, SOC, tracking error, spike flag, thermal headroom, LMP, previous action, mean frequency deviation, mean PCC voltage, mean backlog norm.
 - **Reward:** mean of sub-step rewards + LMP dispatch revenue − commitment-churn penalty.
 
 ### 4.2. Lower-Level Agent: The Hardware Controller (5 s ticks)
@@ -139,7 +139,7 @@ $$\mathcal{R} = \alpha \cdot u_{\text{thr}} - \beta \cdot \frac{|\Delta P_{\text
 
 where $(x)^{+} = \max(0, x)$, $\varepsilon_v = (0.95 - v_{\text{pcc}})^{+} + (v_{\text{pcc}} - 1.05)^{+}$, and the coefficients are $\alpha{=}1.0$, $\beta{=}2.0$, $\gamma{=}5.0$, $\delta_f{=}2.0$, $\delta_v{=}5.0$.
 
-The tracking loop: $\Delta P_{\text{actual}} = (1 - \text{throttle}) \times P_{\text{flex,nom}} + P_{\text{BESS,actual}}$
+The tracking loop: $\Delta P_{\text{actual}} = P_{\text{flex,served}} + P_{\text{BESS,actual}}$, where $P_{\text{flex,served}} = \min(Q_{\text{backlog}},\; P_{\text{flex,max}} \times \text{throttle})$ is the batch work actually served from the queue.
 
 **Termination** (episode ends immediately):
 - Thermal fault: $T_A > 35°$C or $T_B > 35°$C
@@ -199,7 +199,7 @@ f / V / T" --> FST
     FST -- "control commands" --> SHIELD
     SHIELD -- "safe actions" --> DC
     DC -- "observations
-(16-D state)" --> FST
+(17-D state)" --> FST
     FST -- "aggregated KPIs
 (every 180 steps)" --> MAC
     MAC -- "reward signal" --> MAC
@@ -224,16 +224,16 @@ flowchart TD
     end
 
     subgraph MARKET["📈 Market Layer — C2GMacroEnv (15-min ticks)"]
-        MA["Upper-Level Agent\n(Market Orchestrator)\nobs: 16-D aggregated\nact: 2-D [commit_norm, bess_target]"]
+        MA["Upper-Level Agent\n(Market Orchestrator)\nobs: 17-D aggregated\nact: 2-D [commit_norm, bess_target]"]
         MR["Macro Reward\nmean sub-step reward\n+ LMP dispatch revenue\n− commitment churn"]
     end
 
     subgraph FAST["⚡ Physics Layer — C2GFastEnv (5-s ticks)"]
         direction TB
-        FA["Lower-Level Agent\n(Hardware Controller)\nobs: 16-D normalised\nact: 4-D continuous"]
+        FA["Lower-Level Agent\n(Hardware Controller)\nobs: 17-D normalised\nact: 4-D continuous"]
 
         subgraph SIM["Seven Physics Engines"]
-            S1["🖥️ Workload\nP_base + P_flex"]
+            S1["🖥️ Workload\nP_base + P_flex (queue)"]
             S2["🌡️ Thermal Twin\nZone A (liquid) · Zone B (air)"]
             S3["⚡ Electrical Chain\nUPS · PDU · XFMR · PUE"]
             S4["🔋 BESS\n150 MWh / 50 MW NMC"]
@@ -260,7 +260,7 @@ flowchart TD
     SIM -->|"next state"| FA
     SIM --> FR
     FR -->|"step reward"| FA
-    FA -->|"16-D obs (aggregated × 180)"| MA
+    FA -->|"17-D obs (aggregated × 180)"| MA
     MA --> MR
 ```
 
@@ -280,7 +280,7 @@ flowchart LR
     ACT --> EL
 
     subgraph STEP["env.step() — one 5-second tick"]
-        WL["Workload\nP_base, P_flex_nom\n→ P_IT_actual"]
+        WL["Workload\nP_base, P_flex (queue)\n→ P_IT_actual"]
         TH["Thermal Twin\nexact-exp ODE\n→ T_A, T_B"]
         EL["Electrical Chain\nUPS+PDU+XFMR losses\n→ P_facility, PUE"]
         BS["BESS\nSOC update, η(C-rate)\n→ P_BESS_actual"]
@@ -288,8 +288,8 @@ flowchart LR
         RN["Renewable\nwind + solar\n→ P_renewable"]
         WE["Weather\nNOAA ISD or synthetic\n→ T_amb update"]
         FV["Freq + Voltage\nswing eq → Δf\nThévenin → V_pcc"]
-        RW["Reward\nα·thr − β·err − γ·T\n− δ_soc − δ_f·Δf − δ_v·V"]
-        OB["Observation\n16-D normalised vector"]
+        RW["Reward\nα·thr − β·err − γ·T\n− δ_soc − δ_f·Δf − δ_v·V − δ_q·backlog"]
+        OB["Observation\n17-D normalised vector"]
         TM{"Termination\ncheck"}
     end
 
@@ -379,7 +379,7 @@ sequenceDiagram
 
     note over Grid,Shield: t = 15 min — MacroEnv tick k ends
 
-    Fast->>Macro: aggregated 16-D obs<br/>(means, maxima, SOC_end, freq/volt means)
+    Fast->>Macro: aggregated 17-D obs<br/>(means, maxima, SOC_end, freq/volt means, backlog_norm_mean)
     Fast->>Macro: macro reward R_k<br/>= mean(r₀…r₁₇₉) + LMP_bonus − churn_pen
     Macro->>Macro: update policy with R_k
 ```
@@ -460,7 +460,7 @@ flowchart TD
     A2["[2] hvac_effort ∈ [0, 1]\nZone-B CRAH fan + chiller effort"]
     A3["[3] bess_dispatch ∈ [−1, 1]\n+1 = full discharge  −1 = full charge"]
 
-    A0 -->|"P_flex = throttle × P_flex_nom"| WL["🖥️ Workload\nIT power Zone A"]
+    A0 -->|"capacity = throttle × P_flex_max\n(queue served up to capacity)"| WL["🖥️ Workload\nIT power Zone A (FIFO queue)"]
     A0 -->|"+ α × throttle"| RW["⚡ Reward signal"]
 
     A1 -->|"K_liq_eff = K_liq × pump_speed"| THA["🌡️ Thermal Zone A\nLiquid-cooled (HPE Cray EX)\nSlower pump = thermal storage"]
@@ -532,8 +532,8 @@ Workload · Thermal · Electrical
 BESS · Grid · Renewable · Weather"]
         REW["⚖️ Compute r_t
 α·thr − β·track − γ·thermal
-− soc_pen − freq_pen − volt_pen"]
-        OB["📦 Build 16-D obs
+− soc_pen − freq_pen − volt_pen − δ_q·backlog"]
+        OB["📦 Build 17-D obs
 tick++"]
 
         STEP --> SHIELD --> SIMS --> REW --> OB
@@ -744,8 +744,8 @@ C2G-Macro/
 │
 ├── c2g_env/                             # The Core RL Environment
 │   ├── __init__.py                      # Exports C2GFastEnv, C2GMacroEnv
-│   ├── env_low_level.py                 # 5 s physics step — C2GFastEnv (16-D obs, 4-D act)
-│   ├── env_high_level.py                # 15-min market step — C2GMacroEnv (16-D obs, 2-D act)
+│   ├── env_low_level.py                 # 5 s physics step — C2GFastEnv (17-D obs, 4-D act)
+│   ├── env_high_level.py                # 15-min market step — C2GMacroEnv (17-D obs, 2-D act)
 │   ├── ENVIRONMENTS.md                  # 📖 Full environment & simulator reference (equations, params)
 │   ├── config.yaml                      # Centralised env configuration
 │   └── physics/
