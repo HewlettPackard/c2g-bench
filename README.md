@@ -137,7 +137,7 @@ Executes the physical "Handshake." Receives the real-time frequency regulation s
 
 The scalar reward received at every 5-second tick has **seven additive terms**:
 
-$$\mathcal{R} = \underbrace{\alpha \cdot u_{\text{thr}}}_{\text{throughput}} - \underbrace{\beta \cdot \frac{|\Delta P_{\text{demand}} - \Delta P_{\text{actual}}|}{P_{\text{norm}}}}_{\text{RegD tracking}} - \underbrace{\gamma \cdot (T - T_{\text{warn}})^{+}}_{\text{thermal}} - \underbrace{\delta_{\text{soc}} \cdot \mathbf{1}_{\text{soc}}}_{\text{BESS SoC}} - \underbrace{\delta_f \cdot (|\Delta f| - 0.2)^{+}}_{\text{frequency}} - \underbrace{\delta_v \cdot \varepsilon_v}_{\text{voltage}} - \underbrace{\delta_q \cdot \frac{Q_{\text{backlog}}}{P_{\text{flex,max}}}}_{\text{SLA backlog}}$$
+$$\mathcal{R} = \alpha \cdot u_{\text{thr}} - \beta \cdot \frac{|\Delta P_{\text{demand}} - \Delta P_{\text{actual}}|}{P_{\text{norm}}} - \gamma \cdot (T - T_{\text{warn}})^{+} - \delta_{\text{soc}} \cdot \mathbf{1}_{\text{soc}} - \delta_f \cdot (|\Delta f| - 0.2)^{+} - \delta_v \cdot \varepsilon_v - \delta_q \cdot \frac{Q_{\text{backlog}}}{P_{\text{flex,max}}}$$
 
 where $(x)^{+} = \max(0,x)$, $\varepsilon_v = (0.95 - v_{\text{pcc}})^{+} + (v_{\text{pcc}} - 1.05)^{+}$.
 
