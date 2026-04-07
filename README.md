@@ -134,7 +134,11 @@ M_{\text{macro}} = (\mathcal{S}_M,\, \mathcal{A}_M,\, P_M,\, R_M,\, \gamma_M,\, 
 | $\gamma_M = \gamma^K$ | $0.99^{180} \approx 0.163$ effective discount per macro step |
 | $T_M = 96$ | Macro steps per episode (24 h $\div$ 15 min) |
 
-where $\bar{r}_K = \frac{1}{K}\sum_{i=0}^{K-1} r_i$ is the mean of the 180 fast-step rewards in macro step $k$.
+where
+```math
+\bar{r}_K = \frac{1}{K}\sum_{i=0}^{K-1} r_i
+```
+is the mean of the 180 fast-step rewards in macro step $k$.
 
 The macro agent never directly observes the 5-second physics — it sees only the aggregated $\mathcal{S}_M$. This induces **partial observability** at the macro level that the agent must compensate for through robust commitment policies.
 
