@@ -19,24 +19,30 @@ completely backend-agnostic.
 
 References
 ----------
-[1] NREL SAM BatteryStateful — https://nrel-pysam.readthedocs.io/
-[2] DiOrio et al., "Techno-economic Modeling of Battery Energy Storage
-    in SAM," NREL/TP-6A20-64641, 2015.
-[3] Xu et al., "Factoring the Cycle Ageing Cost of Batteries Participating
-    in Electricity Markets," IEEE Trans. Power Syst. 33(2), 2018.
+[1] NREL PySAM BatteryStateful documentation.
+    https://nrel-pysam.readthedocs.io/en/main/modules/BatteryStateful.html
+[2] Blair, N., DiOrio, N., Freeman, J., Gilman, P., Janzou, S. (2018)
+    "System Advisor Model (SAM) General Description (Version 2017.9.5),"
+    NREL/TP-6A20-70414, National Renewable Energy Laboratory.
+    https://www.nrel.gov/docs/fy18osti/70414.pdf
+    — Shepherd-curve electrochemical battery model in SAM/PySAM.
+[3] Xu, B., Zhao, J., Zheng, T., Litvinov, E., Kirschen, D.S. (2018)
+    "Factoring the Cycle Aging Cost of Batteries Participating in
+    Electricity Markets," IEEE Trans. Power Syst., 33(2), 2248–2259.
+    DOI: 10.1109/TPWRS.2017.2733339
 [4] Shepherd, C.M. (1965) "Design of Primary and Secondary Cells:
     An Equation Describing Battery Discharge," J. Electrochem. Soc.,
-    112(7), 657–664. — Shepherd voltage-curve equation underlying the
-    BatteryStateful electrochemical model in NREL PySAM.
-[5] Wang, J., et al. (2011) "Cycle-life model for graphite-LiFePO4
-    cells," J. Power Sources, 196, 3942–3948. — calendar + cycle
-    capacity-fade parameterisation; basis for the linear fade model
-    in the pure-Python fallback.
-[6] Hesse, H.C., et al. (2017) "Lithium-Ion Battery Storage for the
-    Grid — A Review of Stationary Battery Storage System Design
-    Tailored for Applications in Modern Power Grids," Energies,
-    10(12), 2107. — η(C-rate, SOC) round-trip efficiency surface;
-    NMC chemistry parameters (η_peak, k_crate, k_soc).
+    112(7), 657–664.  DOI: 10.1149/1.2423244
+    — Shepherd voltage-curve equation underlying the BatteryStateful model.
+[5] Wang, J., Liu, P., Hicks-Garner, J., et al. (2011) "Cycle-life model
+    for graphite-LiFePO4 cells," J. Power Sources, 196(8), 3942–3948.
+    DOI: 10.1016/j.jpowsour.2010.11.134
+    — DOD/C-rate/temperature capacity-fade model; linear fade fallback.
+[6] Hesse, H.C., Schimpe, M., Kucevic, D., Jossen, A. (2017)
+    "Lithium-Ion Battery Storage for the Grid — A Review of Stationary
+    Battery Storage System Design Tailored for Applications in Modern
+    Power Grids," Energies, 10(12), 2107.  DOI: 10.3390/en10122107
+    — η(C-rate, SOC) round-trip efficiency; NMC parameters (η_peak, k_crate).
 """
 from __future__ import annotations
 

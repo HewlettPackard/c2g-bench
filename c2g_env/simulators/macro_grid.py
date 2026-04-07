@@ -37,21 +37,24 @@ the datacenter to reduce demand.  The zone is configurable (default: NYC).
 References
 ----------
 [1] PJM Manual 12: Balancing Operations, Section 4 (RegD signal spec).
-    https://www.pjm.com/~/media/documents/manuals/m12.ashx
+    https://www.pjm.com/-/media/documents/manuals/m12.ashx
 [2] NYISO Real-Time Actual Load data, 5-minute resolution.
     https://www.nyiso.com/real-time-dashboard
-[3] Hogan (2002): "Electricity Market Restructuring: Reforms of Reforms,"
-    Journal of Regulatory Economics 21(1). — For LMP theory.
-[4] Kundur, P. (1994) "Power System Stability and Control," McGraw-Hill,
-    Ch. 12. — Swing equation (df/dt ∝ ΔP) underlying the discrete
-    frequency-deviation model; damping coefficient D calibration.
+[3] Hogan, W.W. (2002): "Electricity Market Restructuring: Reforms of Reforms,"
+    Journal of Regulatory Economics, 21(1), 103–132.
+    DOI: 10.1023/A:1013557912617  — foundational LMP theory.
+[4] Kundur, P. (1994) "Power System Stability and Control," McGraw-Hill
+    (ISBN 978-0-07-035958-1), Ch. 12. — Swing equation (df/dt ∝ ΔP);
+    damping coefficient D; frequency-deviation model calibration.
 [5] Schweppe, F.C., Caramanis, M.C., Tabors, R.D., Bohn, R.E. (1988)
-    "Spot Pricing of Electricity," Kluwer Academic. — Foundational
-    LMP theory; marginal cost basis for the load-duration LMP proxy.
-[6] Kirby, B. (2004) "Frequency Regulation Basics and Trends,"
-    Oak Ridge National Laboratory, ORNL/TM-2004/291. — AR(1)
-    statistical properties of the PJM RegD signal (ρ≈0.8, zero-mean
-    15-min window) calibration for ρ and σ in MarketParams.
+    "Spot Pricing of Electricity," Kluwer Academic
+    (ISBN 978-0-89838-260-0). — LMP marginal-cost theory underpinning
+    the load-duration LMP proxy.
+[6] Kirby, B.J. (2005) "Frequency Regulation Basics and Trends,"
+    Oak Ridge National Laboratory, ORNL/TM-2004/291.
+    DOI: 10.2172/885974  https://www.osti.gov/biblio/885974
+    — AR(1) statistical properties of PJM RegD (ρ≈0.8, zero-mean 15-min);
+    ρ and σ calibration in MarketParams.
 """
 from __future__ import annotations
 

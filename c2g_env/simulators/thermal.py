@@ -26,25 +26,30 @@
 # References
 # ----------
 # [1] Incropera, F.P., et al. (2007) "Fundamentals of Heat and Mass Transfer,"
-#     6th ed., Wiley. Ch. 5: Transient Conduction — lumped-capacitance ODE
-#     foundation for the C_dT/dt energy balance used in both zones.
+#     6th ed., Wiley (ISBN 978-0-471-45728-2). Ch. 5: Transient Conduction —
+#     lumped-capacitance ODE foundation for the C_dT/dt energy balance.
 # [2] Moore, J.D., Chase, J.S., Ranganathan, P., Sharma, R. (2005)
 #     "Making Scheduling 'Cool': Temperature-Aware Workload Placement in Data
-#     Centers," USENIX Annual Technical Conference (ATC), 2005. — RC thermal
-#     model structure and COP-aware scheduling in HPC data centers.
+#     Centers," USENIX ATC 2005, pp. 61–75.
+#     https://www.usenix.org/legacy/publications/library/proceedings/usenix05/
+#     tech/general/moore.html
 # [3] Tang, Q., Gupta, S.K.S., Varsamopoulos, G. (2008) "Energy-efficient
 #     Thermal-aware Task Scheduling for Homogeneous High-Performance Computing
 #     Data Centers: A Cyber-Physical Approach," IEEE Trans. Parallel Distrib.
-#     Syst., 19(11), 1458–1472. — ambient-dependent COP model calibration.
+#     Syst., 19(11), 1458–1472.  DOI: 10.1109/TPDS.2008.111
 # [4] ASHRAE TC 9.9 (2021) "Thermal Guidelines for Data Processing
 #     Environments," 5th ed., ASHRAE. — supply temperature zone limits:
 #     A1 = 15–27 °C, W3 = 5–40 °C used for T_supply_{A,B}_range.
+#     https://www.ashrae.org/technical-resources/bookstore/datacom-series
 # [5] Patankar, S.V. (2010) "Airflow and Cooling in a Data Center,"
-#     J. Heat Transfer, 132(7), 073001. — envelope coupling K_env and
-#     airside convective heat-transfer coefficient model.
-# [6] Zimmermann, S., et al. (2012) "Chip-Level Thermo-Electric Cooling
-#     Integration," IEEE TCPMT, 2(2). — liquid-loop CDU efficiency and
-#     pump-speed-dependent effective K_liq model (Zone A).
+#     J. Heat Transfer, 132(7), 073001. DOI: 10.1115/1.4001406
+#     — raised-floor airflow model; K_env envelope coupling calibration.
+# [6] Zimmermann, S., Meijer, I., Tiwari, M.K., Paredes, S., Michel, B.,
+#     Poulikakos, D. (2012) "Aquasar: A hot water cooled data center with
+#     direct energy reuse," Energy, 43(1), 237–245.
+#     DOI: 10.1016/j.energy.2012.04.037
+#     — single-phase liquid cooling CDU efficiency; pump-flow heat-transfer
+#     coefficient model underpinning K_liq in Zone A.
 
 import numpy as np
 

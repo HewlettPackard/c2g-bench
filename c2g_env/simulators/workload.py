@@ -31,25 +31,27 @@ All traces are at 5-minute (300 s) resolution which matches ThermalTwin and
 BESSModel defaults.  The low-level RL env runs at dt=300 s for Phase 1.
 References
 ----------
-[1] Weng, Q., et al. (2022) "MLaaS in the Wild: Workload Analysis and
-    Scheduling in Large-Scale Heterogeneous GPU Clusters," USENIX NSDI 2022.
-    — Alibaba production GPU trace structure (batch_v2023 & genai_v2026
-    modelled on this dataset).
-[2] Guo, J., et al. (2019) "Who Limits the Resource Efficiency of My
-    Datacenter: An Analysis of Alibaba Datacenter Traces," ACM IWQoS 2019.
-    — CPU/GPU utilization distributions and scheduling patterns used to
-    calibrate the flex/rigid workload split.
+[1] Weng, Q., Xiao, W., Yu, Y., et al. (2022) "MLaaS in the Wild: Workload
+    Analysis and Scheduling in Large-Scale Heterogeneous GPU Clusters,"
+    USENIX NSDI 2022.
+    https://www.usenix.org/conference/nsdi22/presentation/weng
+    — Alibaba production GPU trace (batch_v2023 & genai_v2026 modelled here).
+[2] Guo, J., Chang, Z., Wang, S., et al. (2019) "Who Limits the Resource
+    Efficiency of My Datacenter: An Analysis of Alibaba Datacenter Traces,"
+    ACM IWQoS 2019.  DOI: 10.1145/3326285.3329074
+    — GPU utilization distributions and flex/rigid workload calibration.
 [3] Fan, X., Weber, W., Barroso, L.A. (2007) "Power Provisioning for a
-    Warehouse-sized Computer," ACM ISCA 2007. — P_server(u) = P_idle +
-    (P_max - P_idle) * u^alpha; alpha=1.4 GPU superlinear exponent.
+    Warehouse-sized Computer," ACM ISCA 2007, pp. 13–23.
+    DOI: 10.1145/1273440.1250665
+    — P_server(u) = P_idle + (P_max-P_idle)×u^α; α=1.4 GPU superlinear.
 [4] Wierman, A., Liu, Z., Liu, I., Mohsenian-Rad, H. (2014) "Opportunities
-    and Challenges for Data Center Demand Response," IEEE IGCC 2014. —
-    theoretical framework for deferrable (P_flex) vs. rigid (P_base)
-    workload classification used throughout this simulator.
-[5] Narayanan, D., et al. (2021) "Efficient Large-Scale Language Model
-    Training on GPU Clusters Using Megatron-LM," SC 2021. — GPU cluster
-    power characteristics (rack-level P_max, burst duration) informing the
-    GenAI spike model in genai_v2026 trace.
+    and Challenges for Data Center Demand Response," IEEE IGCC 2014.
+    DOI: 10.1109/IGCC.2014.7039172
+    — deferrable (P_flex) vs. rigid (P_base) workload classification.
+[5] Narayanan, D., Shoeybi, M., Casper, J., et al. (2021) "Efficient
+    Large-Scale Language Model Training on GPU Clusters Using Megatron-LM,"
+    SC 2021.  DOI: 10.1145/3458817.3476209
+    — GPU cluster power (rack-level P_max, burst) for genai_v2026 trace.
 """
 from __future__ import annotations
 

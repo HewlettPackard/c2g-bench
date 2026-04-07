@@ -14,25 +14,27 @@
 #
 # References
 # ----------
-# [1] IEC 61400-12-1 (2022) "Wind energy generation systems — Part 12-1:
+# [1] IEC 61400-12-1:2022 "Wind energy generation systems — Part 12-1:
 #     Power performance measurements of electricity producing wind turbines,"
-#     International Electrotechnical Commission, Geneva. — standard power
-#     curve definition: cut-in, rated, cut-out speeds; IEC Class II turbine.
+#     International Electrotechnical Commission, Geneva.
+#     https://www.iec.ch/standard/50028  — standard power curve definition:
+#     cut-in, rated, cut-out speeds; IEC Class II turbine parameters.
 # [2] Lydia, M., Kumar, S.S., Selvakumar, A.I., Kumar, G.E.P. (2014)
 #     "A comprehensive review on wind turbine power curve modeling techniques,"
-#     Renewable and Sustainable Energy Reviews, 30, 452–460. — justification
-#     for the sigmoid approximation of the IEC multi-segment power curve.
+#     Renewable and Sustainable Energy Reviews, 30, 452–460.
+#     DOI: 10.1016/j.rser.2013.10.030  — justification for the sigmoid
+#     approximation of the IEC multi-segment power curve.
 # [3] Masters, G.M. (2004) "Renewable and Efficient Electric Power Systems,"
-#     Wiley-IEEE Press, Ch. 7. — Betz limit, v³ power law, hub-height
-#     extrapolation, and wind resource statistics underpinning cut-in/out
-#     parameter selection.
+#     Wiley-IEEE Press (ISBN 978-0-471-28060-6), Ch. 7. — Betz limit,
+#     v³ power law, hub-height extrapolation, wind resource statistics.
 # [4] King, D.L., Boyson, W.E., Kratochvil, J.A. (2004) "Photovoltaic Array
-#     Performance Model," Sandia National Laboratories, SAND2004-3535. —
-#     GHI-to-DC power mapping with system derating (η_system) including
-#     inverter, wiring, and soiling losses.
+#     Performance Model," Sandia National Laboratories, SAND2004-3535.
+#     https://energy.sandia.gov/wp-content/gallery/uploads/
+#     PV-Performance-Array-Model-SAND2004-3535.pdf
+#     — GHI-to-power mapping with η_system derating (inverter, wiring, soiling).
 # [5] Duffie, J.A., Beckman, W.A., McGowan, J.A. (2013) "Solar Engineering
-#     of Thermal Processes," 4th ed., Wiley. — GHI standard test condition
-#     (GHI_stc = 1000 W/m²) and PV panel efficiency definition.
+#     of Thermal Processes," 4th ed., Wiley (ISBN 978-1-118-41541-6).
+#     — GHI_stc = 1000 W/m² standard test condition; PV efficiency definition.
 
 import os
 

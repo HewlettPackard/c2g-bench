@@ -36,21 +36,29 @@
 # └─────────────────────────────────────────────────────────────────┘
 #
 # References:
-#   [1] Barroso, Holzle, Ranganathan — "The Datacenter as a Computer"
-#       (3rd ed.), Morgan & Claypool, 2018.  Ch.6: Power Provisioning.
-#   [2] Fan, Weber, Barroso — "Power Provisioning for a Warehouse-sized
-#       Computer," ISCA 2007. Non-linear server power model.
-#   [3] IEEE Std 3006.x — Recommended Practice for Determining PUE.
-#   [4] ASHRAE TC 9.9 — Thermal Guidelines for Data Processing Envs.
-#   [5] DOE Genesis Mission Brief, Nov 2025 — 250MW–1GW targets.
-#   [6] Economou, D., et al. (2006) "Full-System Power Analysis and
-#       Estimation for Server Environments," Workshop on Modeling,
-#       Benchmarking and Simulation (MBSim), ISCA 2006. — Empirical
-#       validation of the superlinear exponent α ≈ 1.4 for GPU servers.
-#   [7] Shehabi, A., et al. (2016) "United States Data Center Energy
-#       Usage Report," Lawrence Berkeley National Laboratory,
-#       LBNL-1005775. — PUE benchmarks (1.2–1.8 range) and dynamic
-#       PUE definition used for facility-level efficiency tracking.
+#   [1] Barroso, L.A., Hölzle, U., Ranganathan, P. — "The Datacenter as a
+#       Computer: Designing Warehouse-Scale Machines," 3rd ed.,
+#       Morgan & Claypool, 2019 (ISBN 978-1-68173-565-4). Ch.6: Power
+#       Provisioning. https://dl.acm.org/doi/book/10.5555/3238191
+#   [2] Fan, X., Weber, W., Barroso, L.A. — "Power Provisioning for a
+#       Warehouse-sized Computer," ACM ISCA 2007, pp. 13–23.
+#       DOI: 10.1145/1273440.1250665  — Non-linear server power model.
+#   [3] IEEE Std 3006.8-2018 — "Recommended Practice for Analyzing
+#       Reliability Data for Equipment Used in Industrial and Commercial
+#       Power Systems (PUE)."  https://ieeexplore.ieee.org/document/8353506
+#   [4] ASHRAE TC 9.9 (2021) — "Thermal Guidelines for Data Processing
+#       Environments," 5th ed.  https://www.ashrae.org/
+#   [5] DOE — Genesis Mission Brief, November 2025. 250MW–1GW AI Campus.
+#       https://www.energy.gov/
+#   [6] Economou, D., Rivoire, S., Kozyrakis, C., Ranganathan, P. (2006)
+#       "Full-System Power Analysis and Modeling for Server Environments,"
+#       Workshop on Modeling, Benchmarking and Simulation (MoBS), ISCA 2006.
+#       https://csl.stanford.edu/~christos/publications/2006.mantis.mobs.slides.pdf
+#       — Empirical validation of superlinear exponent α ≈ 1.4 for servers.
+#   [7] Shehabi, A., Smith, S., Sartor, D., et al. (2016) "United States Data
+#       Center Energy Usage Report," Lawrence Berkeley National Laboratory,
+#       LBNL-1005775. https://escholarship.org/content/qt84p772fc/qt84p772fc.pdf
+#       — PUE benchmarks (1.2–1.8 range); dynamic PUE definition.
 #
 # Governing equations:
 #
