@@ -142,17 +142,32 @@ Executes the physical "Handshake." Receives the real-time frequency regulation s
 The scalar reward received at every 5-second tick has **seven additive terms**:
 
 $$
-\mathcal{R} =
-  \alpha \cdot u_{\text{thr}}
-  - \beta \cdot \frac{|\Delta P_{\text{demand}} - \Delta P_{\text{actual}}|}{P_{\text{norm}}}
-  - \gamma \cdot (T - T_{\text{warn}})^{+}
-  - \delta_{\text{soc}} \cdot \mathbf{1}_{\text{soc}}
-  - \delta_f \cdot (|\Delta f| - 0.2)^{+}
-  - \delta_v \cdot \varepsilon_v
-  - \delta_q \cdot \frac{Q_{\text{backlog}}}{P_{\text{flex,max}}}
+\begin{aligned}
+\mathcal{R} =\;& \alpha \cdot u_{\text{thr}} \\
+  &- \beta \cdot \frac{|\Delta P_{\text{demand}} - \Delta P_{\text{actual}}|}{P_{\text{norm}}} \\
+  &- \gamma \cdot (T - T_{\text{warn}})^{+} \\
+  &- \delta_{\text{soc}} \cdot \mathbf{1}_{\text{soc}} \\
+  &- \delta_f \cdot (|\Delta f| - 0.2)^{+} \\
+  &- \delta_v \cdot \varepsilon_v \\
+  &- \delta_q \cdot \frac{Q_{\text{backlog}}}{P_{\text{flex,max}}}
+\end{aligned}
 $$
 
-where $(x)^{+} = \max(0,x)$, $\varepsilon_v = (0.95 - v_{\text{pcc}})^{+} + (v_{\text{pcc}} - 1.05)^{+}$.
+where:
+
+- $(x)^{+} = \max(0,\, x)$ — ReLU / hinge: only positive exceedances are penalised
+- $u_{\text{thr}} \in [0,1]$ — DVFS throttle fraction; fraction of flexible batch capacity currently committed
+- $\Delta P_{\text{demand}} = C_{\text{MW}} \times \text{RegD}(t)$ — MW change requested by the grid operator this tick
+- $\Delta P_{\text{actual}} = P_{\text{flex,served}} + P_{\text{BESS,actual}}$ — MW change the DC actually delivered
+- $P_{\text{norm}} = C_{\text{MW}} \times 1000$ — normalisation constant (converts tracking error to a [0, ~2] range)
+- $T$ — temperature of the hotter of the two cooling zones (°C)
+- $T_{\text{warn}} = 33\,°\text{C}$ — soft warning threshold; thermal penalty begins here, 2 °C before the hard trip
+- $\mathbf{1}_{\text{soc}}$ — binary flag: 1 if BESS state-of-charge is outside $[10\%, 90\%]$, else 0
+- $|\Delta f|$ — absolute grid frequency deviation (Hz) from the 60 Hz nominal
+- $\varepsilon_v = (0.95 - v_{\text{pcc}})^{+} + (v_{\text{pcc}} - 1.05)^{+}$ — PCC voltage exceedance (pu) outside the ANSI C84.1 Range A band $[0.95, 1.05]$
+- $Q_{\text{backlog}}$ — deferred batch work currently sitting in the FIFO queue (kW-equivalent)
+- $P_{\text{flex,max}} \approx 90{,}000\,\text{kW}$ — peak flexible IT capacity at full throttle (1,200 racks × 75 kW)
+- Coefficients (all in `config.yaml`): $\alpha{=}1.0$, $\beta{=}2.0$, $\gamma{=}5.0$, $\delta_{\text{soc}}{=}2.0$, $\delta_f{=}2.0$, $\delta_v{=}5.0$, $\delta_q{=}2.0$
 
 #### Term-by-term breakdown
 
