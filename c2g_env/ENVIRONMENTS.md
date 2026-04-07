@@ -45,6 +45,8 @@ C2GMacroEnv  (15-minute ticks)
 
 Both environments share the same seven physics engines and the same `config.yaml`.
 
+> **Formal MDP specification:** For the full two-level MDP tuple definition — state/action spaces, discount factors, terminal conditions, and the Semi-MDP framing — see [README.md §5.0](../README.md#50-formal-mdp-specification).
+
 ---
 
 ## 2. C2GFastEnv
@@ -92,17 +94,20 @@ Both environments share the same seven physics engines and the same `config.yaml
 
 ### 2.3 Reward Function
 
+Seven-term scalar reward at every 5-second tick. See [README.md §5.3](../README.md#53-the-neurips-evaluation-metric-the-tracking-reward) for the full term-by-term breakdown, coefficient rationale, and lever hierarchy.
+
 ```math
-\mathcal{R}_t = \alpha \cdot u_\text{thr} - \beta \cdot \frac{|\Delta P_\text{demand} - \Delta P_\text{actual}|}{P_\text{norm}} - \gamma \cdot (T - T_\text{warn})^{+} - \delta_\text{soc} \cdot \mathbf{1}_\text{soc} - \delta_f \cdot (|\Delta f| - 0.2)^{+} - \delta_v \cdot \varepsilon_v
+\mathcal{R}_t = \alpha \cdot u_\text{thr} - \beta \cdot \frac{|\Delta P_\text{demand} - \Delta P_\text{actual}|}{P_\text{norm}} - \gamma \cdot (T - T_\text{warn})^{+} - \delta_\text{soc} \cdot \mathbf{1}_\text{soc} - \delta_f \cdot (|\Delta f| - 0.2)^{+} - \delta_v \cdot \varepsilon_v - \delta_q \cdot \frac{Q_\text{backlog}}{P_\text{flex,max}}
 ```
 where:
 - $(x)^{+} = \max(0, x)$  
 - $u_\text{thr} = 1 - \text{throttle}$ (fraction of batch workload served)  
-- $\Delta P_\text{actual} = (1 - \text{throttle}) \times P_\text{flex,nom} + P_\text{BESS,actual}$  
+- $\Delta P_\text{actual} = P_\text{flex,served} + P_\text{BESS,actual}$  
 - $\varepsilon_v = (0.95 - v_\text{pcc})^{+} + (v_\text{pcc} - 1.05)^{+}$  
-- $\mathbf{1}_\text{soc} = 1$ if $\text{SOC} < \text{SOC}_\text{min} + 0.02$, else 0
+- $\mathbf{1}_\text{soc} = 1$ if $\text{SOC} < \text{SOC}_\text{min} + 0.02$, else 0  
+- $Q_\text{backlog}$ — FIFO queue depth [kW]; $P_\text{flex,max}$ — peak flexible IT capacity [kW]
 
-**Default weights** (from `config.yaml`):
+**Coefficients** (source of truth: `c2g_env/config.yaml`):
 
 | Symbol | Config key | Default | Meaning |
 |--------|-----------|---------|---------|
@@ -112,6 +117,7 @@ where:
 | $\delta_\text{soc}$ | `reward.soc_penalty` | 0.5 | BESS near-empty penalty (per tick) |
 | $\delta_f$ | `reward.delta_freq_penalty` | 2.0 | Frequency penalty (per Hz beyond dead-band) |
 | $\delta_v$ | `reward.delta_volt_penalty` | 5.0 | Voltage penalty (per pu outside [0.95, 1.05]) |
+| $\delta_q$ | `reward.sla_backlog_penalty` | 2.0 | SLA backlog penalty (per unit normalised queue depth) |
 
 ### 2.4 Termination Conditions
 
@@ -195,7 +201,7 @@ obs, reward, terminated, truncated, info = env.step(action)
 ```math
 \mathcal{R}_\text{macro} = \bar{\mathcal{R}}_\text{fast} + \lambda_\text{lmp} \cdot \text{LMP} \cdot P_\text{BESS,mean} - \lambda_\text{churn} \cdot |\Delta \text{commit}|
 ```
-where $\bar{\mathcal{R}}_\text{fast}$ is the mean of the 180 sub-step rewards.
+where $\bar{\mathcal{R}}_\text{fast}$ is the mean of the 180 sub-step rewards (see §2.3 for the fast-step reward formula). The LMP bonus and churn penalty are set in `conf/algo/ppo_macro.yaml`.
 
 ### 3.4 The `inner_action_fn` Interface
 
@@ -322,7 +328,7 @@ K_\text{eff} = K_\text{air} \cdot f_\text{fault} \cdot (0.3 + 0.7 \cdot u_\text{
 [2] Moore, J.D., Chase, J.S., Ranganathan, P., Sharma, R. (2005) “Making Scheduling ‘Cool’: Temperature-Aware Workload Placement in Data Centers,” USENIX ATC 2005, pp. 61–75. <https://www.usenix.org/legacy/publications/library/proceedings/usenix05/tech/general/moore.html>  
 [3] Tang, Q., Gupta, S.K.S., Varsamopoulos, G. (2008) “Energy-efficient Thermal-aware Task Scheduling for Homogeneous HPC Data Centers,” *IEEE Trans. Parallel Distrib. Syst.*, 19(11), 1458–1472. DOI: [10.1109/TPDS.2008.111](https://doi.org/10.1109/TPDS.2008.111)  
 [4] ASHRAE TC 9.9 (2021) *Thermal Guidelines for Data Processing Environments*, 5th ed. (A1 = 15–27 °C, W3 = 5–40 °C). <https://www.ashrae.org/technical-resources/bookstore/datacom-series>  
-[5] Patankar, S.V. (2010) “Airflow and Cooling in a Data Center,” *J. Heat Transfer*, 132(7), 073001. DOI: [10.1115/1.4001406](https://doi.org/10.1115/1.4001406)  
+[5] Patankar, S.V. (2010) “Airflow and Cooling in a Data Center,” *J. Heat Transfer*, 132(7), 073001. DOI: [10.1115/1.4000703](https://doi.org/10.1115/1.4000703)  
 [6] Zimmermann, S., Meijer, I., Tiwari, M.K., Paredes, S., Michel, B., Poulikakos, D. (2012) “Aquasar: A hot water cooled data center with direct energy reuse,” *Energy*, 43(1), 237–245. DOI: [10.1016/j.energy.2012.04.037](https://doi.org/10.1016/j.energy.2012.04.037)  
 
 ---
@@ -394,7 +400,7 @@ E_\text{effective} = E_\text{nom} \cdot (1 - 0.2 \cdot f_\text{age})
 [1] NREL PySAM BatteryStateful documentation. <https://nrel-pysam.readthedocs.io/en/main/modules/BatteryStateful.html>  
 [2] Blair, N., DiOrio, N., Freeman, J., Gilman, P., Janzou, S. (2018) *System Advisor Model (SAM) General Description (Version 2017.9.5)*, NREL/TP-6A20-70414. <https://www.nrel.gov/docs/fy18osti/70414.pdf>  
 [3] Xu, B., Zhao, J., Zheng, T., Litvinov, E., Kirschen, D.S. (2018) “Factoring the Cycle Aging Cost of Batteries Participating in Electricity Markets,” *IEEE Trans. Power Syst.*, 33(2), 2248–2259. DOI: [10.1109/TPWRS.2017.2733339](https://doi.org/10.1109/TPWRS.2017.2733339)  
-[4] Shepherd, C.M. (1965) “Design of Primary and Secondary Cells: An Equation Describing Battery Discharge,” *J. Electrochem. Soc.*, 112(7), 657–664. DOI: [10.1149/1.2423244](https://doi.org/10.1149/1.2423244)  
+[4] Shepherd, C.M. (1965) “Design of Primary and Secondary Cells: II . An Equation Describing Battery Discharge,” *J. Electrochem. Soc.*, 112(7), 657–664. DOI: [10.1149/1.2423659](https://doi.org/10.1149/1.2423659)  
 [5] Wang, J., Liu, P., Hicks-Garner, J., et al. (2011) “Cycle-life model for graphite-LiFePO4 cells,” *J. Power Sources*, 196(8), 3942–3948. DOI: [10.1016/j.jpowsour.2010.11.134](https://doi.org/10.1016/j.jpowsour.2010.11.134)  
 [6] Hesse, H.C., Schimpe, M., Kucevic, D., Jossen, A. (2017) “Lithium-Ion Battery Storage for the Grid,” *Energies*, 10(12), 2107. DOI: [10.3390/en10122107](https://doi.org/10.3390/en10122107)  
 
@@ -470,9 +476,9 @@ Practical range: 1.25 (excellent) to 2.5+ (very poor, Zone B heat wave).
 
 ### References
 
-[1] Barroso, L.A., Hölzle, U., Ranganathan, P. (2019) *The Datacenter as a Computer*, 3rd ed., Morgan & Claypool. <https://dl.acm.org/doi/book/10.5555/3238191>  
+[1] Barroso, L.A., Hölzle, U., Ranganathan, P. (2019) *The Datacenter as a Computer*, 3rd ed., Morgan & Claypool. <http://dx.doi.org/10.2200/S00516ED2V01Y201306CAC024>  
 [2] Fan, X., Weber, W., Barroso, L.A. (2007) “Power Provisioning for a Warehouse-sized Computer,” *ACM ISCA 2007*, pp. 13–23. DOI: [10.1145/1273440.1250665](https://doi.org/10.1145/1273440.1250665)  
-[3] IEEE Std 3006.8-2018 — Recommended Practice for Analyzing Reliability Data for Equipment Used in Industrial and Commercial Power Systems (PUE). <https://ieeexplore.ieee.org/document/8353506>  
+[3] IEEE Std 3006.8/4447 — Recommended Practice for Analyzing Reliability Data for Equipment Used in Industrial and Commercial Power Systems (PUE). <https://standards.ieee.org/ieee/3006.8/4447/>  
 [4] ASHRAE TC 9.9 (2021) *Thermal Guidelines for Data Processing Environments*, 5th ed. <https://www.ashrae.org/>  
 [5] Economou, D., Rivoire, S., Kozyrakis, C., Ranganathan, P. (2006) “Full-System Power Analysis and Modeling for Server Environments,” MoBS workshop, ISCA 2006. <https://csl.stanford.edu/~christos/publications/2006.mantis.mobs.slides.pdf>  
 [6] Shehabi, A., Smith, S., Sartor, D., et al. (2016) *United States Data Center Energy Usage Report*, LBNL-1005775. <https://escholarship.org/content/qt84p772fc/qt84p772fc.pdf>  
@@ -539,8 +545,8 @@ where $L$ is the regional zone load in MW.
 
 [1] PJM Manual 12: *Balancing Operations*, Section 4 — RegD signal specification. <https://www.pjm.com/-/media/documents/manuals/m12.ashx>  
 [2] NYISO Real-Time Actual Load data, 5-minute resolution. <https://www.nyiso.com/real-time-dashboard>  
-[3] Hogan, W.W. (2002) “Electricity Market Restructuring: Reforms of Reforms,” *J. Regulatory Economics*, 21(1), 103–132. DOI: [10.1023/A:1013557912617](https://doi.org/10.1023/A:1013557912617)  
-[4] Kundur, P. (1994) *Power System Stability and Control*, McGraw-Hill (ISBN 978-0-07-035958-1). Ch. 12 — Swing equation; damping coefficient D.  
+[3] Hogan, W.W. (2002) “Electricity Market Restructuring: Reforms of Reforms,” *J. Regulatory Economics*, 21(1), 103–132. DOI: [10.1023/A:1013682825693](https://doi.org/10.1023/A:1013682825693)  
+[4] Kundur, P. (1994) *Power System Stability and Control*, McGraw-Hill (ISBN 978-0070359581). Ch. 12 — Swing equation; damping coefficient D.  
 [5] Schweppe, F.C., Caramanis, M.C., Tabors, R.D., Bohn, R.E. (1988) *Spot Pricing of Electricity*, Kluwer Academic (ISBN 978-0-89838-260-0).  
 [6] Kirby, B.J. (2005) *Frequency Regulation Basics and Trends*, ORNL/TM-2004/291. DOI: [10.2172/885974](https://doi.org/10.2172/885974)  
 
@@ -583,7 +589,7 @@ Renewable output appears in the PCC power balance but **does not currently feed 
 
 ### References
 
-[1] IEC 61400-12-1:2022 *Wind energy generation systems — Part 12-1: Power performance measurements of electricity producing wind turbines*, IEC. <https://www.iec.ch/standard/50028>  
+[1] IEC 61400-12-1:2022 *Wind energy generation systems — Part 12-1: Power performance measurements of electricity producing wind turbines*, IEC. <https://webstore.iec.ch/en/publication/68499>  
 [2] Lydia, M., Kumar, S.S., Selvakumar, A.I., Kumar, G.E.P. (2014) “A comprehensive review on wind turbine power curve modeling techniques,” *Renewable and Sustainable Energy Reviews*, 30, 452–460. DOI: [10.1016/j.rser.2013.10.030](https://doi.org/10.1016/j.rser.2013.10.030)  
 [3] Masters, G.M. (2004) *Renewable and Efficient Electric Power Systems*, Wiley-IEEE Press (ISBN 978-0-471-28060-6). Ch. 7 — Betz limit, v³ power law, cut-in/out parameters.  
 [4] King, D.L., Boyson, W.E., Kratochvil, J.A. (2004) *Photovoltaic Array Performance Model*, Sandia National Laboratories, SAND2004-3535. <https://energy.sandia.gov/>  
@@ -628,7 +634,7 @@ T_\text{amb}(d, h) = \bar{T}_\text{annual} + A_\text{seasonal} \cdot \cos\!\left
 [1] Smith, A., Lott, J.N., Vose, R. (2011) “The Integrated Surface Database: Recent Developments and Partnerships,” *Bull. Am. Meteorol. Soc.*, 92(6), 704–708. DOI: [10.1175/2011BAMS3015.1](https://doi.org/10.1175/2011BAMS3015.1)  
 [2] Parton, W.J., Logan, J.A. (1981) “A model for diurnal variation in soil and air temperature,” *Agricultural Meteorology*, 23, 205–216. DOI: [10.1016/0002-1571(81)90105-9](https://doi.org/10.1016/0002-1571(81)90105-9)  
 [3] ASHRAE (2021) *ASHRAE Handbook — Fundamentals*, Ch. 14: Climatic Design Information. <https://www.ashrae.org/technical-resources/ashrae-handbook>  
-[4] Lee, K.P., Chen, H.L. (2013) “Analysis of energy saving potential of air-side free cooling for data centers in worldwide climate zones,” *Energy and Buildings*, 64, 103–112. DOI: [10.1016/j.enbuild.2013.04.019](https://doi.org/10.1016/j.enbuild.2013.04.019)  
+[4] Lee, K.P., Chen, H.L. (2013) “Analysis of energy saving potential of air-side free cooling for data centers in worldwide climate zones,” *Energy and Buildings*, 64, 103–112. DOI: [10.1016/j.enbuild.2013.04.013](https://doi.org/10.1016/j.enbuild.2013.04.013)  
 
 ---
 
