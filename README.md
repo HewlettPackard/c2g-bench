@@ -139,7 +139,7 @@ where
 \bar{r}_K = \frac{1}{K}\sum_{i=0}^{K-1} r_i
 ```
 
-and r_i is the 5-second reward at sub-step i. Thus, $\bar{r}_K$ is the mean of the 180 fast-step rewards in macro step $k$.
+and $r_i$ is the 5-second reward at sub-step i. Thus, $\bar{r}_K$ is the mean of the 180 fast-step rewards in macro step $k$.
 
 The macro agent never directly observes the 5-second physics — it sees only the aggregated $\mathcal{S}_M$. This induces **partial observability** at the macro level that the agent must compensate for through robust commitment policies.
 
