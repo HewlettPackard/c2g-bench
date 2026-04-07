@@ -13,10 +13,10 @@ plt.rcParams.update({
 })
 BL="#2166ac"; OR="#d6604d"; GR="#4dac26"; RD="#b2182b"; GY="#878787"
 
-from c2g_env.simulators.workload import WorkloadOrchestrator, WorkloadState
-from c2g_env.simulators.thermal  import ThermalTwin
-from c2g_env.simulators.bess     import _SimpleBESSModel
-from c2g_env.simulators.macro_grid import MacroGridSignal
+from c2g_env.physics.workload import WorkloadOrchestrator, WorkloadState
+from c2g_env.physics.thermal  import ThermalTwin
+from c2g_env.physics.bess     import _SimpleBESSModel
+from c2g_env.physics.macro_grid import MacroGridSignal
 
 fig = plt.figure(figsize=(13, 9))
 gs  = gridspec.GridSpec(2, 2, figure=fig, hspace=0.42, wspace=0.35)
