@@ -28,13 +28,13 @@ C2G-Bench exposes two Gymnasium environments that operate at different timescale
 
 ```
 C2GMacroEnv  (15-minute ticks)
-│   Observation : 16-D aggregated from 180 sub-steps
+│   Observation : 17-D aggregated from 180 sub-steps
 │   Action      : 2-D  [commit_norm, bess_target]
 │
 │   calls inner_action_fn() 180 times per macro-step
 │
 └── C2GFastEnv  (5-second ticks)
-        Observation : 16-D normalised
+        Observation : 17-D normalised
         Action      : 4-D  [throttle, pump_A, hvac, bess]
         │
         └── Seven physics engines (all unconditionally stable):
@@ -68,7 +68,7 @@ Both environments share the same seven physics engines and the same `config.yaml
 
 ### 2.2 Observation Space
 
-`Box(low, high, shape=(16,), dtype=float32)`
+`Box(low, high, shape=(17,), dtype=float32)`
 
 | Index | Name | Range | Formula | Description |
 |-------|------|-------|---------|-------------|
@@ -88,11 +88,13 @@ Both environments share the same seven physics engines and the same `config.yaml
 | 13 | `T_amb_norm` | [0, 1] | $T_\text{amb} / 50$ | Ambient temperature |
 | 14 | `freq_dev_norm` | [-1, 1] | $\Delta f / 0.5$ | Grid frequency deviation (swing equation) |
 | 15 | `v_pcc_pu` | [0, 1.1] | Thévenin | PCC voltage in per-unit |
+| 16 | `backlog_norm` | [0, 1] | $q / q_\text{max}$ | Workload backlog fraction (FIFO queue) |
 
 ### 2.3 Reward Function
 
-$$\mathcal{R}_t = \alpha \cdot u_\text{thr} - \beta \cdot \frac{|\Delta P_\text{demand} - \Delta P_\text{actual}|}{P_\text{norm}} - \gamma \cdot (T - T_\text{warn})^{+} - \delta_\text{soc} \cdot \mathbf{1}_\text{soc} - \delta_f \cdot (|\Delta f| - 0.2)^{+} - \delta_v \cdot \varepsilon_v$$
-
+```math
+\mathcal{R}_t = \alpha \cdot u_\text{thr} - \beta \cdot \frac{|\Delta P_\text{demand} - \Delta P_\text{actual}|}{P_\text{norm}} - \gamma \cdot (T - T_\text{warn})^{+} - \delta_\text{soc} \cdot \mathbf{1}_\text{soc} - \delta_f \cdot (|\Delta f| - 0.2)^{+} - \delta_v \cdot \varepsilon_v
+```
 where:
 - $(x)^{+} = \max(0, x)$  
 - $u_\text{thr} = 1 - \text{throttle}$ (fraction of batch workload served)  
@@ -179,23 +181,25 @@ obs, reward, terminated, truncated, info = env.step(action)
 
 ### 3.2 Observation Space
 
-`Box(shape=(16,), dtype=float32)` — same 16-D structure as `C2GFastEnv` but **aggregated** over 180 sub-steps:
+`Box(shape=(17,), dtype=float32)` — same 17-D structure as `C2GFastEnv` but **aggregated** over 180 sub-steps:
 
 - `temp_A_norm`, `temp_B_norm` — **mean** over sub-steps
 - `bess_soc` — **final** SOC at end of window
 - `freq_dev_norm` — **mean** frequency deviation
 - `v_pcc_pu` — **mean** PCC voltage
 - All other fields — mean of sub-step values
+- `backlog_norm` — **mean** backlog fraction over sub-steps
 
 ### 3.3 Reward Function
 
-$$\mathcal{R}_\text{macro} = \bar{\mathcal{R}}_\text{fast} + \lambda_\text{lmp} \cdot \text{LMP} \cdot P_\text{BESS,mean} - \lambda_\text{churn} \cdot |\Delta \text{commit}|$$
-
+```math
+\mathcal{R}_\text{macro} = \bar{\mathcal{R}}_\text{fast} + \lambda_\text{lmp} \cdot \text{LMP} \cdot P_\text{BESS,mean} - \lambda_\text{churn} \cdot |\Delta \text{commit}|
+```
 where $\bar{\mathcal{R}}_\text{fast}$ is the mean of the 180 sub-step rewards.
 
 ### 3.4 The `inner_action_fn` Interface
 
-The macro environment can receive a callable that maps `(obs_16d) → action_4d`.  
+The macro environment can receive a callable that maps `(obs_17d) → action_4d`.  
 This is the **Hierarchical RL interface** — the inner function is the trained low-level policy.
 
 ```python
@@ -228,25 +232,29 @@ Models the thermal dynamics of two independently-cooled zones using **exact expo
 
 **Governing ODE** (lumped-capacitance energy balance):
 
-$$C_A \frac{dT_A}{dt} = P_\text{IT,A} - K_\text{liq,eff}(T_A - T_\text{supply,A}) + K_\text{env,A}(T_\text{amb} - T_A)$$
-
+```math
+C_A \frac{dT_A}{dt} = P_\text{IT,A} - K_\text{liq,eff}(T_A - T_\text{supply,A}) + K_\text{env,A}(T_\text{amb} - T_A)
+```
 where:
-- $K_\text{liq,eff} = K_\text{liq} \cdot \max(\text{PUMP\_MIN},\ \text{pump\_speed}) \cdot f_\text{fault}$
+- $K_\text{liq,eff} = K_\text{liq} \cdot \max(u_{p,\min},\ u_p) \cdot f_\text{fault}$
 - $f_\text{fault} \in [0, 1]$ — cooling fault factor (1.0 = normal, 0.6 = Scenario C)
 
 **Exact solution** (per timestep $\Delta t$):
 
-$$T_A(t + \Delta t) = T_\text{eq} + (T_A(t) - T_\text{eq}) \cdot e^{-K_\text{total}\,\Delta t / C_A}$$
-
-$$T_\text{eq} = \frac{P_\text{IT,A} + K_\text{liq,eff} T_\text{supply,A} + K_\text{env,A} T_\text{amb}}{K_\text{liq,eff} + K_\text{env,A}}, \quad K_\text{total} = K_\text{liq,eff} + K_\text{env,A}$$
-
+```math
+T_A(t + \Delta t) = T_\text{eq} + (T_A(t) - T_\text{eq}) \cdot e^{-K_\text{total}\,\Delta t / C_A}
+```
+```math
+T_\text{eq} = \frac{P_\text{IT,A} + K_\text{liq,eff} T_\text{supply,A} + K_\text{env,A} T_\text{amb}}{K_\text{liq,eff} + K_\text{env,A}}, \quad K_\text{total} = K_\text{liq,eff} + K_\text{env,A}
+```
 **CDU chiller COP** (degrades when supply temperature is lowered below design point):
 
-$$\text{COP}_\text{liq} = \text{COP}_\text{base,liq} \cdot \max\bigl(0.3,\ 1 - \beta_\text{liq}(T_\text{ref,A} - T_\text{supply,A})\bigr)$$
-
+```math
+\text{COP}_\text{liq} = \text{COP}_\text{base,liq} \cdot \max\bigl(0.3,\ 1 - \beta_\text{liq}(T_\text{ref,A} - T_\text{supply,A})\bigr)
+```
 **Electrical power draws**:
 - CDU chiller: $P_\text{cool,A} = K_\text{liq,eff}(T_A - T_\text{supply,A}) / \text{COP}_\text{liq}$  
-- Circulating pump: $P_\text{pump} = P_\text{pump,max} \cdot \max(\text{PUMP\_MIN},\ \text{pump\_speed})$
+- Circulating pump: $P_\text{pump} = P_\text{pump,max} \cdot \max(u_{p,\min},\ u_p)$
 
 **Zone A Parameters:**
 
@@ -268,14 +276,17 @@ $$\text{COP}_\text{liq} = \text{COP}_\text{base,liq} \cdot \max\bigl(0.3,\ 1 - \
 
 **Governing ODE:**
 
-$$C_B \frac{dT_B}{dt} = P_\text{IT,B} - Q_\text{HVAC} + K_\text{env,B}(T_\text{amb} - T_B)$$
-
+```math
+C_B \frac{dT_B}{dt} = P_\text{IT,B} - Q_\text{HVAC} + K_\text{env,B}(T_\text{amb} - T_B)
+```
 **HVAC cooling capacity** (three operating regimes):
 
-$$K_\text{eff} = K_\text{air} \cdot f_\text{fault} \cdot (0.3 + 0.7 \cdot u_\text{hvac})$$
-
-$$\text{COP}_\text{air} = \text{COP}_\text{base} \cdot \max(0.3,\ 1 - \alpha_\text{amb}(T_\text{amb} - 25)) \cdot \max(0.3,\ 1 - \beta_\text{air}(T_\text{ref,B} - T_\text{supply,B}))$$
-
+```math
+K_\text{eff} = K_\text{air} \cdot f_\text{fault} \cdot (0.3 + 0.7 \cdot u_\text{hvac})
+```
+```math
+\text{COP}_\text{air} = \text{COP}_\text{base} \cdot \max(0.3,\ 1 - \alpha_\text{amb}(T_\text{amb} - 25)) \cdot \max(0.3,\ 1 - \beta_\text{air}(T_\text{ref,B} - T_\text{supply,B}))
+```
 | Regime | Condition | Effective ODE |
 |--------|-----------|---------------|
 | Below supply air | $T_B < T_\text{supply,B}$ | Ambient coupling only |
@@ -331,32 +342,39 @@ Two backend implementations with an identical public API:
 
 ### 5.1 Round-Trip Efficiency (Pure-Python Backend)
 
-$$\eta(C\text{-rate}, \text{SOC}) = \max\!\left(0.70,\ \eta_\text{peak}^2 - k_C \cdot C^2 - k_\text{SOC} \cdot (\text{SOC} - 0.5)^2\right)$$
-
+```math
+\eta(C\text{-rate}, \text{SOC}) = \max\!\left(0.70,\ \eta_\text{peak}^2 - k_C \cdot C^2 - k_\text{SOC} \cdot (\text{SOC} - 0.5)^2\right)
+```
 where $C = P / E_\text{nom}$ is the C-rate in h⁻¹.
 
 ### 5.2 SOC Dynamics
 
-$$\text{discharge:}\quad \Delta\text{SOC} = -\frac{P_\text{actual} \cdot \Delta t}{\eta \cdot E_\text{nom}}$$
-
-$$\text{charge:}\quad \Delta\text{SOC} = +\frac{|P_\text{actual}| \cdot \eta \cdot \Delta t}{E_\text{nom}}$$
-
+```math
+\text{discharge:}\quad \Delta\text{SOC} = -\frac{P_\text{actual} \cdot \Delta t}{\eta \cdot E_\text{nom}}
+```
+```math
+\text{charge:}\quad \Delta\text{SOC} = +\frac{|P_\text{actual}| \cdot \eta \cdot \Delta t}{E_\text{nom}}
+```
 ### 5.3 SOC-Dependent Power Derating
 
 Smooth derating near hard limits (avoids cliff-edge cutoffs):
 
-$$P_\text{discharge,max}(\text{SOC}) = P_\text{max} \cdot \min\!\left(1,\ \frac{\text{SOC} - \text{SOC}_\text{min}}{0.10}\right)$$
-
-$$P_\text{charge,max}(\text{SOC}) = P_\text{max} \cdot \min\!\left(1,\ \frac{\text{SOC}_\text{max} - \text{SOC}}{0.05}\right)$$
-
+```math
+P_\text{discharge,max}(\text{SOC}) = P_\text{max} \cdot \min\!\left(1,\ \frac{\text{SOC} - \text{SOC}_\text{min}}{0.10}\right)
+```
+```math
+P_\text{charge,max}(\text{SOC}) = P_\text{max} \cdot \min\!\left(1,\ \frac{\text{SOC}_\text{max} - \text{SOC}}{0.05}\right)
+```
 ### 5.4 Capacity Fade
 
 Linear calendar + cycle fade (1% per 1,000 equivalent full cycles):
 
-$$f_\text{age} \mathrel{+}= \frac{|P_\text{actual}| \cdot \Delta t}{E_\text{nom} \cdot 1000}$$
-
-$$E_\text{effective} = E_\text{nom} \cdot (1 - 0.2 \cdot f_\text{age})$$
-
+```math
+f_\text{age} \mathrel{+}= \frac{|P_\text{actual}| \cdot \Delta t}{E_\text{nom} \cdot 1000}
+```
+```math
+E_\text{effective} = E_\text{nom} \cdot (1 - 0.2 \cdot f_\text{age})
+```
 ### 5.5 BESS Parameters
 
 | Parameter | Symbol | Value | Unit |
@@ -393,8 +411,9 @@ Models the full AC power flow from grid PCC to IT loads, including non-linear lo
 
 Non-linear server power vs. utilisation (superlinear exponent for GPU power):
 
-$$P_\text{IT,zone} = N_\text{racks} \cdot \left[P_\text{idle} + (P_\text{max} - P_\text{idle}) \cdot u^\alpha\right]$$
-
+```math
+P_\text{IT,zone} = N_\text{racks} \cdot \left[P_\text{idle} + (P_\text{max} - P_\text{idle}) \cdot u^\alpha\right]
+```
 | Zone | Racks | $P_\text{idle}$ | $P_\text{max}$ | $\alpha$ |
 |------|-------|----------------|----------------|---------|
 | A (liquid, GPU) | 2,000 | 8 kW | 75 kW | 1.4 |
@@ -402,8 +421,9 @@ $$P_\text{IT,zone} = N_\text{racks} \cdot \left[P_\text{idle} + (P_\text{max} - 
 
 ### 6.2 UPS Efficiency Model
 
-$$\eta_\text{UPS}(x) = \frac{\eta_\text{peak} \cdot x}{x + k_\text{loss}(1-x)^2 + k_\text{noload}}$$
-
+```math
+\eta_\text{UPS}(x) = \frac{\eta_\text{peak} \cdot x}{x + k_\text{loss}(1-x)^2 + k_\text{noload}}
+```
 where $x$ is the load fraction. Low load → poor efficiency (no-load losses dominate).
 
 | Parameter | Zone A | Zone B |
@@ -414,8 +434,9 @@ where $x$ is the load fraction. Low load → poor efficiency (no-load losses dom
 
 ### 6.3 Transformer Losses
 
-$$P_\text{loss,XFMR} = P_\text{iron} + P_\text{copper} \cdot \left(\frac{P_\text{load}}{S_\text{rated}}\right)^2$$
-
+```math
+P_\text{loss,XFMR} = P_\text{iron} + P_\text{copper} \cdot \left(\frac{P_\text{load}}{S_\text{rated}}\right)^2
+```
 | Parameter | Value |
 |-----------|-------|
 | Rating $S_\text{rated}$ | 300 MVA |
@@ -424,10 +445,12 @@ $$P_\text{loss,XFMR} = P_\text{iron} + P_\text{copper} \cdot \left(\frac{P_\text
 
 ### 6.4 PCC Voltage (Thévenin Model)
 
-$$v_\text{drop,pu} = P_\text{pu} \cdot R_\text{pu} + Q_\text{pu} \cdot X_\text{pu}$$
-
-$$v_\text{pcc,pu} = 1.0 - v_\text{drop,pu}$$
-
+```math
+v_\text{drop,pu} = P_\text{pu} \cdot R_\text{pu} + Q_\text{pu} \cdot X_\text{pu}
+```
+```math
+v_\text{pcc,pu} = 1.0 - v_\text{drop,pu}
+```
 where $Z_\text{grid} = 0.04$ pu, X/R ratio = 10 ⟹ $X_\text{pu} \approx 0.0398$, $R_\text{pu} \approx 0.00398$.
 
 **Voltage thresholds** (ANSI C84.1):
@@ -440,8 +463,9 @@ where $Z_\text{grid} = 0.04$ pu, X/R ratio = 10 ⟹ $X_\text{pu} \approx 0.0398$
 
 ### 6.5 Power Usage Effectiveness
 
-$$\text{PUE} = \frac{P_\text{facility}}{P_\text{IT,total}} = \frac{P_\text{IT} + P_\text{cool} + P_\text{UPS loss} + P_\text{XFMR loss} + P_\text{aux}}{P_\text{IT}}$$
-
+```math
+\text{PUE} = \frac{P_\text{facility}}{P_\text{IT,total}} = \frac{P_\text{IT} + P_\text{cool} + P_\text{UPS loss} + P_\text{XFMR loss} + P_\text{aux}}{P_\text{IT}}
+```
 Practical range: 1.25 (excellent) to 2.5+ (very poor, Zone B heat wave).
 
 ### References
@@ -466,18 +490,21 @@ Generates frequency regulation signals, wholesale LMP prices, and grid frequency
 
 The RegD-inspired normalised signal $s_t \in [-1, 1]$:
 
-$$s_t = \rho \cdot s_{t-1} + \sigma \cdot \varepsilon_t, \quad \varepsilon_t \sim \mathcal{N}(0,1)$$
-
+```math
+s_t = \rho \cdot s_{t-1} + \sigma \cdot \varepsilon_t, \quad \varepsilon_t \sim \mathcal{N}(0,1)
+```
 **Energy neutrality** (matches PJM/AEMO settlement requirements): the signal is mean-corrected over rolling windows so it integrates to ≈ 0 over each settlement period.
 
 **Regulation dispatch command** [kW]:
 
-$$\Delta P_\text{demanded} = s_t \cdot P_\text{committed} \cdot 1000$$
-
+```math
+\Delta P_\text{demanded} = s_t \cdot P_\text{committed} \cdot 1000
+```
 ### 7.2 Grid Frequency Model (Swing Equation)
 
-$$\frac{df}{dt} = \frac{1}{2H}\left(\Delta P_\text{pu,supply} - \Delta P_\text{pu,demand}\right) - \frac{D}{2H} \cdot \Delta f + \sigma_f \varepsilon_t$$
-
+```math
+\frac{df}{dt} = \frac{1}{2H}\left(\Delta P_\text{pu,supply} - \Delta P_\text{pu,demand}\right) - \frac{D}{2H} \cdot \Delta f + \sigma_f \varepsilon_t
+```
 Discretised per 5-second step with $H = 6$ s (system inertia), $D = 1.5$ (load damping), $\sigma_f = 0.005$ Hz.
 
 **Frequency safety thresholds:**
@@ -490,8 +517,9 @@ Discretised per 5-second step with $H = 6$ s (system inertia), $D = 1.5$ (load d
 
 ### 7.3 LMP Proxy
 
-$$\text{LMP}(L) = \text{LMP}_\text{base} + \text{LMP}_\text{slope} \cdot \max(0, L - L_\text{median})$$
-
+```math
+\text{LMP}(L) = \text{LMP}_\text{base} + \text{LMP}_\text{slope} \cdot \max(0, L - L_\text{median})
+```
 where $L$ is the regional zone load in MW.
 
 ### 7.4 Market Presets
@@ -527,8 +555,9 @@ where $L$ is the regional zone load in MW.
 
 ### 8.1 Wind Power Model (IEC 61400-12-1)
 
-$$P_\text{wind}(v) = \begin{cases} 0 & v < v_\text{cut-in} \text{ or } v > v_\text{cut-out} \\ P_\text{rated} \cdot \left(\frac{v^3 - v_\text{cut-in}^3}{v_\text{rated}^3 - v_\text{cut-in}^3}\right) & v_\text{cut-in} \le v \le v_\text{rated} \\ P_\text{rated} & v_\text{rated} < v \le v_\text{cut-out} \end{cases}$$
-
+```math
+P_\text{wind}(v) = \begin{cases} 0 & v < v_\text{cut-in} \text{ or } v > v_\text{cut-out} \\ P_\text{rated} \cdot \left(\frac{v^3 - v_\text{cut-in}^3}{v_\text{rated}^3 - v_\text{cut-in}^3}\right) & v_\text{cut-in} \le v \le v_\text{rated} \\ P_\text{rated} & v_\text{rated} < v \le v_\text{cut-out} \end{cases}
+```
 | Parameter | Value |
 |-----------|-------|
 | Rated capacity | 100 MW |
@@ -539,8 +568,9 @@ $$P_\text{wind}(v) = \begin{cases} 0 & v < v_\text{cut-in} \text{ or } v > v_\te
 
 ### 8.2 Solar PV Model (PVUSA / IEC 61853-1)
 
-$$P_\text{solar}(G, T_c) = P_\text{STC} \cdot \frac{G}{G_\text{STC}} \cdot \left[1 + \gamma_\text{temp}(T_c - T_\text{STC})\right] \cdot f_\text{age}$$
-
+```math
+P_\text{solar}(G, T_c) = P_\text{STC} \cdot \frac{G}{G_\text{STC}} \cdot \left[1 + \gamma_\text{temp}(T_c - T_\text{STC})\right] \cdot f_\text{age}
+```
 | Parameter | Value |
 |-----------|-------|
 | Rated capacity (STC) | 75 MW |
@@ -577,8 +607,9 @@ Supplies per-tick ambient temperature $T_\text{amb}$ to the thermal simulator.
 
 **Synthetic climate model:**
 
-$$T_\text{amb}(d, h) = T_\text{annual\_mean} + A_\text{seasonal} \cdot \cos\!\left(\frac{2\pi(d - d_\text{peak})}{365}\right) + A_\text{diurnal} \cdot \cos\!\left(\frac{2\pi(h - h_\text{peak})}{24}\right) + \sigma_\text{noise} \varepsilon$$
-
+```math
+T_\text{amb}(d, h) = \bar{T}_\text{annual} + A_\text{seasonal} \cdot \cos\!\left(\frac{2\pi(d - d_\text{peak})}{365}\right) + A_\text{diurnal} \cdot \cos\!\left(\frac{2\pi(h - h_\text{peak})}{24}\right) + \sigma_\text{noise} \varepsilon
+```
 **Market weather stations:**
 
 | Market | Station | City |
@@ -612,17 +643,20 @@ Fuses three real Alibaba cluster trace types into a total IT power demand at eac
 |-------|--------|------|-------------|
 | Batch (2023) | Alibaba cluster trace v2023 | **Flexible** — fully throttleable by DVFS | $P_\text{flex}(t) \cdot (1 - \text{throttle})$ |
 | DLRM (2025) | Alibaba inference trace v2025 | **Rigid** — SLA-protected | $P_\text{DLRM}(t)$ |
-| GenAI (2026) | Alibaba GenAI serving v2026 | **Rigid + spikes** — non-throttleable | $P_\text{GenAI}(t) \cdot \text{spike\_scale}$ |
+| GenAI (2026) | Alibaba GenAI serving v2026 | **Rigid + spikes** — non-throttleable | $P_\text{GenAI}(t) \cdot s_\text{spike}$ |
 | Spot (2026) | Spot/preemptible workloads | **Flexible** — lowest priority | $P_\text{spot}(t)$ |
 
 **Total IT power split across zones:**
 
-$$P_\text{base} = P_\text{DLRM} + P_\text{GenAI} \quad \text{(rigid, Zone A)}$$
-
-$$P_\text{flex,nom} = P_\text{batch} + P_\text{spot} \quad \text{(schedulable)}$$
-
-$$P_\text{IT,actual} = P_\text{base} + P_\text{flex,nom} \cdot (1 - \text{throttle})$$
-
+```math
+P_\text{base} = P_\text{DLRM} + P_\text{GenAI} \quad \text{(rigid, Zone A)}
+```
+```math
+P_\text{flex,nom} = P_\text{batch} + P_\text{spot} \quad \text{(schedulable)}
+```
+```math
+P_\text{IT,actual} = P_\text{base} + P_\text{flex,nom} \cdot (1 - \text{throttle})
+```
 **GenAI spike model:** Poisson-distributed serving bursts scaled by `genai_spike_scale` (1.0 = nominal, 1.8 = Scenario A). The `is_spike` observation flag is set during active bursts.
 
 ### References
