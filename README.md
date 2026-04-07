@@ -501,6 +501,9 @@ truncated = True"]
 
 ## 5. Physics Engines
 
+> **C2G-Bench exposes exactly two Gymnasium environments** — `C2GFastEnv` and `C2GMacroEnv` — both registered under `gym.make()`. Everything below is *not* an environment: the seven physics engines are internal simulation components with no `reset()/step()` or `observation_space/action_space` API. They are called exclusively by the two environments and are never exposed to an RL agent directly. If you want to interact with a physics engine in isolation (e.g. for unit testing or analysis), instantiate it directly from `c2g_env.physics.*`.
+
+
 Seven independent physics/data modules, all with exact-exponential or analytical solutions (unconditionally stable):
 
 | Simulator | File | Description |
