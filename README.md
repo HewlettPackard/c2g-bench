@@ -25,9 +25,9 @@ Every power grid must keep its frequency exactly at **60 Hz** (US) or **50 Hz** 
 
 Every **2–5 seconds**, the grid operator broadcasts a normalized score:
 
-$$
+```math
 \text{RegD}(t) \in [-1,\, +1]
-$$
+```
 
 The sign convention is:
 
@@ -39,9 +39,9 @@ The sign convention is:
 
 The actual MW response required is:
 
-$$
+```math
 \Delta P_{\text{demanded}} = C_{\text{MW}} \times \text{RegD}(t)
-$$
+```
 
 where $C_{\text{MW}}$ (`committed_mw`) is the regulation capacity the data center has pre-contracted to the market for the current 15-minute settlement interval.
 
@@ -141,9 +141,9 @@ Executes the physical "Handshake." Receives the real-time frequency regulation s
 
 The scalar reward received at every 5-second tick has **seven additive terms**:
 
-$$
+```math
 \begin{aligned}
-\mathcal{R} =\;& \alpha \cdot u_{\text{thr}} \\
+\mathcal{R} =&\; \alpha \cdot u_{\text{thr}} \\
   &- \beta \cdot \frac{|\Delta P_{\text{demand}} - \Delta P_{\text{actual}}|}{P_{\text{norm}}} \\
   &- \gamma \cdot (T - T_{\text{warn}})^{+} \\
   &- \delta_{\text{soc}} \cdot \mathbf{1}_{\text{soc}} \\
@@ -151,7 +151,7 @@ $$
   &- \delta_v \cdot \varepsilon_v \\
   &- \delta_q \cdot \frac{Q_{\text{backlog}}}{P_{\text{flex,max}}}
 \end{aligned}
-$$
+```
 
 where:
 
@@ -203,9 +203,9 @@ All coefficients are chosen so that terms land in the same numerical range under
 
 The RegD tracking error is computed as:
 
-$$
+```math
 \Delta P_{\text{actual}} = P_{\text{flex,served}} + P_{\text{BESS,actual}}
-$$
+```
 
 where $P_{\text{flex,served}} = \min\!\left(Q_{\text{backlog}},\ P_{\text{flex,max}} \times u_{\text{thr}}\right)$ is the batch work actually served from the FIFO queue this tick, and $P_{\text{BESS,actual}}$ is the net BESS power after battery dynamics.
 
@@ -225,7 +225,7 @@ where $P_{\text{flex,served}} = \min\!\left(Q_{\text{backlog}},\ P_{\text{flex,m
 
 Episode truncates at 17,280 ticks (24 hours at 5 s).
 
-### 4.4. Environment Architecture & Data Flow
+### 5.4. Environment Architecture & Data Flow
 
 > 📖 **Full technical reference** — equations, parameters, and API for all 7 physics engines and both environments: [`c2g_env/ENVIRONMENTS.md`](c2g_env/ENVIRONMENTS.md)
 
@@ -686,7 +686,7 @@ C2G-Bench ships four progressively harder 24-hour scenarios (17,280 ticks at 5 s
 uv run python baselines/train_ppo.py scenario=scenario_b market=ercot_north
 ```
 
-### 7.1 Scene-setting: shared physics
+### 8.1. Scene-setting: shared physics
 
 All scenarios share the same underlying simulator stack and reward weights:
 
@@ -703,7 +703,7 @@ All scenarios share the same underlying simulator stack and reward weights:
 
 ---
 
-### 7.2 `default` — Baseline Operations
+### 8.2. `default` — Baseline Operations
 
 > *"Can the agent learn to coordinate four physical levers under normal grid conditions?"*
 
@@ -725,7 +725,7 @@ The entry-level scenario. Ambient temperature is comfortable (25 °C, NYISO NYC 
 
 ---
 
-### 7.3 `scenario_a` — GenAI Crisis
+### 8.3. `scenario_a` — GenAI Crisis
 
 > *"A viral model launch + a grid under-frequency event hit simultaneously. The agent must shed flexible load without starving the BESS."*
 
@@ -747,7 +747,7 @@ This scenario models a **Northern Virginia (PJM DOM)** summer day when a new GPT
 
 ---
 
-### 7.4 `scenario_b` — Thermal Squeeze
+### 8.4. `scenario_b` — Thermal Squeeze
 
 > *"Dallas in August: 40 °C ambient, a 30 MW commitment, and a cooling system pushed to its physical limits."*
 
@@ -769,7 +769,7 @@ This scenario targets **ERCOT North (DFW)** during a peak-summer heat wave. The 
 
 ---
 
-### 7.5 `scenario_c` — Battery Drain
+### 8.5. `scenario_c` — Battery Drain
 
 > *"Western Sydney summer: the BESS starts nearly empty, the pump is failing, and the grid is stressed."*
 
@@ -791,7 +791,7 @@ This scenario represents a compounding failure in **AEMO NSW**. The BESS begins 
 
 ---
 
-### 7.6 Scenario × Market grid
+### 8.6. Scenario × Market grid
 
 All four scenarios can be combined with all six markets, yielding **24 distinct evaluation configurations**. Market selection changes the LMP profile, weather driver, and grid-stress statistics, while scenario selection changes the hardware stress and initial conditions:
 
