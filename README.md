@@ -37,7 +37,7 @@ The sign convention is:
 
 The actual MW response required is:
 
-$$\Delta P_{\text{demanded}} = \text{committed\_mw} \times \text{RegD}(t)$$
+$\Delta P_{\text{demanded}} = \text{committed\_mw} \times \text{RegD}(t)$
 
 where `committed_mw` is the capacity the data center has pre-contracted to the market for the current 15-minute settlement interval.
 
@@ -60,7 +60,7 @@ Under FERC Order 755, the *performance score* is the correlation between the dem
 
 A 250 MW hyperscale facility has three fast-response levers unavailable to most grid assets:
 
-1. **Batch compute DVFS** — schedulable HPC/AI training jobs can be throttled in milliseconds via CPU/GPU frequency scaling, instantly shedding up to ~50 MW of flexible load.
+1. **Batch compute DVFS** — schedulable HPC/AI training jobs can be throttled in milliseconds via CPU/GPU frequency scaling. Service capacity is capped at `p_flex_max × throttle` (~90 MW); unserved work is **deferred into a FIFO queue** (not dropped) and served when capacity recovers. Average queue delay is tracked via Little's Law and exposed in `obs[16]` (`backlog_norm`).
 2. **BESS** — the on-site 150 MWh / 50 MW battery can charge or discharge at full rate in under 100 ms, providing the fastest regulation response.
 3. **Thermal inertia (CDU pump)** — the liquid cooling loop acts as a thermal capacitor (τ ≈ 12.7 min). Slowing the pump briefly stores heat in the water loop without immediately raising server temperatures, providing ~5–10 MW of additional regulation headroom for short intervals.
 
@@ -112,14 +112,14 @@ Executes the physical "Handshake." Receives the real-time frequency regulation s
 | **BESS** | `action[3]` | [-1, 1] | Charge (−) / discharge (+) the 150 MWh battery |
 
 - **Action Space (4-D, continuous):** `[throttle_batch, pump_speed_A, hvac_effort, bess_dispatch]`
-- **Observation Space (16-D, normalised):**
+- **Observation Space (17-D, normalised):**
   | Index | Name | Range | Description |
   |-------|------|-------|-------------|
   | 0 | `temp_A_norm` | [0, 2] | Zone A (liquid-cooled GPU) temperature / T_safe |
   | 1 | `temp_B_norm` | [0, 2] | Zone B (air-cooled CPU) temperature / T_safe |
   | 2 | `bess_soc` | [0, 1] | Battery state of charge |
   | 3 | `p_base_norm` | [0, 1] | Rigid IT load (GenAI + DLRM) |
-  | 4 | `p_flex_nom_norm` | [0, 1] | Schedulable batch load at full throttle |
+  | 4 | `p_flex_nom_norm` | [0, 1] | New batch arrivals this tick (trace demand) |
   | 5 | `p_facility_norm` | [0, 2] | Total facility power |
   | 6 | `regd_signal` | [-1, 1] | Grid regulation signal (signed) |
   | 7 | `lmp_norm` | [0, 1] | Locational marginal price |
@@ -131,6 +131,7 @@ Executes the physical "Handshake." Receives the real-time frequency regulation s
   | 13 | `T_amb_norm` | [0, 1] | Ambient temperature |
   | 14 | `freq_dev_norm` | [-1, 1] | Normalised grid frequency deviation (swing equation) |
   | 15 | `v_pcc_pu` | [0, 1.1] | PCC voltage in per-unit (Thévenin model) |
+  | 16 | `backlog_norm` | [0, 2] | Deferred batch queue depth / p_flex_max (Little's Law queue) |
 
 ### 4.3. The NeurIPS Evaluation Metric: The Tracking Reward
 
@@ -385,9 +386,9 @@ sequenceDiagram
 
 ---
 
-#### Diagram 5 — FastEnv 16-D Observation Vector Anatomy
+#### Diagram 5 — FastEnv 17-D Observation Vector Anatomy
 
-Every five seconds the environment returns a 16-element `float32` vector. This diagram maps each index to its physical meaning and the simulator that produces it.
+Every five seconds the environment returns a 17-element `float32` vector. This diagram maps each index to its physical meaning and the simulator that produces it.
 
 ```mermaid
 flowchart LR
@@ -400,10 +401,11 @@ flowchart LR
         B2["[2] soc_fraction\n∈ [0.10, 0.95]"]
     end
 
-    subgraph SIM_WORK["🖥️ Workload"]
+    subgraph SIM_WORK["🖥️ Workload (queue model)"]
         W3["[3] p_base_kw / 250 MW\n∈ [0, 1]"]
-        W4["[4] p_flex_nom / 250 MW\n∈ [0, 1]"]
+        W4["[4] p_flex_nom / 250 MW\nArrivals this tick ∈ [0, 1]"]
         W9["[9] is_spike_active\n∈ {0, 1}"]
+        W16["[16] backlog_norm\nQueue depth / p_flex_max\n∈ [0, 2]"]
     end
 
     subgraph SIM_ELEC["⚡ Electrical Chain"]
@@ -428,10 +430,10 @@ flowchart LR
         AM11["[11] prev_pump_speed\n∈ [0, 1]"]
     end
 
-    OBS["📦 obs\n16-D float32"]
+    OBS["📦 obs\n17-D float32"]
     OBS --> T0 & T1
     OBS --> B2
-    OBS --> W3 & W4 & W9
+    OBS --> W3 & W4 & W9 & W16
     OBS --> E5 & E12
     OBS --> G6 & G7 & G8 & G14 & G15
     OBS --> WE13
@@ -487,6 +489,7 @@ flowchart LR
         SC["-  soc_pen  if SOC < 0.12\n    flat penalty per tick  |  default = 0.5"]
         FQ["-  δ_f · max(0, |Δf| − 0.2)\n    Hz beyond ±0.2 Hz dead-band  |  default δ_f = 2.0"]
         VT["-  δ_v · (max(0, 0.95−V) + max(0, V−1.05))\n    pu outside ANSI C84.1 Range A  |  default δ_v = 5.0"]
+        BL["-  δ_q · backlog_norm\n    SLA backlog = queue_kw / p_flex_max ∈ [0, 2]  |  default δ_q = 2.0"]
     end
 
     subgraph MRT["Macro Reward  R_k  (15-min)"]
@@ -496,7 +499,7 @@ flowchart LR
         CC["-  commit_vol × |Δcommit_norm|\n    commitment churn penalty  |  default = 0.05"]
     end
 
-    TP & TK & TH & SC & FQ & VT --> SUM["Σ → r_t"]
+    TP & TK & TH & SC & FQ & VT & BL --> SUM["Σ → r_t"]
     SUM --> MS
     MS & LB & CC --> MSUM["Σ → R_k"]
 ```
@@ -563,7 +566,7 @@ Seven independent physics/data modules, all with exact-exponential or analytical
 
 | Simulator | File | Description |
 |-----------|------|-------------|
-| **Workload Orchestrator** | `workload.py` | Fuses Alibaba batch (2023), DLRM (2025), and GenAI (2026) traces into P_base + P_flex at 5-min resolution |
+| **Workload Orchestrator** | `workload.py` | Fuses Alibaba batch (2023), DLRM (2025), and GenAI (2026) traces into P_base + P_flex at 5-min resolution. FIFO queue model: unserved batch work defers rather than drops; exposes `backlog_kw` and `avg_delay_steps` (Little's Law) per step |
 | **Thermal Twin** | `thermal.py` | Exact exponential ODE integration for dual-zone cooling (Zone A: HPE Cray EX liquid, Zone B: HPE ProLiant air) |
 | **Electrical Chain** | `electrical.py` | Non-linear UPS/PDU/XFMR loss curves + PUE calculation |
 | **BESS** | `bess.py` | 150 MWh / 50 MW Li-ion NMC (pure-Python backend + optional PySAM) with C-rate η, SOC derating, capacity fade |
