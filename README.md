@@ -25,7 +25,9 @@ Every power grid must keep its frequency exactly at **60 Hz** (US) or **50 Hz** 
 
 Every **2–5 seconds**, the grid operator broadcasts a normalized score:
 
-$$\text{RegD}(t) \in [-1,\, +1]$$
+$$
+\text{RegD}(t) \in [-1,\, +1]
+$$
 
 The sign convention is:
 
@@ -37,7 +39,9 @@ The sign convention is:
 
 The actual MW response required is:
 
-$$\Delta P_{\text{demanded}} = C_{\text{MW}} \times \text{RegD}(t)$$
+$$
+\Delta P_{\text{demanded}} = C_{\text{MW}} \times \text{RegD}(t)
+$$
 
 where $C_{\text{MW}}$ (`committed_mw`) is the regulation capacity the data center has pre-contracted to the market for the current 15-minute settlement interval.
 
@@ -137,7 +141,16 @@ Executes the physical "Handshake." Receives the real-time frequency regulation s
 
 The scalar reward received at every 5-second tick has **seven additive terms**:
 
-$$\mathcal{R} = \alpha \cdot u_{\text{thr}} - \beta \cdot \frac{|\Delta P_{\text{demand}} - \Delta P_{\text{actual}}|}{P_{\text{norm}}} - \gamma \cdot (T - T_{\text{warn}})^{+} - \delta_{\text{soc}} \cdot \mathbf{1}_{\text{soc}} - \delta_f \cdot (|\Delta f| - 0.2)^{+} - \delta_v \cdot \varepsilon_v - \delta_q \cdot \frac{Q_{\text{backlog}}}{P_{\text{flex,max}}}$$
+$$
+\mathcal{R} =
+  \alpha \cdot u_{\text{thr}}
+  - \beta \cdot \frac{|\Delta P_{\text{demand}} - \Delta P_{\text{actual}}|}{P_{\text{norm}}}
+  - \gamma \cdot (T - T_{\text{warn}})^{+}
+  - \delta_{\text{soc}} \cdot \mathbf{1}_{\text{soc}}
+  - \delta_f \cdot (|\Delta f| - 0.2)^{+}
+  - \delta_v \cdot \varepsilon_v
+  - \delta_q \cdot \frac{Q_{\text{backlog}}}{P_{\text{flex,max}}}
+$$
 
 where $(x)^{+} = \max(0,x)$, $\varepsilon_v = (0.95 - v_{\text{pcc}})^{+} + (v_{\text{pcc}} - 1.05)^{+}$.
 
@@ -175,7 +188,9 @@ All coefficients are chosen so that terms land in the same numerical range under
 
 The RegD tracking error is computed as:
 
-$$\Delta P_{\text{actual}} = P_{\text{flex,served}} + P_{\text{BESS,actual}}$$
+$$
+\Delta P_{\text{actual}} = P_{\text{flex,served}} + P_{\text{BESS,actual}}
+$$
 
 where $P_{\text{flex,served}} = \min\!\left(Q_{\text{backlog}},\ P_{\text{flex,max}} \times u_{\text{thr}}\right)$ is the batch work actually served from the FIFO queue this tick, and $P_{\text{BESS,actual}}$ is the net BESS power after battery dynamics.
 
