@@ -10,6 +10,26 @@
 #   Zone B:  same K_env_B * T_amb coupling
 #            COP = COP_base * max(0.3, 1 - COP_alpha * (T_amb - 25))
 #                → warmer days require more fan energy for the same cooling output
+#
+# References
+# ----------
+# [1] Smith, A., Lott, J.N., Vose, R. (2011) "The Integrated Surface Database:
+#     Recent Developments and Partnerships," Bulletin of the American
+#     Meteorological Society, 92(6), 704–708. — NOAA ISD station archive
+#     used for real-data mode; describes quality-control flags applied
+#     during preprocessing.
+# [2] Parton, W.J., Logan, J.A. (1981) "A model for diurnal variation in
+#     soil and air temperature," Agricultural Meteorology, 23, 205–216. —
+#     basis for the sinusoidal (annual + diurnal) synthetic temperature
+#     model used when real ISD data is unavailable.
+# [3] ASHRAE (2021) "ASHRAE Handbook — Fundamentals," Ch. 14: Climatic
+#     Design Information. — source for annual_mean_c / annual_amp_c
+#     calibration values per data-centre location.
+# [4] Muller, N., et al. (2010) "Climate Sensitivity and the Rate of
+#     Change of Data Center Electricity Demand," Energy Policy, 38(5),
+#     2478–2484. — quantifies impact of T_amb on chiller COP and total
+#     facility power, motivating weather-driven COP degradation in
+#     ThermalTwin.
 
 from __future__ import annotations
 

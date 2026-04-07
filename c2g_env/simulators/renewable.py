@@ -11,6 +11,28 @@
 #   P_solar = capacity_mw × (GHI / GHI_stc) × η_system
 #   GHI_stc = 1000 W/m² (standard test conditions)
 #   η_system ≈ 0.85 (inverter + wiring + soiling derating)
+#
+# References
+# ----------
+# [1] IEC 61400-12-1 (2022) "Wind energy generation systems — Part 12-1:
+#     Power performance measurements of electricity producing wind turbines,"
+#     International Electrotechnical Commission, Geneva. — standard power
+#     curve definition: cut-in, rated, cut-out speeds; IEC Class II turbine.
+# [2] Lydia, M., Kumar, S.S., Selvakumar, A.I., Kumar, G.E.P. (2014)
+#     "A comprehensive review on wind turbine power curve modeling techniques,"
+#     Renewable and Sustainable Energy Reviews, 30, 452–460. — justification
+#     for the sigmoid approximation of the IEC multi-segment power curve.
+# [3] Masters, G.M. (2004) "Renewable and Efficient Electric Power Systems,"
+#     Wiley-IEEE Press, Ch. 7. — Betz limit, v³ power law, hub-height
+#     extrapolation, and wind resource statistics underpinning cut-in/out
+#     parameter selection.
+# [4] King, D.L., Boyson, W.E., Kratochvil, J.A. (2004) "Photovoltaic Array
+#     Performance Model," Sandia National Laboratories, SAND2004-3535. —
+#     GHI-to-DC power mapping with system derating (η_system) including
+#     inverter, wiring, and soiling losses.
+# [5] Duffie, J.A., Beckman, W.A., McGowan, J.A. (2013) "Solar Engineering
+#     of Thermal Processes," 4th ed., Wiley. — GHI standard test condition
+#     (GHI_stc = 1000 W/m²) and PV panel efficiency definition.
 
 import os
 

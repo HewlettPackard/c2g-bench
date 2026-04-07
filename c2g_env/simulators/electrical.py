@@ -43,6 +43,14 @@
 #   [3] IEEE Std 3006.x — Recommended Practice for Determining PUE.
 #   [4] ASHRAE TC 9.9 — Thermal Guidelines for Data Processing Envs.
 #   [5] DOE Genesis Mission Brief, Nov 2025 — 250MW–1GW targets.
+#   [6] Economou, D., et al. (2006) "Full-System Power Analysis and
+#       Estimation for Server Environments," Workshop on Modeling,
+#       Benchmarking and Simulation (MBSim), ISCA 2006. — Empirical
+#       validation of the superlinear exponent α ≈ 1.4 for GPU servers.
+#   [7] Shehabi, A., et al. (2016) "United States Data Center Energy
+#       Usage Report," Lawrence Berkeley National Laboratory,
+#       LBNL-1005775. — PUE benchmarks (1.2–1.8 range) and dynamic
+#       PUE definition used for facility-level efficiency tracking.
 #
 # Governing equations:
 #

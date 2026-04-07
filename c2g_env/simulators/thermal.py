@@ -22,6 +22,29 @@
 # Integration: exact exponential (unconditionally stable for any dt).
 #   For dT/dt = (P - K(T-T0) + Ke(Ta-T))/C   i.e.  b - a*T :
 #     T(dt) = T_eq + (T_now - T_eq)*exp(-a*dt)    with  T_eq = b/a
+#
+# References
+# ----------
+# [1] Incropera, F.P., et al. (2007) "Fundamentals of Heat and Mass Transfer,"
+#     6th ed., Wiley. Ch. 5: Transient Conduction — lumped-capacitance ODE
+#     foundation for the C_dT/dt energy balance used in both zones.
+# [2] Moore, J.D., Chase, J.S., Ranganathan, P., Sharma, R. (2005)
+#     "Making Scheduling 'Cool': Temperature-Aware Workload Placement in Data
+#     Centers," USENIX Annual Technical Conference (ATC), 2005. — RC thermal
+#     model structure and COP-aware scheduling in HPC data centers.
+# [3] Tang, Q., Gupta, S.K.S., Varsamopoulos, G. (2008) "Energy-efficient
+#     Thermal-aware Task Scheduling for Homogeneous High-Performance Computing
+#     Data Centers: A Cyber-Physical Approach," IEEE Trans. Parallel Distrib.
+#     Syst., 19(11), 1458–1472. — ambient-dependent COP model calibration.
+# [4] ASHRAE TC 9.9 (2021) "Thermal Guidelines for Data Processing
+#     Environments," 5th ed., ASHRAE. — supply temperature zone limits:
+#     A1 = 15–27 °C, W3 = 5–40 °C used for T_supply_{A,B}_range.
+# [5] Patankar, S.V. (2010) "Airflow and Cooling in a Data Center,"
+#     J. Heat Transfer, 132(7), 073001. — envelope coupling K_env and
+#     airside convective heat-transfer coefficient model.
+# [6] Zimmermann, S., et al. (2012) "Chip-Level Thermo-Electric Cooling
+#     Integration," IEEE TCPMT, 2(2). — liquid-loop CDU efficiency and
+#     pump-speed-dependent effective K_liq model (Zone A).
 
 import numpy as np
 

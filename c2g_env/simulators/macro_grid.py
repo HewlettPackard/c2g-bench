@@ -42,6 +42,16 @@ References
     https://www.nyiso.com/real-time-dashboard
 [3] Hogan (2002): "Electricity Market Restructuring: Reforms of Reforms,"
     Journal of Regulatory Economics 21(1). — For LMP theory.
+[4] Kundur, P. (1994) "Power System Stability and Control," McGraw-Hill,
+    Ch. 12. — Swing equation (df/dt ∝ ΔP) underlying the discrete
+    frequency-deviation model; damping coefficient D calibration.
+[5] Schweppe, F.C., Caramanis, M.C., Tabors, R.D., Bohn, R.E. (1988)
+    "Spot Pricing of Electricity," Kluwer Academic. — Foundational
+    LMP theory; marginal cost basis for the load-duration LMP proxy.
+[6] Kirby, B. (2004) "Frequency Regulation Basics and Trends,"
+    Oak Ridge National Laboratory, ORNL/TM-2004/291. — AR(1)
+    statistical properties of the PJM RegD signal (ρ≈0.8, zero-mean
+    15-min window) calibration for ρ and σ in MarketParams.
 """
 from __future__ import annotations
 

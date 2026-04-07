@@ -24,6 +24,19 @@ References
     in SAM," NREL/TP-6A20-64641, 2015.
 [3] Xu et al., "Factoring the Cycle Ageing Cost of Batteries Participating
     in Electricity Markets," IEEE Trans. Power Syst. 33(2), 2018.
+[4] Shepherd, C.M. (1965) "Design of Primary and Secondary Cells:
+    An Equation Describing Battery Discharge," J. Electrochem. Soc.,
+    112(7), 657–664. — Shepherd voltage-curve equation underlying the
+    BatteryStateful electrochemical model in NREL PySAM.
+[5] Wang, J., et al. (2011) "Cycle-life model for graphite-LiFePO4
+    cells," J. Power Sources, 196, 3942–3948. — calendar + cycle
+    capacity-fade parameterisation; basis for the linear fade model
+    in the pure-Python fallback.
+[6] Hesse, H.C., et al. (2017) "Lithium-Ion Battery Storage for the
+    Grid — A Review of Stationary Battery Storage System Design
+    Tailored for Applications in Modern Power Grids," Energies,
+    10(12), 2107. — η(C-rate, SOC) round-trip efficiency surface;
+    NMC chemistry parameters (η_peak, k_crate, k_soc).
 """
 from __future__ import annotations
 
