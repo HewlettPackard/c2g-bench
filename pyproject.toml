@@ -5,7 +5,7 @@ description = "Hierarchical AI Orchestration for Grid-Interactive Hyperscale Dat
 readme = "README.md"
 requires-python = "==3.11.*"
 dependencies = [
-    # Phase 1 — Physics simulators
+    # Phase 1 — Physics engines
     "numpy>=1.26",
     "pandas>=2.2",
     "scipy>=1.13",

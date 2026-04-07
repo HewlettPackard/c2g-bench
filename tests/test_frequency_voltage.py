@@ -25,8 +25,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from c2g_env.simulators.macro_grid import MacroGridSignal
-from c2g_env.simulators.electrical import DatacenterElectrical
+from c2g_env.physics.macro_grid import MacroGridSignal
+from c2g_env.physics.electrical import DatacenterElectrical
 from c2g_env.env_low_level import C2GFastEnv
 
 ENERGY_DIR = "data/processed/energy"

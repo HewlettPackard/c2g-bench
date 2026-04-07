@@ -20,7 +20,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from c2g_env.simulators.renewable import RenewableGen
+from c2g_env.physics.renewable import RenewableGen
 
 RENEWABLE_DIR = "data/processed/renewable"
 EXPECTED_KEYS = {"p_wind_mw", "p_solar_mw", "p_renewable_mw",

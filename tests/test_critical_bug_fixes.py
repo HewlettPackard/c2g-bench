@@ -26,7 +26,7 @@ import numpy as np
 import pytest
 
 from c2g_env import C2GFastEnv
-from c2g_env.simulators.bess import BESSModel, PYSAM_ACTIVE, _SimpleBESSModel
+from c2g_env.physics.bess import BESSModel, PYSAM_ACTIVE, _SimpleBESSModel
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -645,7 +645,7 @@ class TestThermalScenarioReset:
 
     def test_thermal_reset_accepts_temp_args(self):
         """ThermalTwin.reset() must accept optional temp_A, temp_B."""
-        from c2g_env.simulators.thermal import ThermalTwin
+        from c2g_env.physics.thermal import ThermalTwin
         twin = ThermalTwin()
         twin.reset(temp_A=32.0, temp_B=28.0)
         assert twin.temp_A == pytest.approx(32.0)
@@ -653,7 +653,7 @@ class TestThermalScenarioReset:
 
     def test_thermal_reset_default_unchanged(self):
         """Without arguments, reset() must use original defaults (30, 20)."""
-        from c2g_env.simulators.thermal import ThermalTwin
+        from c2g_env.physics.thermal import ThermalTwin
         twin = ThermalTwin()
         twin.reset()
         assert twin.temp_A == pytest.approx(30.0)
@@ -678,7 +678,7 @@ class TestThermalScenarioReset:
 
     def test_initial_temp_below_t_safe(self):
         """Reset temperature must never exceed T_safe regardless of T_amb."""
-        from c2g_env.simulators.thermal import ThermalTwin
+        from c2g_env.physics.thermal import ThermalTwin
         twin = ThermalTwin()
         # Even a very high T_amb should not start at T_safe
         twin.reset(temp_A=34.9, temp_B=34.9)
@@ -695,7 +695,7 @@ class TestBESSDeratingFix:
     def test_derate_window_symmetric(self):
         """Both discharge and charge derating must use the same 0.10 window."""
         import inspect
-        from c2g_env.simulators.bess import _SimpleBESSModel
+        from c2g_env.physics.bess import _SimpleBESSModel
         src = inspect.getsource(_SimpleBESSModel.step)
         # Old code had 0.05 for charge; that must be gone
         lines_with_derate = [l for l in src.splitlines() if "0.05" in l and "derate" in l.lower()]
@@ -712,7 +712,7 @@ class TestBESSDeratingFix:
         When BESS hits SOC_MIN during discharge, actual_power must satisfy
         energy conservation: actual_power ≤ available_energy / dt.
         """
-        from c2g_env.simulators.bess import _SimpleBESSModel
+        from c2g_env.physics.bess import _SimpleBESSModel
         bess = _SimpleBESSModel(dt_seconds=300.0)
         # Start just above SOC_MIN
         soc_init = bess.SOC_MIN + 0.005
@@ -734,7 +734,7 @@ class TestBESSDeratingFix:
         When BESS hits SOC_MAX during charge, actual_power must be negative
         (charging) and bounded by available headroom.
         """
-        from c2g_env.simulators.bess import _SimpleBESSModel
+        from c2g_env.physics.bess import _SimpleBESSModel
         bess = _SimpleBESSModel(dt_seconds=300.0)
         soc_init = bess.SOC_MAX - 0.005
         bess.set_initial_soc(soc_init)
@@ -752,7 +752,7 @@ class TestBESSDeratingFix:
 
     def test_no_soc_violation_after_step(self):
         """SOC must stay within [SOC_MIN, SOC_MAX] after any step."""
-        from c2g_env.simulators.bess import _SimpleBESSModel
+        from c2g_env.physics.bess import _SimpleBESSModel
         bess = _SimpleBESSModel(dt_seconds=300.0)
         for soc_start, power in [(0.11, 50.0), (0.94, -50.0), (0.5, 50.0), (0.5, -50.0)]:
             bess.set_initial_soc(soc_start)

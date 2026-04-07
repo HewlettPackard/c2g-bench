@@ -94,7 +94,7 @@ Episode truncates at 17,280 ticks (24 hours at 5 s).
 
 ### 4.4. Environment Architecture & Data Flow
 
-> 📖 **Full technical reference** — equations, parameters, and API for all 7 simulators and both environments: [`c2g_env/ENVIRONMENTS.md`](c2g_env/ENVIRONMENTS.md)
+> 📖 **Full technical reference** — equations, parameters, and API for all 7 physics engines and both environments: [`c2g_env/ENVIRONMENTS.md`](c2g_env/ENVIRONMENTS.md)
 
 The diagrams below describe (0) a high-level system overview, (1) the full hierarchical control loop, (2) the internal step function of `C2GFastEnv`, and (3) the Simplex safety shield that can wrap any agent.
 
@@ -176,7 +176,7 @@ flowchart TD
         direction TB
         FA["Lower-Level Agent\n(Hardware Controller)\nobs: 16-D normalised\nact: 4-D continuous"]
 
-        subgraph SIM["Seven Physics Simulators"]
+        subgraph SIM["Seven Physics Engines"]
             S1["🖥️ Workload\nP_base + P_flex"]
             S2["🌡️ Thermal Twin\nZone A (liquid) · Zone B (air)"]
             S3["⚡ Electrical Chain\nUPS · PDU · XFMR · PUE"]
@@ -212,7 +212,7 @@ flowchart TD
 
 #### Diagram 2 — C2GFastEnv Step Function
 
-A single 5-second `env.step(action)` call flows through all seven simulators in this order:
+A single 5-second `env.step(action)` call flows through all seven physics engines in this order:
 
 ```mermaid
 flowchart LR
@@ -303,7 +303,7 @@ sequenceDiagram
     participant Grid as ⚡ Power Grid<br/>(5-sec signals)
     participant Macro as 🤖 Macro Agent<br/>(15-min cadence)
     participant Fast as ⚡ Fast Agent<br/>(5-sec cadence)
-    participant Sim as 🏭 Simulators
+    participant Sim as 🏭 Physics Engines
     participant Shield as 🛡️ Safety Shield
 
     note over Grid,Shield: t = 0 min — MacroEnv tick k begins
@@ -387,7 +387,7 @@ flowchart LR
 
 #### Diagram 6 — Action Decomposition: 4 Levers → Physical Actuators
 
-Each of the four action dimensions maps to a distinct physical actuator. The signal paths show which simulators are affected and through what mechanism.
+Each of the four action dimensions maps to a distinct physical actuator. The signal paths show which physics engines are affected and through what mechanism.
 
 ```mermaid
 flowchart TD
@@ -456,7 +456,7 @@ A 24-hour episode consists of **17,280 × 5-second ticks** (or 96 × 15-minute m
 flowchart TD
     START(["env.reset(seed, options)"])
 
-    START --> R1["🔧 Rebuild all 7 simulators"]
+    START --> R1["🔧 Rebuild all 7 physics engines"]
     R1 --> R2["📋 Apply scenario params
 T_amb · SOC_init · cooling_fault"]
     R2 --> R3["👁️ _build_obs_at_reset()
@@ -469,7 +469,7 @@ peek real tick-0 state"]
         STEP["env.step(action)"]
         SHIELD["🛡️ SafetyShield.filter(action, obs)
 check C1–C5 constraints"]
-        SIMS["🏭 7 Simulators
+        SIMS["🏭 7 Physics Engines
 Workload · Thermal · Electrical
 BESS · Grid · Renewable · Weather"]
         REW["⚖️ Compute r_t
@@ -499,7 +499,7 @@ truncated = True"]
 
 ---
 
-## 5. Simulators
+## 5. Physics Engines
 
 Seven independent physics/data modules, all with exact-exponential or analytical solutions (unconditionally stable):
 
@@ -687,7 +687,7 @@ C2G-Macro/
 │   ├── env_high_level.py                # 15-min market step — C2GMacroEnv (16-D obs, 2-D act)
 │   ├── ENVIRONMENTS.md                  # 📖 Full environment & simulator reference (equations, params)
 │   ├── config.yaml                      # Centralised env configuration
-│   └── simulators/
+│   └── physics/
 │       ├── workload.py                  # Alibaba trace fusion (batch/DLRM/GenAI)
 │       ├── thermal.py                   # Exact-exponential ODEs, dual-zone cooling
 │       ├── electrical.py                # Non-linear UPS/PDU/XFMR loss + PUE
@@ -753,7 +753,7 @@ C2G-Macro/
 │   ├── main.tex                         # 13-page paper (NeurIPS format)
 │   ├── references.bib
 │   ├── neurips2026.sty
-│   └── figures/                         # fig1–fig4 (architecture, simulators, curves, trajectory)
+│   └── figures/                         # fig1–fig4 (architecture, physics engines, curves, trajectory)
 │
 ├── tests/                               # 371 tests (pytest)
 │   ├── test_workload.py                 # 26 tests

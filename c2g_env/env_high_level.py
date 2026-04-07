@@ -8,7 +8,7 @@ This is the decision layer of the hierarchical control stack:
 
   MacroEnv action (every 15 min)
       → translated into 180 repeated FastEnv actions (every 5 s)
-      → each FastEnv step advances all physical simulators
+      → each FastEnv step advances all physics engines
 
 The MacroEnv agent commits to grid-regulation capacity and sets a
 facility-level power target.  The inner FastEnv executes fine-grained

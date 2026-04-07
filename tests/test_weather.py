@@ -10,7 +10,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from c2g_env.simulators.weather import WeatherLoader, WEATHER_PRESETS, WeatherParams
+from c2g_env.physics.weather import WeatherLoader, WEATHER_PRESETS, WeatherParams
 
 
 WEATHER_DIR = Path("data/processed/weather")

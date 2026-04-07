@@ -37,13 +37,13 @@ C2GMacroEnv  (15-minute ticks)
         Observation : 16-D normalised
         Action      : 4-D  [throttle, pump_A, hvac, bess]
         │
-        └── Seven physics simulators (all unconditionally stable):
+        └── Seven physics engines (all unconditionally stable):
                 ThermalTwin · BESSModel · DatacenterElectrical
                 MacroGridSignal · RenewableGenerator · WeatherLoader
                 WorkloadOrchestrator
 ```
 
-Both environments share the same seven simulators and the same `config.yaml`.
+Both environments share the same seven physics engines and the same `config.yaml`.
 
 ---
 
@@ -219,7 +219,7 @@ If `inner_action_fn=None` (default), the macro env uses a **zero action** for su
 
 ## 4. Thermal Twin
 
-**File:** `c2g_env/simulators/thermal.py`  
+**File:** `c2g_env/physics/thermal.py`  
 **Class:** `ThermalTwin`
 
 Models the thermal dynamics of two independently-cooled zones using **exact exponential integration** (unconditionally stable for any timestep).
@@ -318,7 +318,7 @@ $$\text{COP}_\text{air} = \text{COP}_\text{base} \cdot \max(0.3,\ 1 - \alpha_\te
 
 ## 5. BESS
 
-**File:** `c2g_env/simulators/bess.py`  
+**File:** `c2g_env/physics/bess.py`  
 **Class:** `BESSModel` (auto-selects backend)  
 **Design spec:** 150 MWh / 50 MW Li-ion NMC (utility Megapack-class)
 
@@ -384,7 +384,7 @@ $$E_\text{effective} = E_\text{nom} \cdot (1 - 0.2 \cdot f_\text{age})$$
 
 ## 6. Electrical Chain
 
-**File:** `c2g_env/simulators/electrical.py`  
+**File:** `c2g_env/physics/electrical.py`  
 **Class:** `DatacenterElectrical`
 
 Models the full AC power flow from grid PCC to IT loads, including non-linear losses at each stage, PUE calculation, and PCC voltage.
@@ -457,7 +457,7 @@ Practical range: 1.25 (excellent) to 2.5+ (very poor, Zone B heat wave).
 
 ## 7. Macro-Grid Signal
 
-**File:** `c2g_env/simulators/macro_grid.py`  
+**File:** `c2g_env/physics/macro_grid.py`  
 **Class:** `MacroGridSignal`
 
 Generates frequency regulation signals, wholesale LMP prices, and grid frequency dynamics calibrated to six real energy markets.
@@ -520,7 +520,7 @@ where $L$ is the regional zone load in MW.
 
 ## 8. Renewable Generation
 
-**File:** `c2g_env/simulators/renewable.py`  
+**File:** `c2g_env/physics/renewable.py`  
 **Class:** `RenewableGenerator`
 
 **Capacity:** 100 MW wind + 75 MW solar PV (collocated at facility)
@@ -563,7 +563,7 @@ Renewable output appears in the PCC power balance but **does not currently feed 
 
 ## 9. Weather
 
-**File:** `c2g_env/simulators/weather.py`  
+**File:** `c2g_env/physics/weather.py`  
 **Class:** `WeatherLoader`
 
 Supplies per-tick ambient temperature $T_\text{amb}$ to the thermal simulator.
@@ -603,7 +603,7 @@ $$T_\text{amb}(d, h) = T_\text{annual\_mean} + A_\text{seasonal} \cdot \cos\!\le
 
 ## 10. Workload Orchestrator
 
-**File:** `c2g_env/simulators/workload.py`  
+**File:** `c2g_env/physics/workload.py`  
 **Class:** `WorkloadOrchestrator`
 
 Fuses three real Alibaba cluster trace types into a total IT power demand at each tick.

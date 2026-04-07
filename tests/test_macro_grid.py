@@ -30,7 +30,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from c2g_env.simulators.macro_grid import MacroGridSignal
+from c2g_env.physics.macro_grid import MacroGridSignal
 
 ENERGY_DIR = "data/processed/energy"
 EXPECTED_KEYS = {
@@ -324,7 +324,7 @@ def test_wrong_column_raises(tmp_path):
 # 11. Market preset system
 # ---------------------------------------------------------------------------
 
-from c2g_env.simulators.macro_grid import MARKET_PRESETS, MarketParams
+from c2g_env.physics.macro_grid import MARKET_PRESETS, MarketParams
 
 
 def test_all_presets_defined():

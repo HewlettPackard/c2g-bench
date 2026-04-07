@@ -1,7 +1,7 @@
 """
 Step 2.1 — C2G-FastEnv  (Low-Level / Hardware-Controller Environment)
 ======================================================================
-A ``gymnasium.Env`` that wraps all five C2G-Bench simulators.
+A ``gymnasium.Env`` that wraps all seven C2G-Bench physics engines.
 
 Every call to ``step()`` advances the physical simulation by one 5-second
 interval.  The RL agent controls four levers:
@@ -75,13 +75,13 @@ import yaml
 import gymnasium as gym
 from gymnasium import spaces
 
-from c2g_env.simulators.workload   import WorkloadOrchestrator
-from c2g_env.simulators.thermal    import ThermalTwin
-from c2g_env.simulators.electrical import DatacenterElectrical
-from c2g_env.simulators.bess       import BESSModel
-from c2g_env.simulators.macro_grid import MacroGridSignal
-from c2g_env.simulators.renewable  import RenewableGen
-from c2g_env.simulators.weather    import WeatherLoader
+from c2g_env.physics.workload   import WorkloadOrchestrator
+from c2g_env.physics.thermal    import ThermalTwin
+from c2g_env.physics.electrical import DatacenterElectrical
+from c2g_env.physics.bess       import BESSModel
+from c2g_env.physics.macro_grid import MacroGridSignal
+from c2g_env.physics.renewable  import RenewableGen
+from c2g_env.physics.weather    import WeatherLoader
 
 # ---------------------------------------------------------------------------
 # Constants — kept in sync with electrical.py rack parameters

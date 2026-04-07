@@ -23,7 +23,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from c2g_env.simulators.thermal import ThermalTwin
+from c2g_env.physics.thermal import ThermalTwin
 
 
 # ---------------------------------------------------------------------------

@@ -25,7 +25,7 @@ from pathlib import Path
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from c2g_env.simulators.workload import WorkloadOrchestrator, WorkloadState
+from c2g_env.physics.workload import WorkloadOrchestrator, WorkloadState
 
 TRACE_DIR = Path("data/processed/workload_traces")
 
