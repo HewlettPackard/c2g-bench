@@ -37,9 +37,9 @@ The sign convention is:
 
 The actual MW response required is:
 
-$\Delta P_{\text{demanded}} = \text{committed\_mw} \times \text{RegD}(t)$
+$$\Delta P_{\text{demanded}} = C_{\text{MW}} \times \text{RegD}(t)$$
 
-where `committed_mw` is the capacity the data center has pre-contracted to the market for the current 15-minute settlement interval.
+where $C_{\text{MW}}$ (`committed_mw`) is the regulation capacity the data center has pre-contracted to the market for the current 15-minute settlement interval.
 
 ### Statistical properties (AR(1) model)
 
@@ -159,7 +159,7 @@ The diagrams below describe (0) a high-level system overview, (1) the full hiera
 A one-glance picture of C2G-Bench: an RL agent hierarchy controls a data center *from the inside*, while the power grid drives it *from the outside*.
 
 ```mermaid
-flowchart LR
+flowchart TD
     subgraph EXT["External Environment"]
         direction TB
         GRD["⚡ Power Grid
