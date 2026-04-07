@@ -110,6 +110,10 @@ class _SimpleBESSModel:
         self._age_frac = 0.0
         return self.soc_mwh
 
+    def set_initial_soc(self, fraction: float) -> None:
+        """Override the current SOC without a full reset. fraction ∈ [0, 1]."""
+        self._soc = float(np.clip(fraction, self.SOC_MIN, self.SOC_MAX))
+
     @property
     def soc_mwh(self) -> float:
         return self._soc * self.E_NOM_MWH * (1.0 - self._age_frac * 0.2)
@@ -132,15 +136,18 @@ class _SimpleBESSModel:
         """
         power_mw = float(np.clip(power_mw, -self.P_MAX_MW, self.P_MAX_MW))
 
-        # SOC-dependent derating
+        # SOC-dependent derating — symmetric 10% window for both directions
+        # so the gradient of derated power w.r.t. SOC has the same magnitude
+        # for discharge and charge (previously 0.10 vs 0.05, a 2× asymmetry).
+        _DERATE_WINDOW = 0.10
         if power_mw > 0:  # discharge
-            derate = min(1.0, (self._soc - self.SOC_MIN) / 0.10)
+            derate = min(1.0, (self._soc - self.SOC_MIN) / _DERATE_WINDOW)
             power_mw = power_mw * max(0.0, derate)
         else:              # charge
-            derate = min(1.0, (self.SOC_MAX - self._soc) / 0.05)
+            derate = min(1.0, (self.SOC_MAX - self._soc) / _DERATE_WINDOW)
             power_mw = power_mw * max(0.0, derate)
 
-        # C-rate and efficiency
+        # C-rate and efficiency — computed on the derated power
         c_rate = abs(power_mw) / self.E_NOM_MWH   # hr⁻¹
         eta_one_way = max(0.70,
             self.ETA_PEAK
@@ -158,13 +165,15 @@ class _SimpleBESSModel:
 
         new_soc = float(np.clip(self._soc + delta_soc, self.SOC_MIN, self.SOC_MAX))
 
-        # Detect if SOC limit was hit (power was curtailed)
+        # Detect if SOC limit was clipped by the np.clip above, and recompute
+        # actual_power from available energy with the SAME efficiency that was
+        # used for the SOC update (ensures energy accounting consistency).
         if power_mw > 0 and new_soc <= self.SOC_MIN + 1e-6:
-            actual_power = max(0.0, (self._soc - self.SOC_MIN) * self.E_NOM_MWH
-                               * eta_one_way / dt_hr)
+            available_mwh = (self._soc - self.SOC_MIN) * self.E_NOM_MWH
+            actual_power = available_mwh * eta_one_way / dt_hr  # discharge: energy/η → power
         elif power_mw < 0 and new_soc >= self.SOC_MAX - 1e-6:
-            actual_power = -max(0.0, (self.SOC_MAX - self._soc) * self.E_NOM_MWH
-                                / (eta_one_way * dt_hr))
+            available_mwh = (self.SOC_MAX - self._soc) * self.E_NOM_MWH
+            actual_power = -(available_mwh / eta_one_way / dt_hr)  # charge: energy×η → power
         else:
             actual_power = power_mw
 
@@ -213,7 +222,7 @@ class _PySAMBESSModel:
         self.DT_SECONDS = dt_seconds
         self._batt = self._create_battery()
 
-    def _create_battery(self):
+    def _create_battery(self, initial_soc_pct: float | None = None):
         b = _BatteryStateful.new()
         b.Controls.control_mode       = 1
         b.Controls.dt_hr              = self.DT_SECONDS / 3600.0
@@ -230,7 +239,8 @@ class _PySAMBESSModel:
         b.ParamsCell.C_rate           = 0.33
         b.ParamsCell.resistance       = 0.001
         b.ParamsCell.voltage_choice   = 0
-        b.ParamsCell.initial_SOC      = self.INITIAL_SOC_PCT
+        b.ParamsCell.initial_SOC      = (initial_soc_pct if initial_soc_pct is not None
+                                         else self.INITIAL_SOC_PCT)
         b.ParamsCell.maximum_SOC      = self.MAX_SOC_PCT
         b.ParamsCell.minimum_SOC      = self.MIN_SOC_PCT
         b.ParamsCell.life_model       = 0
@@ -261,6 +271,11 @@ class _PySAMBESSModel:
     def reset(self) -> float:
         self._batt = self._create_battery()
         return self.soc_mwh
+
+    def set_initial_soc(self, fraction: float) -> None:
+        """Recreate the PySAM battery with a custom initial SOC. fraction ∈ [0, 1]."""
+        pct = float(np.clip(fraction * 100.0, self.MIN_SOC_PCT, self.MAX_SOC_PCT))
+        self._batt = self._create_battery(initial_soc_pct=pct)
 
     @property
     def soc_mwh(self) -> float:

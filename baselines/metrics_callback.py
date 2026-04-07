@@ -124,7 +124,7 @@ class C2GMetricsCallback(BaseCallback):
                          info.get("temp_B", 0) > T_WARN) else 0.0
             )
             buf["tick"] = info.get("tick", 0)
-            if info.get("thermal_terminated", False):
+            if info.get("thermal_fault", False):
                 buf["terminated"] = 1
 
             # Episode ended → log aggregates

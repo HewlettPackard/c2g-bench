@@ -215,7 +215,7 @@ class C2GMacroEnv(gym.Env):
 
         # Map commitment fraction to MW and update inner env
         committed_mw = commit_norm * self._committed_max_mw
-        self._fast_env._committed_mw = committed_mw
+        self._fast_env.committed_mw = committed_mw
 
         # Accumulators over sub-steps
         sub_rewards    = []
@@ -262,7 +262,7 @@ class C2GMacroEnv(gym.Env):
                 break
 
         self._macro_tick += 1
-        if self._macro_tick >= self._episode_macro_ticks:
+        if self._macro_tick >= self._episode_macro_ticks and not terminated:
             truncated = True
 
         # -----------------------------------------------------------------

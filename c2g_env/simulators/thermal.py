@@ -115,9 +115,22 @@ class ThermalTwin:
             lo, hi = self.T_supply_B_range
             self.T_supply_B = float(np.clip(T_supply_B, lo, hi))
 
-    def reset(self):
-        self.temp_A = 30.0
-        self.temp_B = 20.0
+    def reset(
+        self,
+        temp_A: float | None = None,
+        temp_B: float | None = None,
+    ):
+        """Reset thermal state.
+
+        Parameters
+        ----------
+        temp_A : float, optional
+            Initial Zone A temperature [°C]. Defaults to 30.0 (design idle).
+        temp_B : float, optional
+            Initial Zone B temperature [°C]. Defaults to 20.0 (design idle).
+        """
+        self.temp_A = float(temp_A) if temp_A is not None else 30.0
+        self.temp_B = float(temp_B) if temp_B is not None else 20.0
         self.T_supply_A = self.T_ref_A
         self.T_supply_B = self.T_ref_B
         self.fault_factor = 1.0

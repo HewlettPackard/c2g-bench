@@ -42,10 +42,27 @@ from omegaconf import DictConfig, OmegaConf
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback
 from stable_baselines3.common.env_util import make_vec_env
-from stable_baselines3.common.vec_env import VecNormalize
+from stable_baselines3.common.vec_env import VecNormalize, sync_envs_normalization
 
 from c2g_env import C2GFastEnv
 from baselines.metrics_callback import C2GMetricsCallback
+
+
+class SyncNormEvalCallback(EvalCallback):
+    """
+    EvalCallback that syncs VecNormalize obs/reward running statistics
+    from the training environment to the eval environment before each
+    evaluation round.
+
+    Without this sync, eval_env has cold normalization stats (mean=0, var=1)
+    while the agent was trained on obs scaled by the training env's accumulated
+    stats — making eval rewards incomparable to training rewards.
+    """
+
+    def _on_step(self) -> bool:
+        if self.eval_freq > 0 and self.n_calls % self.eval_freq == 0:
+            sync_envs_normalization(self.training_env, self.eval_env)
+        return super()._on_step()
 
 
 def make_env_fn(scenario: str, seed: int):
@@ -91,7 +108,7 @@ def train(cfg: DictConfig) -> None:
         save_path   = str(out_dir / "checkpoints"),
         name_prefix = "ckpt",
     )
-    eval_cb = EvalCallback(
+    eval_cb = SyncNormEvalCallback(
         eval_env,
         best_model_save_path = str(out_dir / "best_model"),
         log_path             = str(out_dir / "tensorboard"),

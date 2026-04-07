@@ -293,6 +293,203 @@ flowchart TD
 
 ---
 
+#### Diagram 4 — Temporal Hierarchy: 5-second vs 15-minute Timescales
+
+The two environment layers run at different cadences. The fast agent executes **180 × 5-second sub-steps** for every single macro-agent decision. This diagram shows the signal update frequencies, when rewards are computed, and how the macro agent gets its aggregated view.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Grid as ⚡ Power Grid<br/>(5-sec signals)
+    participant Macro as 🤖 Macro Agent<br/>(15-min cadence)
+    participant Fast as ⚡ Fast Agent<br/>(5-sec cadence)
+    participant Sim as 🏭 Simulators
+    participant Shield as 🛡️ Safety Shield
+
+    note over Grid,Shield: t = 0 min — MacroEnv tick k begins
+
+    Macro->>Fast: macro-action [2-D]<br/>commit_norm, bess_target
+    Fast->>Fast: set committed_mw = commit_norm × max_mw
+
+    loop 180 × 5-second sub-steps (i = 0 … 179)
+        Grid->>Fast: regd_signal, lmp, f_grid, V_pcc
+        Fast->>Shield: raw_action [4-D]<br/>[throttle, pump, hvac, bess]
+        Shield-->>Fast: safe_action [4-D] (may be modified)
+        Fast->>Sim: safe_action
+        Sim-->>Fast: T_A, T_B, SOC, P_facility, PUE, Δf, V_pcc
+        Fast->>Fast: compute r_i<br/>α·thr − β·track − γ·thermal − penalties
+        Fast-->>Grid: tracking response ΔP_actual
+    end
+
+    note over Grid,Shield: t = 15 min — MacroEnv tick k ends
+
+    Fast->>Macro: aggregated 16-D obs<br/>(means, maxima, SOC_end, freq/volt means)
+    Fast->>Macro: macro reward R_k<br/>= mean(r₀…r₁₇₉) + LMP_bonus − churn_pen
+    Macro->>Macro: update policy with R_k
+```
+
+---
+
+#### Diagram 5 — FastEnv 16-D Observation Vector Anatomy
+
+Every five seconds the environment returns a 16-element `float32` vector. This diagram maps each index to its physical meaning and the simulator that produces it.
+
+```mermaid
+flowchart LR
+    subgraph SIM_THERM["🌡️ Thermal Twin"]
+        T0["[0] temp_A / T_safe\n∈ [0, ~1]"]
+        T1["[1] temp_B / T_safe\n∈ [0, ~1]"]
+    end
+
+    subgraph SIM_BESS["🔋 BESS"]
+        B2["[2] soc_fraction\n∈ [0.10, 0.95]"]
+    end
+
+    subgraph SIM_WORK["🖥️ Workload"]
+        W3["[3] p_base_kw / 250 MW\n∈ [0, 1]"]
+        W4["[4] p_flex_nom / 250 MW\n∈ [0, 1]"]
+        W9["[9] is_spike_active\n∈ {0, 1}"]
+    end
+
+    subgraph SIM_ELEC["⚡ Electrical Chain"]
+        E5["[5] p_facility / 250 MW\n∈ [0, ~2]"]
+        E12["[12] pue_dynamic / 2.5\n∈ [0, ~2]"]
+    end
+
+    subgraph SIM_GRID["📡 Macro-Grid"]
+        G6["[6] regd_signal\n∈ [−1, 1]"]
+        G7["[7] lmp / 200 $/MWh\n∈ [0, 1]"]
+        G8["[8] load_norm\n∈ [0, 1]"]
+        G14["[14] freq_dev / 0.5 Hz\n∈ [−1, 1]"]
+        G15["[15] v_pcc_pu\n∈ [0, 1.1]"]
+    end
+
+    subgraph SIM_WEATH["🌤️ Weather"]
+        WE13["[13] T_amb_norm\n∈ [0, 1]"]
+    end
+
+    subgraph AGT_MEM["🧠 Agent Memory"]
+        AM10["[10] prev_throttle\n∈ [0, 1]"]
+        AM11["[11] prev_pump_speed\n∈ [0, 1]"]
+    end
+
+    OBS["📦 obs\n16-D float32"]
+    OBS --> T0 & T1
+    OBS --> B2
+    OBS --> W3 & W4 & W9
+    OBS --> E5 & E12
+    OBS --> G6 & G7 & G8 & G14 & G15
+    OBS --> WE13
+    OBS --> AM10 & AM11
+```
+
+---
+
+#### Diagram 6 — Action Decomposition: 4 Levers → Physical Actuators
+
+Each of the four action dimensions maps to a distinct physical actuator. The signal paths show which simulators are affected and through what mechanism.
+
+```mermaid
+flowchart TD
+    ACT["4-D Action \n[0] throttle_batch  [1] pump_speed_A  [2] hvac_effort  [3] bess_dispatch"]
+
+    ACT --> A0
+    ACT --> A1
+    ACT --> A2
+    ACT --> A3
+
+    A0["[0] throttle_batch ∈ [0, 1]\nDVFS / batch scheduling factor"]
+    A1["[1] pump_speed_A ∈ [0, 1]\nCDU liquid-loop pump speed"]
+    A2["[2] hvac_effort ∈ [0, 1]\nZone-B CRAH fan + chiller effort"]
+    A3["[3] bess_dispatch ∈ [−1, 1]\n+1 = full discharge  −1 = full charge"]
+
+    A0 -->|"P_flex = throttle × P_flex_nom"| WL["🖥️ Workload\nIT power Zone A"]
+    A0 -->|"+ α × throttle"| RW["⚡ Reward signal"]
+
+    A1 -->|"K_liq_eff = K_liq × pump_speed"| THA["🌡️ Thermal Zone A\nLiquid-cooled (HPE Cray EX)\nSlower pump = thermal storage"]
+    A1 -->|"p_pump = P_PUMP_MAX × pump_speed"| ELP["⚡ Facility load (+pump draw)"]
+
+    A2 -->|"Q_HVAC = effort × max_hvac × COP"| THB["🌡️ Thermal Zone B\nAir-cooled (HPE ProLiant)"]
+    A2 -->|"p_hvac = effort × 50 MW"| ELH["⚡ Facility load (+HVAC draw)"]
+
+    A3 -->|"P_bess = dispatch × 50 MW\n+ = inject to grid side"| BS["🔋 BESS\nSOC update, η(C-rate, SOC)"]
+    A3 -->|"net grid draw ± P_bess"| ELB["⚡ Electrical chain\nP_facility = P_IT + P_cool − P_bess"]
+```
+
+---
+
+#### Diagram 7 — Reward Signal Decomposition
+
+The step reward `r_t` is a weighted sum of a positive throughput term and five normalised penalty terms. Coefficients are set in `conf/` and can be swept independently.
+
+```mermaid
+flowchart LR
+    subgraph RT["Step Reward  r_t"]
+        direction TB
+        TP["+  α · throttle_batch\n    throughput ∈ [0, 1]\n    default α = 1.0"]
+        TK["-  β · |ΔP_demanded − ΔP_actual| / (commit_mw × 1000)\n    grid-regulation tracking error ∈ [0, ~2]\n    default β = 2.0"]
+        TH["-  γ · Σ clamp(T_zone − T_warn, 0) / headroom\n    thermal excess, normalised to [0, 1] per zone\n    headroom = T_safe − T_warn = 2 °C  |  default γ = 5.0"]
+        SC["-  soc_pen  if SOC < 0.12\n    flat penalty per tick  |  default = 0.5"]
+        FQ["-  δ_f · max(0, |Δf| − 0.2)\n    Hz beyond ±0.2 Hz dead-band  |  default δ_f = 2.0"]
+        VT["-  δ_v · (max(0, 0.95−V) + max(0, V−1.05))\n    pu outside ANSI C84.1 Range A  |  default δ_v = 5.0"]
+    end
+
+    subgraph MRT["Macro Reward  R_k  (15-min)"]
+        direction TB
+        MS["mean(r₀ … r₁₇₉)\naverage of 180 sub-step rewards"]
+        LB["+  lmp_bonus × mean_lmp/200 × |BESS_disch|/50 MW\n    BESS export revenue  |  default lmp_bonus = 0.1"]
+        CC["-  commit_vol × |Δcommit_norm|\n    commitment churn penalty  |  default = 0.05"]
+    end
+
+    TP & TK & TH & SC & FQ & VT --> SUM["Σ → r_t"]
+    SUM --> MS
+    MS & LB & CC --> MSUM["Σ → R_k"]
+```
+
+---
+
+#### Diagram 8 — Episode Lifecycle State Machine
+
+A 24-hour episode consists of **17,280 × 5-second ticks** (or 96 × 15-minute macro steps). An episode can end early via three fault conditions or run to completion (truncation).
+
+```mermaid
+stateDiagram-v2
+    [*] --> Resetting : env.reset(seed, options)
+
+    state Resetting {
+        [*] --> BuildSimulators : rebuild all 7 simulators
+        BuildSimulators --> ApplyScenario : set T_amb, SOC_init,\ncooling_fault
+        ApplyScenario --> PeekTick0 : _build_obs_at_reset()\n(real state, no placeholders)
+        PeekTick0 --> [*]
+    }
+
+    Resetting --> Running : return obs₀
+
+    state Running {
+        [*] --> Stepping
+        state Stepping {
+            [*] --> Shield : action → SafetyShield.filter()
+            Shield --> Simulators : safe_action
+            Simulators --> Reward : T_A, T_B, SOC, Δf, V_pcc …
+            Reward --> ObsBuilder : r_t computed
+            ObsBuilder --> [*] : 16-D obs returned
+        }
+        Stepping --> Stepping : tick++  (tick < 17280)
+    }
+
+    Running --> ThermalFault : T_A > 35 °C\nor T_B > 35 °C
+    Running --> FreqFault : |Δf| > 0.5 Hz
+    Running --> VoltageFault : V_pcc < 0.90 pu
+    Running --> Survived : tick = 17280 (24 h)
+
+    ThermalFault --> [*] : terminated = True
+    FreqFault --> [*] : terminated = True
+    VoltageFault --> [*] : terminated = True
+    Survived --> [*] : truncated = True
+```
+
+---
+
 ---
 
 ## 5. Simulators

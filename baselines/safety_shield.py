@@ -322,7 +322,9 @@ class ShieldedEnv(gym.Wrapper):
 
     def reset(self, **kwargs) -> tuple[NDArray, dict]:
         self.shield.reset()
-        return self.env.reset(**kwargs)
+        obs, info = self.env.reset(**kwargs)
+        self._last_obs = obs
+        return obs, info
 
     def step(self, action):
         obs_prev = getattr(self, "_last_obs", np.zeros(16, dtype=np.float32))

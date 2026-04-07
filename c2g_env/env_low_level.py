@@ -219,6 +219,22 @@ class C2GFastEnv(gym.Env):
         self._dt             = float(self._gcfg["dt_seconds"])
 
     # ------------------------------------------------------------------
+    # Public API helpers
+    # ------------------------------------------------------------------
+
+    @property
+    def committed_mw(self) -> float:
+        """Current regulation capacity commitment [MW]."""
+        return self._committed_mw
+
+    @committed_mw.setter
+    def committed_mw(self, value: float) -> None:
+        """Set regulation capacity commitment, clamped to [0, facility capacity]."""
+        cap = float(self._gcfg.get("max_committed_mw",
+                                   float(self._scfg["committed_mw"]) * 4.0))
+        self._committed_mw = float(np.clip(value, 0.0, cap))
+
+    # ------------------------------------------------------------------
     # Gymnasium core
     # ------------------------------------------------------------------
 
@@ -240,7 +256,10 @@ class C2GFastEnv(gym.Env):
             override the scenario for this episode.
         """
         super().reset(seed=seed)
-        rng_seed = seed if seed is not None else 42
+        # Use Gymnasium's seeded RNG when no explicit seed is provided so
+        # parallel worker envs (seeded independently by SB3's VecEnv) each
+        # produce a distinct trajectory instead of all falling back to 42.
+        rng_seed = seed if seed is not None else int(self.np_random.integers(0, 2**31))
 
         # Allow per-episode scenario override
         if options and "scenario" in options:
@@ -257,7 +276,15 @@ class C2GFastEnv(gym.Env):
             trace_dir=gcfg["trace_dir"], seed=rng_seed
         )
         self._thermal = ThermalTwin(dt_seconds=self._dt)
-        self._thermal.reset()
+        # Pass scenario ambient temperature so reset provides a warm-start
+        # that matches the physical steady state at the scenario's T_amb.
+        # Formula: T_idle ≈ T_amb + P_idle / K  (equilibrium at zero IT load)
+        # We keep it simple and use T_amb + 5°C as a universal warm-start.
+        _T_amb_init = float(scfg.get("T_amb", 25.0))
+        self._thermal.reset(
+            temp_A=min(_T_amb_init + 5.0, self._thermal.T_safe - 1.0),
+            temp_B=min(_T_amb_init + 5.0, self._thermal.T_safe - 1.0),
+        )
         self._elec = DatacenterElectrical()
         self._elec.reset()
         self._bess = BESSModel(dt_seconds=self._dt)
@@ -295,7 +322,7 @@ class C2GFastEnv(gym.Env):
             )
         # Override initial BESS SOC if specified
         bess_soc_init = float(scfg.get("bess_soc_init", 0.5))
-        self._bess._soc = bess_soc_init
+        self._bess.set_initial_soc(bess_soc_init)
 
         self._committed_mw   = float(scfg["committed_mw"])
         self._tick           = 0
@@ -417,10 +444,20 @@ class C2GFastEnv(gym.Env):
         T_warn_A   = float(self._rcfg["T_warn_A"])
         T_warn_B   = float(self._rcfg["T_warn_B"])
         soc_pen_c  = float(self._rcfg["soc_penalty"])
-        norm_kw    = max(self._committed_mw * 1_000.0, 1.0)
+        # Clamp norm_kw to at least 100 kW so that when committed_mw=0
+        # the tracking penalty is bounded (not 500× larger than intended).
+        # When committed_mw=0 there is nothing to track, so the penalty
+        # term collapses to ≈0 naturally (delta_p_demanded_kw = 0 too).
+        norm_kw    = max(self._committed_mw * 1_000.0, 100.0)
 
-        thermal_pen = (max(0.0, temp_A - T_warn_A)
-                       + max(0.0, temp_B - T_warn_B))
+        # Normalize thermal excess to [0, 1] per zone:
+        #   0 at T_warn, 1 at T_safe, so gamma is dimensionless like alpha/beta.
+        T_safe = self._thermal.T_safe
+        temp_headroom = max(T_safe - T_warn_A, 1.0)   # degrees in budget (≥1 guard)
+        thermal_pen = (
+            max(0.0, temp_A - T_warn_A) / temp_headroom
+            + max(0.0, temp_B - T_warn_B) / temp_headroom
+        )
         soc_pen = soc_pen_c if bess_out["soc_fraction"] < 0.12 else 0.0
 
         # Frequency penalty (dead-band ±0.2 Hz)
@@ -549,24 +586,61 @@ class C2GFastEnv(gym.Env):
         ], dtype=np.float32)
 
     def _build_obs_at_reset(self) -> np.ndarray:
-        """Approximated observation before any step has been taken."""
+        """Build observation from actual simulator state at tick 0.
+
+        Peeks at each simulator's tick-0 output and then rewinds the
+        internal tick counters so the first real step() sees a clean state.
+        This replaces the old hardcoded placeholder values (0.5, 0.3, 0.8 …)
+        that were wrong whenever the scenario or trace differed from defaults.
+        """
         T_safe = self._thermal.T_safe
-        bess_soc = float(self._scfg.get("bess_soc_init", 0.5))
+
+        # ── Peek workload tick 0 (advance then rewind) ───────────────────
+        w = self._workload.step(1.0)     # full throttle → nominal p_flex
+        self._workload._tick = 0         # rewind
+
+        # ── Peek grid tick 0 (advance then rewind) ───────────────────────
+        gs = self._grid.step()
+        self._grid._tick = 0
+        self._grid._regd_state = 0.0     # restore pre-step AR(1) state
+        self._grid._regd_buffer = []     # restore empty neutrality buffer
+
+        # ── Peek thermal + electrical (advance then rewind) ──────────────
+        p_it_A_mw = (w.p_base_a_kw + w.p_flex_kw) / 1_000.0
+        p_it_B_mw =  w.p_base_b_kw / 1_000.0
+        temp_A_saved, temp_B_saved = self._thermal.temp_A, self._thermal.temp_B
+        (_, _), (p_cool_A, p_hvac, p_pump) = self._thermal.step(
+            p_it_A_mw=p_it_A_mw, p_it_B_mw=p_it_B_mw,
+            hvac_effort=0.7, pump_speed=1.0,
+        )
+        # Rewind thermal to its post-reset temperatures
+        self._thermal.temp_A = temp_A_saved
+        self._thermal.temp_B = temp_B_saved
+
+        util_A = _inverse_rack_util(
+            w.p_base_a_kw + w.p_flex_kw, _ZA_N_RACKS, _ZA_P_IDLE, _ZA_P_RANGE, _ZA_ALPHA
+        )
+        util_B = _inverse_rack_util(
+            w.p_base_b_kw, _ZB_N_RACKS, _ZB_P_IDLE, _ZB_P_RANGE, _ZB_ALPHA
+        )
+        elec = self._elec.step(util_A, util_B, p_cool_A, p_hvac + p_pump)
+        self._elec.reset()               # clear cached _last_state
+
         return np.array([
             self._thermal.temp_A / T_safe,
             self._thermal.temp_B / T_safe,
-            bess_soc,
-            0.5,   # p_base_norm  (estimate)
-            0.3,   # p_flex_nom_norm
-            0.8,   # p_facility_norm
-            0.0,   # regd_signal
-            0.2,   # lmp_norm
-            0.5,   # grid_load_norm
-            0.0,   # is_spike
-            1.0,   # prev_throttle
-            1.0,   # prev_pump_speed
-            0.6,   # pue_norm
-            self._weather.temp_norm(0),  # T_amb_norm at tick 0
-            0.0,   # freq_dev_norm (0 = nominal frequency at reset)
+            self._bess.soc_fraction,
+            w.p_base_kw        / _FACILITY_CAP_KW,
+            w.p_flex_nom_kw    / _FACILITY_CAP_KW,
+            min(elec["p_facility_mw"] * 1_000.0 / _FACILITY_CAP_KW, 2.0),
+            float(np.clip(gs["regd_signal"], -1.0, 1.0)),
+            min(gs["lmp_usd_mwh"] / 200.0, 1.0),
+            float(gs["load_norm"]),
+            float(w.is_spike_active),
+            self._prev_throttle,
+            self._prev_pump_speed,
+            min(elec["pue_dynamic"] / 2.5, 2.0),
+            self._weather.temp_norm(0),
+            0.0,   # freq_dev_norm (nominal frequency at reset)
             1.0,   # v_pcc_pu (nominal voltage at reset)
         ], dtype=np.float32)
