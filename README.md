@@ -453,39 +453,46 @@ flowchart LR
 A 24-hour episode consists of **17,280 × 5-second ticks** (or 96 × 15-minute macro steps). An episode can end early via three fault conditions or run to completion (truncation).
 
 ```mermaid
-stateDiagram-v2
-    [*] --> Resetting : env.reset(seed, options)
+flowchart TD
+    START(["env.reset(seed, options)"])
 
-    state Resetting {
-        [*] --> BuildSimulators : rebuild all 7 simulators
-        BuildSimulators --> ApplyScenario : set T_amb, SOC_init,\ncooling_fault
-        ApplyScenario --> PeekTick0 : _build_obs_at_reset()\n(real state, no placeholders)
-        PeekTick0 --> [*]
-    }
+    START --> R1["🔧 Rebuild all 7 simulators"]
+    R1 --> R2["📋 Apply scenario params
+T_amb · SOC_init · cooling_fault"]
+    R2 --> R3["👁️ _build_obs_at_reset()
+peek real tick-0 state"]
+    R3 --> OBS0(["return obs₀"])
 
-    Resetting --> Running : return obs₀
+    OBS0 --> STEP
 
-    state Running {
-        [*] --> Stepping
-        state Stepping {
-            [*] --> Shield : action → SafetyShield.filter()
-            Shield --> Simulators : safe_action
-            Simulators --> Reward : T_A, T_B, SOC, Δf, V_pcc …
-            Reward --> ObsBuilder : r_t computed
-            ObsBuilder --> [*] : 16-D obs returned
-        }
-        Stepping --> Stepping : tick++  (tick < 17280)
-    }
+    subgraph LOOP["🔄 Running  (tick 0 → 17 279)"]
+        STEP["env.step(action)"]
+        SHIELD["🛡️ SafetyShield.filter(action, obs)
+check C1–C5 constraints"]
+        SIMS["🏭 7 Simulators
+Workload · Thermal · Electrical
+BESS · Grid · Renewable · Weather"]
+        REW["⚖️ Compute r_t
+α·thr − β·track − γ·thermal
+− soc_pen − freq_pen − volt_pen"]
+        OB["📦 Build 16-D obs
+tick++"]
 
-    Running --> ThermalFault : T_A > 35 °C\nor T_B > 35 °C
-    Running --> FreqFault : |Δf| > 0.5 Hz
-    Running --> VoltageFault : V_pcc < 0.90 pu
-    Running --> Survived : tick = 17280 (24 h)
+        STEP --> SHIELD --> SIMS --> REW --> OB
+        OB -->|"tick < 17280
+no fault"| STEP
+    end
 
-    ThermalFault --> [*] : terminated = True
-    FreqFault --> [*] : terminated = True
-    VoltageFault --> [*] : terminated = True
-    Survived --> [*] : truncated = True
+    OB -->|"T_A > 35 °C or T_B > 35 °C"| TF["🔥 ThermalFault
+terminated = True"]
+    OB -->|"|Δf| > 0.5 Hz"| FF["⚡ FreqFault
+terminated = True"]
+    OB -->|"V_pcc < 0.90 pu"| VF["🔌 VoltageFault
+terminated = True"]
+    OB -->|"tick = 17280 (24 h)"| SV["✅ Survived
+truncated = True"]
+
+    TF & FF & VF & SV --> DONE(["episode end"])
 ```
 
 ---
