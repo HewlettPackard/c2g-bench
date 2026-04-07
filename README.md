@@ -94,7 +94,49 @@ Current data center management systems are "grid-blind": they optimize internal 
 
 ## 5. Technical Solution: Hierarchical AI Orchestration
 
-### 4.1. Upper-Level Agent: The Market Orchestrator (15-min ticks)
+### 5.0. Formal MDP Specification
+
+C2G-Bench defines a **two-level hierarchical Markov Decision Process**. The two agents share no parameters and communicate only through the `inner_action_fn` interface.
+
+#### Lower-Level MDP — C2GFastEnv (5-second ticks)
+
+```math
+M_{\text{low}} = (\mathcal{S},\, \mathcal{A},\, P,\, R,\, \gamma,\, T)
+```
+
+| Symbol | Definition |
+|--------|-----------|
+| $\mathcal{S} \subset \mathbb{R}^{17}$ | Normalised observation vector (see §5.2 for index definitions) |
+| $\mathcal{A} = [0,1]^3 \times [-1,1]$ | Continuous 4-D action: throttle, pump speed, HVAC effort, BESS dispatch |
+| $P(s_{t+1} \mid s_t, a_t)$ | Deterministic physics step + stochastic AR(1) RegD signal (see §2) |
+| $R(s_t, a_t)$ | 7-term scalar reward (see §5.3) |
+| $\gamma = 0.99$ | Training discount; undiscounted episodic sum used for benchmark ranking |
+| $T = 17{,}280$ | Steps per episode (24 h at 5 s per step) |
+
+The only stochasticity in $P$ arises from the AR(1) process driving RegD$(t)$. All physics engines (thermal, BESS, electrical) are **deterministic** given $(s_t, a_t)$. A fixed seed fully determines the trajectory.
+
+**Terminal states:** the episode ends early on three hard constraints — thermal fault ($T > 35\,°\text{C}$), frequency fault ($|\Delta f| > 0.5\,\text{Hz}$), or voltage fault ($v_\text{pcc} < 0.90\,\text{pu}$).
+
+#### Upper-Level Semi-MDP — C2GMacroEnv (15-minute ticks)
+
+The macro agent is framed as a **Semi-MDP** (Sutton et al., 1999) with fixed option duration $K = 180$ sub-steps:
+
+```math
+M_{\text{macro}} = (\mathcal{S}_M,\, \mathcal{A}_M,\, P_M,\, R_M,\, \gamma_M,\, T_M)
+```
+
+| Symbol | Definition |
+|--------|-----------|
+| $\mathcal{S}_M \subset \mathbb{R}^{17}$ | Aggregated sub-step states: component-wise means + SOC endpoint + extrema |
+| $\mathcal{A}_M = [0,1] \times [-1,1]$ | 2-D: `commit_norm` (regulation MW fraction), `bess_target` (average BESS dispatch) |
+| $P_M$ | $K$ applications of the lower-level transition $P$ |
+| $R_M$ | $\frac{1}{K}\sum_{i=0}^{K-1} r_i + \text{LMP bonus} - \text{churn penalty}$ |
+| $\gamma_M = \gamma^K$ | $0.99^{180} \approx 0.163$ effective discount per macro step |
+| $T_M = 96$ | Macro steps per episode (24 h $\div$ 15 min) |
+
+The macro agent never directly observes the 5-second physics — it sees only the aggregated $\mathcal{S}_M$. This induces **partial observability** at the macro level that the agent must compensate for through robust commitment policies.
+
+### 5.1. Upper-Level Agent: The Market Orchestrator (15-min ticks)
 
 Manages the "Business Handshake." Observes regional market prices, weather forecasts, and the Alibaba batch job queue.
 
@@ -104,7 +146,7 @@ Manages the "Business Handshake." Observes regional market prices, weather forec
 - **Observation Space (17-D):** Aggregated over 180 sub-steps — mean temps, SOC, tracking error, spike flag, thermal headroom, LMP, previous action, mean frequency deviation, mean PCC voltage, mean backlog norm.
 - **Reward:** mean of sub-step rewards + LMP dispatch revenue − commitment-churn penalty.
 
-### 4.2. Lower-Level Agent: The Hardware Controller (5 s ticks)
+### 5.2. Lower-Level Agent: The Hardware Controller (5 s ticks)
 
 Executes the physical "Handshake." Receives the real-time frequency regulation signal and uses **four physical levers**:
 
@@ -137,7 +179,7 @@ Executes the physical "Handshake." Receives the real-time frequency regulation s
   | 15 | `v_pcc_pu` | [0, 1.1] | PCC voltage in per-unit (Thévenin model) |
   | 16 | `backlog_norm` | [0, 2] | Deferred batch queue depth / p_flex_max (Little's Law queue) |
 
-### 4.3. The NeurIPS Evaluation Metric: The Tracking Reward
+### 5.3. The NeurIPS Evaluation Metric: The Tracking Reward
 
 The scalar reward received at every 5-second tick has **seven additive terms**:
 
