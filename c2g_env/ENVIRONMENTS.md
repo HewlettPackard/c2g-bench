@@ -1,7 +1,10 @@
 # C2G-Bench — Environment & Simulator Reference
 
-This document is the authoritative reference for every environment and simulator in C2G-Bench.  
-It covers governing equations, physical parameters, configuration knobs, and the Gymnasium API for each component.
+This document is the authoritative reference for C2G-Bench.
+
+**Sections 2–3** describe the two Gymnasium **environments** (`C2GFastEnv`, `C2GMacroEnv`) — their action/observation spaces, reward functions, and Python API.  
+**Sections 4–10** describe the seven physics **simulators** that both environments share — governing equations, parameters, and numerical methods.  
+Section 11 is the configuration reference; Section 12 shows how to add a new scenario.
 
 ---
 
@@ -97,14 +100,14 @@ Both environments share the same seven physics engines and the same `config.yaml
 Seven-term scalar reward at every 5-second tick. See [README.md §5.3](../README.md#53-the-neurips-evaluation-metric-the-tracking-reward) for the full term-by-term breakdown, coefficient rationale, and lever hierarchy.
 
 ```math
-\mathcal{R}_t = \alpha \cdot u_\text{thr} - \beta \cdot \frac{|\Delta P_\text{demand} - \Delta P_\text{actual}|}{P_\text{norm}} - \gamma \cdot (T - T_\text{warn})^{+} - \delta_\text{soc} \cdot \mathbf{1}_\text{soc} - \delta_f \cdot (|\Delta f| - 0.2)^{+} - \delta_v \cdot \varepsilon_v - \delta_q \cdot \frac{Q_\text{backlog}}{P_\text{flex,max}}
+\mathcal{R}_t = \alpha \cdot u_\text{thr} - \beta \cdot \frac{|\Delta P_\text{demand} - \Delta P_\text{actual}|}{P_\text{norm}} - \gamma \cdot (T - T_\text{warn})^{+} - \delta_\text{soc} \cdot \mathbf{1}\text{soc} - \delta_f \cdot (|\Delta f| - 0.2)^{+} - \delta_v \cdot \varepsilon_v - \delta_q \cdot \frac{Q_\text{backlog}}{P_\text{flex,max}}
 ```
 where:
 - $(x)^{+} = \max(0, x)$  
 - $u_\text{thr} = 1 - \text{throttle}$ (fraction of batch workload served)  
 - $\Delta P_\text{actual} = P_\text{flex,served} + P_\text{BESS,actual}$  
 - $\varepsilon_v = (0.95 - v_\text{pcc})^{+} + (v_\text{pcc} - 1.05)^{+}$  
-- $\mathbf{1}_\text{soc} = 1$ if $\text{SOC} < \text{SOC}_\text{min} + 0.02$, else 0  
+- $\mathbf{1}\text{soc} = 1$ if $\text{SOC} < \text{SOC}_\text{min} + 0.02$, else 0  
 - $Q_\text{backlog}$ — FIFO queue depth [kW]; $P_\text{flex,max}$ — peak flexible IT capacity [kW]
 
 **Coefficients** (source of truth: `c2g_env/config.yaml`):
@@ -227,7 +230,7 @@ If `inner_action_fn=None` (default), the macro env uses a **zero action** for su
 
 ---
 
-## 4. Thermal Twin
+## 4. Simulator: Thermal Twin
 
 **File:** `c2g_env/physics/thermal.py`  
 **Class:** `ThermalTwin`
@@ -333,7 +336,7 @@ K_\text{eff} = K_\text{air} \cdot f_\text{fault} \cdot (0.3 + 0.7 \cdot u_\text{
 
 ---
 
-## 5. BESS
+## 5. Simulator: BESS
 
 **File:** `c2g_env/physics/bess.py`  
 **Class:** `BESSModel` (auto-selects backend)  
@@ -406,7 +409,7 @@ E_\text{effective} = E_\text{nom} \cdot (1 - 0.2 \cdot f_\text{age})
 
 ---
 
-## 6. Electrical Chain
+## 6. Simulator: Electrical Chain
 
 **File:** `c2g_env/physics/electrical.py`  
 **Class:** `DatacenterElectrical`
@@ -485,7 +488,7 @@ Practical range: 1.25 (excellent) to 2.5+ (very poor, Zone B heat wave).
 
 ---
 
-## 7. Macro-Grid Signal
+## 7. Simulator: Macro-Grid Signal
 
 **File:** `c2g_env/physics/macro_grid.py`  
 **Class:** `MacroGridSignal`
@@ -552,7 +555,7 @@ where $L$ is the regional zone load in MW.
 
 ---
 
-## 8. Renewable Generation
+## 8. Simulator: Renewable Generation
 
 **File:** `c2g_env/physics/renewable.py`  
 **Class:** `RenewableGenerator`
@@ -597,7 +600,7 @@ Renewable output appears in the PCC power balance but **does not currently feed 
 
 ---
 
-## 9. Weather
+## 9. Simulator: Weather
 
 **File:** `c2g_env/physics/weather.py`  
 **Class:** `WeatherLoader`
@@ -638,7 +641,7 @@ T_\text{amb}(d, h) = \bar{T}_\text{annual} + A_\text{seasonal} \cdot \cos\!\left
 
 ---
 
-## 10. Workload Orchestrator
+## 10. Simulator: Workload Orchestrator
 
 **File:** `c2g_env/physics/workload.py`  
 **Class:** `WorkloadOrchestrator`
