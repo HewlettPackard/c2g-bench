@@ -305,6 +305,15 @@ $$\text{COP}_\text{air} = \text{COP}_\text{base} \cdot \max(0.3,\ 1 - \alpha_\te
 | ASHRAE Zone A supply range | [20, 40] °C | W3 allowable supply temperature |
 | ASHRAE Zone B supply range | [15, 27] °C | A1 allowable supply temperature |
 
+### References
+
+[1] Incropera, F.P., et al. (2007) *Fundamentals of Heat and Mass Transfer*, 6th ed., Wiley (ISBN 978-0-471-45728-2). Ch. 5: lumped-capacitance ODE basis.  
+[2] Moore, J.D., Chase, J.S., Ranganathan, P., Sharma, R. (2005) “Making Scheduling ‘Cool’: Temperature-Aware Workload Placement in Data Centers,” USENIX ATC 2005, pp. 61–75. <https://www.usenix.org/legacy/publications/library/proceedings/usenix05/tech/general/moore.html>  
+[3] Tang, Q., Gupta, S.K.S., Varsamopoulos, G. (2008) “Energy-efficient Thermal-aware Task Scheduling for Homogeneous HPC Data Centers,” *IEEE Trans. Parallel Distrib. Syst.*, 19(11), 1458–1472. DOI: [10.1109/TPDS.2008.111](https://doi.org/10.1109/TPDS.2008.111)  
+[4] ASHRAE TC 9.9 (2021) *Thermal Guidelines for Data Processing Environments*, 5th ed. (A1 = 15–27 °C, W3 = 5–40 °C). <https://www.ashrae.org/technical-resources/bookstore/datacom-series>  
+[5] Patankar, S.V. (2010) “Airflow and Cooling in a Data Center,” *J. Heat Transfer*, 132(7), 073001. DOI: [10.1115/1.4001406](https://doi.org/10.1115/1.4001406)  
+[6] Zimmermann, S., Meijer, I., Tiwari, M.K., Paredes, S., Michel, B., Poulikakos, D. (2012) “Aquasar: A hot water cooled data center with direct energy reuse,” *Energy*, 43(1), 237–245. DOI: [10.1016/j.energy.2012.04.037](https://doi.org/10.1016/j.energy.2012.04.037)  
+
 ---
 
 ## 5. BESS
@@ -361,6 +370,15 @@ $$E_\text{effective} = E_\text{nom} \cdot (1 - 0.2 \cdot f_\text{age})$$
 | SOC efficiency loss | $k_\text{SOC}$ | 0.010 | — |
 | Nominal pack voltage | $V_\text{nom}$ | 800 | V |
 | Internal resistance | $R_\text{int}$ | 0.002 | Ω |
+
+### References
+
+[1] NREL PySAM BatteryStateful documentation. <https://nrel-pysam.readthedocs.io/en/main/modules/BatteryStateful.html>  
+[2] Blair, N., DiOrio, N., Freeman, J., Gilman, P., Janzou, S. (2018) *System Advisor Model (SAM) General Description (Version 2017.9.5)*, NREL/TP-6A20-70414. <https://www.nrel.gov/docs/fy18osti/70414.pdf>  
+[3] Xu, B., Zhao, J., Zheng, T., Litvinov, E., Kirschen, D.S. (2018) “Factoring the Cycle Aging Cost of Batteries Participating in Electricity Markets,” *IEEE Trans. Power Syst.*, 33(2), 2248–2259. DOI: [10.1109/TPWRS.2017.2733339](https://doi.org/10.1109/TPWRS.2017.2733339)  
+[4] Shepherd, C.M. (1965) “Design of Primary and Secondary Cells: An Equation Describing Battery Discharge,” *J. Electrochem. Soc.*, 112(7), 657–664. DOI: [10.1149/1.2423244](https://doi.org/10.1149/1.2423244)  
+[5] Wang, J., Liu, P., Hicks-Garner, J., et al. (2011) “Cycle-life model for graphite-LiFePO4 cells,” *J. Power Sources*, 196(8), 3942–3948. DOI: [10.1016/j.jpowsour.2010.11.134](https://doi.org/10.1016/j.jpowsour.2010.11.134)  
+[6] Hesse, H.C., Schimpe, M., Kucevic, D., Jossen, A. (2017) “Lithium-Ion Battery Storage for the Grid,” *Energies*, 10(12), 2107. DOI: [10.3390/en10122107](https://doi.org/10.3390/en10122107)  
 
 ---
 
@@ -426,6 +444,15 @@ $$\text{PUE} = \frac{P_\text{facility}}{P_\text{IT,total}} = \frac{P_\text{IT} +
 
 Practical range: 1.25 (excellent) to 2.5+ (very poor, Zone B heat wave).
 
+### References
+
+[1] Barroso, L.A., Hölzle, U., Ranganathan, P. (2019) *The Datacenter as a Computer*, 3rd ed., Morgan & Claypool. <https://dl.acm.org/doi/book/10.5555/3238191>  
+[2] Fan, X., Weber, W., Barroso, L.A. (2007) “Power Provisioning for a Warehouse-sized Computer,” *ACM ISCA 2007*, pp. 13–23. DOI: [10.1145/1273440.1250665](https://doi.org/10.1145/1273440.1250665)  
+[3] IEEE Std 3006.8-2018 — Recommended Practice for Analyzing Reliability Data for Equipment Used in Industrial and Commercial Power Systems (PUE). <https://ieeexplore.ieee.org/document/8353506>  
+[4] ASHRAE TC 9.9 (2021) *Thermal Guidelines for Data Processing Environments*, 5th ed. <https://www.ashrae.org/>  
+[5] Economou, D., Rivoire, S., Kozyrakis, C., Ranganathan, P. (2006) “Full-System Power Analysis and Modeling for Server Environments,” MoBS workshop, ISCA 2006. <https://csl.stanford.edu/~christos/publications/2006.mantis.mobs.slides.pdf>  
+[6] Shehabi, A., Smith, S., Sartor, D., et al. (2016) *United States Data Center Energy Usage Report*, LBNL-1005775. <https://escholarship.org/content/qt84p772fc/qt84p772fc.pdf>  
+
 ---
 
 ## 7. Macro-Grid Signal
@@ -480,6 +507,15 @@ where $L$ is the regional zone load in MW.
 
 > **Note on ENTSO-E:** 30-minute FCR-N settlement → longer correlation window (360 ticks). Nominal frequency is 50 Hz rather than 60 Hz.
 
+### References
+
+[1] PJM Manual 12: *Balancing Operations*, Section 4 — RegD signal specification. <https://www.pjm.com/-/media/documents/manuals/m12.ashx>  
+[2] NYISO Real-Time Actual Load data, 5-minute resolution. <https://www.nyiso.com/real-time-dashboard>  
+[3] Hogan, W.W. (2002) “Electricity Market Restructuring: Reforms of Reforms,” *J. Regulatory Economics*, 21(1), 103–132. DOI: [10.1023/A:1013557912617](https://doi.org/10.1023/A:1013557912617)  
+[4] Kundur, P. (1994) *Power System Stability and Control*, McGraw-Hill (ISBN 978-0-07-035958-1). Ch. 12 — Swing equation; damping coefficient D.  
+[5] Schweppe, F.C., Caramanis, M.C., Tabors, R.D., Bohn, R.E. (1988) *Spot Pricing of Electricity*, Kluwer Academic (ISBN 978-0-89838-260-0).  
+[6] Kirby, B.J. (2005) *Frequency Regulation Basics and Trends*, ORNL/TM-2004/291. DOI: [10.2172/885974](https://doi.org/10.2172/885974)  
+
 ---
 
 ## 8. Renewable Generation
@@ -515,6 +551,14 @@ $$P_\text{solar}(G, T_c) = P_\text{STC} \cdot \frac{G}{G_\text{STC}} \cdot \left
 
 Renewable output appears in the PCC power balance but **does not currently feed back into the reward** — it is available in `info` for future research on renewable-aware scheduling.
 
+### References
+
+[1] IEC 61400-12-1:2022 *Wind energy generation systems — Part 12-1: Power performance measurements of electricity producing wind turbines*, IEC. <https://www.iec.ch/standard/50028>  
+[2] Lydia, M., Kumar, S.S., Selvakumar, A.I., Kumar, G.E.P. (2014) “A comprehensive review on wind turbine power curve modeling techniques,” *Renewable and Sustainable Energy Reviews*, 30, 452–460. DOI: [10.1016/j.rser.2013.10.030](https://doi.org/10.1016/j.rser.2013.10.030)  
+[3] Masters, G.M. (2004) *Renewable and Efficient Electric Power Systems*, Wiley-IEEE Press (ISBN 978-0-471-28060-6). Ch. 7 — Betz limit, v³ power law, cut-in/out parameters.  
+[4] King, D.L., Boyson, W.E., Kratochvil, J.A. (2004) *Photovoltaic Array Performance Model*, Sandia National Laboratories, SAND2004-3535. <https://energy.sandia.gov/>  
+[5] Duffie, J.A., Beckman, W.A., McGowan, J.A. (2013) *Solar Engineering of Thermal Processes*, 4th ed., Wiley (ISBN 978-1-118-41541-6).  
+
 ---
 
 ## 9. Weather
@@ -548,6 +592,13 @@ $$T_\text{amb}(d, h) = T_\text{annual\_mean} + A_\text{seasonal} \cdot \cos\!\le
 
 > **Southern hemisphere:** AEMO NSW seasonal phase is inverted (summer = January). The model handles this automatically via a market-specific `d_peak` offset.
 
+### References
+
+[1] Smith, A., Lott, J.N., Vose, R. (2011) “The Integrated Surface Database: Recent Developments and Partnerships,” *Bull. Am. Meteorol. Soc.*, 92(6), 704–708. DOI: [10.1175/2011BAMS3015.1](https://doi.org/10.1175/2011BAMS3015.1)  
+[2] Parton, W.J., Logan, J.A. (1981) “A model for diurnal variation in soil and air temperature,” *Agricultural Meteorology*, 23, 205–216. DOI: [10.1016/0002-1571(81)90105-9](https://doi.org/10.1016/0002-1571(81)90105-9)  
+[3] ASHRAE (2021) *ASHRAE Handbook — Fundamentals*, Ch. 14: Climatic Design Information. <https://www.ashrae.org/technical-resources/ashrae-handbook>  
+[4] Lee, K.P., Chen, H.L. (2013) “Analysis of energy saving potential of air-side free cooling for data centers in worldwide climate zones,” *Energy and Buildings*, 64, 103–112. DOI: [10.1016/j.enbuild.2013.04.019](https://doi.org/10.1016/j.enbuild.2013.04.019)  
+
 ---
 
 ## 10. Workload Orchestrator
@@ -573,6 +624,14 @@ $$P_\text{flex,nom} = P_\text{batch} + P_\text{spot} \quad \text{(schedulable)}$
 $$P_\text{IT,actual} = P_\text{base} + P_\text{flex,nom} \cdot (1 - \text{throttle})$$
 
 **GenAI spike model:** Poisson-distributed serving bursts scaled by `genai_spike_scale` (1.0 = nominal, 1.8 = Scenario A). The `is_spike` observation flag is set during active bursts.
+
+### References
+
+[1] Weng, Q., Xiao, W., Yu, Y., et al. (2022) “MLaaS in the Wild: Workload Analysis and Scheduling in Large-Scale Heterogeneous GPU Clusters,” *USENIX NSDI 2022*. <https://www.usenix.org/conference/nsdi22/presentation/weng>  
+[2] Guo, J., Chang, Z., Wang, S., et al. (2019) “Who Limits the Resource Efficiency of My Datacenter: An Analysis of Alibaba Datacenter Traces,” *ACM IWQoS 2019*. DOI: [10.1145/3326285.3329074](https://doi.org/10.1145/3326285.3329074)  
+[3] Fan, X., Weber, W., Barroso, L.A. (2007) “Power Provisioning for a Warehouse-sized Computer,” *ACM ISCA 2007*, pp. 13–23. DOI: [10.1145/1273440.1250665](https://doi.org/10.1145/1273440.1250665)  
+[4] Wierman, A., Liu, Z., Liu, I., Mohsenian-Rad, H. (2014) “Opportunities and Challenges for Data Center Demand Response,” *IEEE IGCC 2014*. DOI: [10.1109/IGCC.2014.7039172](https://doi.org/10.1109/IGCC.2014.7039172)  
+[5] Narayanan, D., Shoeybi, M., Casper, J., et al. (2021) “Efficient Large-Scale Language Model Training on GPU Clusters Using Megatron-LM,” *SC 2021*. DOI: [10.1145/3458817.3476209](https://doi.org/10.1145/3458817.3476209)  
 
 ---
 
