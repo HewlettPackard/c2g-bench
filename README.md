@@ -13,7 +13,62 @@ We solve this using a **Hierarchical AI Orchestration** framework that bridges l
 
 ---
 
-## 2. Problem Statement: The "Handshake" Gap
+## 2. Background: Grid Frequency Regulation and RegD
+
+### What is the RegD signal?
+
+Every power grid must keep its frequency exactly at **60 Hz** (US) or **50 Hz** (EU) at all times. When a generator trips offline or a large load turns on suddenly, frequency deviates. Grid operators use **Automatic Generation Control (AGC)** to recruit *fast-response providers* — assets that can inject or absorb power within seconds to correct the imbalance.
+
+**FERC Order 755 (2011)** created a pay-for-performance market for exactly this. Instead of paying only for *available capacity* (MW committed), it mandates that grid operators also pay for *accuracy* — how precisely an asset tracks the real-time regulation signal. PJM (the largest US grid operator) implemented this as the **RegD** signal: the "D" stands for *dynamic*, meaning it is designed for fast-response resources such as batteries and flexible loads.
+
+### How the RegD signal works
+
+Every **2–5 seconds**, the grid operator broadcasts a normalized score:
+
+$$\text{RegD}(t) \in [-1,\, +1]$$
+
+The sign convention is:
+
+| Signal value | Grid instruction | Data center must... |
+|---|---|---|
+| **+1** | Grid has excess load — reduce grid draw | Shed batch load, discharge BESS, or slow cooling |
+| **−1** | Grid has excess generation — absorb more | Increase batch load, charge BESS, or raise cooling |
+| **0** | Balanced | Hold current power level |
+
+The actual MW response required is:
+
+$$\Delta P_{\text{demanded}} = \text{committed\_mw} \times \text{RegD}(t)$$
+
+where `committed_mw` is the capacity the data center has pre-contracted to the market for the current 15-minute settlement interval.
+
+### Statistical properties (AR(1) model)
+
+The RegD signal is statistically modelled as a **first-order autoregressive (AR(1)) process** — persistent but zero-mean. At the 5-minute scale it has autocorrelation ρ ≈ 0.80, which time-scales to ρ ≈ 0.997 at the 5-second simulation step used in C2G-Bench. The signal averages to zero over a settlement period, meaning the data center neither gains nor loses net energy from providing regulation.
+
+In `c2g_env/physics/macro_grid.py`:
+
+```python
+self._regd_state = rho * self._regd_state + sigma * noise  # AR(1)
+regd = np.clip(self._regd_state, -1.0, 1.0)               # normalise to [-1,1]
+```
+
+### The performance score (mileage metric)
+
+Under FERC Order 755, the *performance score* is the correlation between the demanded signal and the actual response. A score of 1.0 = perfect tracking; 0.0 = random; below a threshold (typically 0.75) results in zero payment and market suspension. This maps directly to the **β tracking term** in the C2G reward function.
+
+### Why a data center is uniquely suited
+
+A 250 MW hyperscale facility has three fast-response levers unavailable to most grid assets:
+
+1. **Batch compute DVFS** — schedulable HPC/AI training jobs can be throttled in milliseconds via CPU/GPU frequency scaling, instantly shedding up to ~50 MW of flexible load.
+2. **BESS** — the on-site 150 MWh / 50 MW battery can charge or discharge at full rate in under 100 ms, providing the fastest regulation response.
+3. **Thermal inertia (CDU pump)** — the liquid cooling loop acts as a thermal capacitor (τ ≈ 12.7 min). Slowing the pump briefly stores heat in the water loop without immediately raising server temperatures, providing ~5–10 MW of additional regulation headroom for short intervals.
+
+These three levers in combination can follow a RegD signal far more accurately than a single-asset provider, while the hierarchical RL agent learns the optimal trade-off between grid revenue, compute throughput, and thermal safety.
+
+---
+
+## 3. Problem Statement: The "Handshake" Gap
 
 Current data center management systems are "grid-blind": they optimize internal efficiency (PUE) while ignoring the real-time needs of the regional energy system.
 
@@ -23,7 +78,7 @@ Current data center management systems are "grid-blind": they optimize internal 
 
 ---
 
-## 3. State-of-the-Art and Our Contribution
+## 4. State-of-the-Art and Our Contribution
 
 | SOTA | Gap | Our Step Further |
 |------|-----|-----------------|
@@ -33,7 +88,7 @@ Current data center management systems are "grid-blind": they optimize internal 
 
 ---
 
-## 4. Technical Solution: Hierarchical AI Orchestration
+## 5. Technical Solution: Hierarchical AI Orchestration
 
 ### 4.1. Upper-Level Agent: The Market Orchestrator (15-min ticks)
 
@@ -499,7 +554,7 @@ truncated = True"]
 
 ---
 
-## 5. Physics Engines
+## 6. Physics Engines
 
 > **C2G-Bench exposes exactly two Gymnasium environments** — `C2GFastEnv` and `C2GMacroEnv` — both registered under `gym.make()`. Everything below is *not* an environment: the seven physics engines are internal simulation components with no `reset()/step()` or `observation_space/action_space` API. They are called exclusively by the two environments and are never exposed to an RL agent directly. If you want to interact with a physics engine in isolation (e.g. for unit testing or analysis), instantiate it directly from `c2g_env.physics.*`.
 
@@ -518,7 +573,7 @@ Seven independent physics/data modules, all with exact-exponential or analytical
 
 ---
 
-## 6. Data
+## 7. Data
 
 ### Real Datasets
 
@@ -542,7 +597,7 @@ Seven independent physics/data modules, all with exact-exponential or analytical
 
 ---
 
-## 7. Evaluation Scenarios
+## 8. Evaluation Scenarios
 
 C2G-Bench ships four progressively harder 24-hour scenarios (17,280 ticks at 5 s each). Every scenario is fully deterministic when a fixed seed is set and can be combined with any of the six energy markets via a single Hydra override.
 
@@ -676,7 +731,7 @@ uv run python baselines/train_ppo.py scenario=scenario_b market=entso_de experim
 
 ---
 
-## 8. Repository Structure
+## 9. Repository Structure
 
 ```
 C2G-Macro/
@@ -777,7 +832,7 @@ C2G-Macro/
 
 ---
 
-## 9. Quick Start
+## 10. Quick Start
 
 ### Prerequisites
 
@@ -873,7 +928,7 @@ uv run jupyter lab notebooks/
 
 ---
 
-## 9.5. High-Assurance Safety Controllers
+## 10.5. High-Assurance Safety Controllers
 
 C2G-Bench includes a **Simplex-architecture safety shield** [Sha 2001] that provides **provable hard-constraint satisfaction** for any RL agent, without retraining.
 
@@ -927,7 +982,7 @@ The benchmark tracks shield intervention rate (`ShieldStats.intervention_rate`) 
 
 ---
 
-## 10. Strategic Value
+## 11. Strategic Value
 
 ### For the Energy System
 - **Renewable Integration:** Data centers absorb excess wind/solar, preventing curtailment.
@@ -945,7 +1000,7 @@ The benchmark tracks shield intervention rate (`ShieldStats.intervention_rate`) 
 
 ---
 
-## 11. Citation
+## 12. Citation
 
 ```bibtex
 @inproceedings{c2gbench2026,
@@ -959,7 +1014,7 @@ The benchmark tracks shield intervention rate (`ShieldStats.intervention_rate`) 
 
 ---
 
-## 12. Figure Gallery
+## 13. Figure Gallery
 
 All figures are generated by the notebooks in `notebooks/` and can be reproduced by running `uv run jupyter lab notebooks/`.
 
