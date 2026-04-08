@@ -2,7 +2,7 @@
 # Market preset: pjm_dom
 # PJM Northern Virginia — Data Center Alley
 # Overrides grid_market and weather_market for any scenario.
-# Usage:  python train_ppo.py +market=pjm_dom
+# Usage:  python train_ppo.py market=pjm_dom
 # Sweep:  python train_ppo.py --multirun market=nyiso_nyc,pjm_dom,caiso_pgae,ercot_north,entso_de,aemo_nsw
 market:
   id: pjm_dom

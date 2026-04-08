@@ -10,7 +10,7 @@ timesteps (~2 000 steps) and asserts the process exits cleanly (code 0).
 What is validated per test
 --------------------------
 * Hydra config composition succeeds (no KeyError from bad group overrides,
-  including the +market= append operator).
+  including the market= override).
 * The chosen scenario × market × algorithm combination can build the
   environment, instantiate the agent, and complete at least a few
   gradient updates.
@@ -104,30 +104,30 @@ class TestReadmeSmokeCommands:
 
     # ── §10 PPO scenario_a + PJM market ─────────────────────────────────────
     def test_ppo_scenario_a_market_pjm(self):
-        """README §10: train_ppo.py scenario=scenario_a +market=pjm_dom"""
+        """README §10: train_ppo.py scenario=scenario_a market=pjm_dom"""
         result = _run(
             "baselines/train_ppo.py",
-            ["scenario=scenario_a", "+market=pjm_dom"] + _FAST_PPO,
+            ["scenario=scenario_a", "market=pjm_dom"] + _FAST_PPO,
         )
-        _assert_ok(result, "train_ppo.py scenario_a +market=pjm_dom")
+        _assert_ok(result, "train_ppo.py scenario_a market=pjm_dom")
 
     # ── §8 PPO scenario_b + ERCOT market ────────────────────────────────────
     def test_ppo_scenario_b_market_ercot(self):
-        """README §8: train_ppo.py scenario=scenario_b +market=ercot_north"""
+        """README §8: train_ppo.py scenario=scenario_b market=ercot_north"""
         result = _run(
             "baselines/train_ppo.py",
-            ["scenario=scenario_b", "+market=ercot_north"] + _FAST_PPO,
+            ["scenario=scenario_b", "market=ercot_north"] + _FAST_PPO,
         )
-        _assert_ok(result, "train_ppo.py scenario_b +market=ercot_north")
+        _assert_ok(result, "train_ppo.py scenario_b market=ercot_north")
 
     # ── §8 PPO scenario_b + ENTSO-E + seed override ─────────────────────────
     def test_ppo_scenario_b_market_entso_seed(self):
-        """README §8: ...scenario=scenario_b +market=entso_de experiment.seed=1"""
+        """README §8: ...scenario=scenario_b market=entso_de experiment.seed=1"""
         result = _run(
             "baselines/train_ppo.py",
-            ["scenario=scenario_b", "+market=entso_de", "experiment.seed=1"] + _FAST_PPO,
+            ["scenario=scenario_b", "market=entso_de", "experiment.seed=1"] + _FAST_PPO,
         )
-        _assert_ok(result, "train_ppo.py scenario_b +market=entso_de seed=1")
+        _assert_ok(result, "train_ppo.py scenario_b market=entso_de seed=1")
 
     # ── §10 SAC scenario_b ───────────────────────────────────────────────────
     def test_sac_scenario_b(self):

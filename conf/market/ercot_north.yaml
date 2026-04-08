@@ -2,7 +2,7 @@
 # Market preset: ercot_north
 # ERCOT Dallas-Fort Worth — isolated grid
 # Overrides grid_market and weather_market for any scenario.
-# Usage:  python train_ppo.py +market=ercot_north
+# Usage:  python train_ppo.py market=ercot_north
 # Sweep:  python train_ppo.py --multirun market=nyiso_nyc,pjm_dom,caiso_pgae,ercot_north,entso_de,aemo_nsw
 market:
   id: ercot_north

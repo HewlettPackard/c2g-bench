@@ -11,7 +11,7 @@
 #   python baselines/train_ppo.py scenario=scenario_b
 #
 #   # Override market independently of scenario
-#   python baselines/train_ppo.py scenario=default +market=ercot_north
+#   python baselines/train_ppo.py scenario=default market=ercot_north
 #
 #   # Full cross-market sweep (36 runs: 6 markets × 3 seeds × 2 algos)
 #   python baselines/train_ppo.py --multirun \
@@ -21,6 +21,7 @@
 defaults:
   - scenario: default
   - algo: ppo
+  - market: nyiso_nyc
   - logging: tensorboard
   - _self_
 
