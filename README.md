@@ -732,7 +732,7 @@ C2G-Bench ships four progressively harder 24-hour scenarios (17,280 ticks at 5 s
 
 ```bash
 # Run any scenario × any market
-uv run python baselines/train_ppo.py scenario=scenario_b market=ercot_north
+uv run python baselines/train_ppo.py scenario=scenario_b +market=ercot_north
 ```
 
 ### 8.1. Scene-setting: shared physics
@@ -855,7 +855,7 @@ All four scenarios can be combined with all six markets, yielding **24 distinct 
 
 ```bash
 # Example: Thermal Squeeze under European low-carbon prices
-uv run python baselines/train_ppo.py scenario=scenario_b market=entso_de experiment.seed=1
+uv run python baselines/train_ppo.py scenario=scenario_b +market=entso_de experiment.seed=1
 ```
 
 ---
@@ -995,7 +995,7 @@ uv run pytest tests/ -q
 uv run python baselines/train_ppo.py
 
 # PPO — GenAI Crisis + PJM market
-uv run python baselines/train_ppo.py scenario=scenario_a market=pjm_dom
+uv run python baselines/train_ppo.py scenario=scenario_a +market=pjm_dom
 
 # SAC — Thermal Squeeze
 uv run python baselines/train_sac.py algo=sac scenario=scenario_b

@@ -793,7 +793,7 @@ grid_stress_scale: 1.4
 3. **Train and evaluate:**
 
 ```bash
-uv run python baselines/train_ppo.py scenario=my_scenario market=pjm_dom
+uv run python baselines/train_ppo.py scenario=my_scenario +market=pjm_dom
 ```
 
 No code changes required — the environments load any scenario key found in `config.yaml`.
