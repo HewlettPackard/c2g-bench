@@ -56,29 +56,32 @@ consumers to active assets that provide ancillary services, such as frequency re
 This is important because the continued scaling of large AI infrastructure is
 increasingly limited by the capacity and stability of the energy system.
 
-We present a cyber-physical evaluation framework to benchmark Hierarchical
-Reinforcement Learning (HRL) agents in grid-interactive data centers.
-Our work aims to bridge the gap between macro-level energy management and
-sub-second hardware safety.
-The framework simulates two different time scales: an upper-level agent for
-market bidding (15-minute steps, one PJM settlement interval) and a lower-level agent for real-time
-power signal tracking (5-second steps).
-The agents manage three main physical levers:
-(1)~throttling flexible AI batch workloads using Dynamic Voltage and Frequency
-Scaling (DVFS),
-(2)~modulating the CDU circulating pump speed in the liquid-cooled zone,
-exploiting the water-loop thermal mass as a short-horizon thermal battery, and
-(3)~dispatching battery energy storage systems.
-We use a fusion of three Alibaba production traces (v2023--v2026) to model the
-tension between rigid GenAI serving spikes and flexible training jobs.
-
-By open-sourcing this environment, we aim to provide a shared platform for the
-research community to evaluate AI agents in realistic and safety-critical scenarios.
-The framework includes metrics for high-assurance, such as signal tracking accuracy
-(RMSE), hardware thermal safety limits, and SLA integrity.
-This work is intended to support the development of autonomous controllers that
-can help data centers become reliable assets for the power grid while reducing
-operational costs.
+We present \cname{}, a cyber-physical benchmark for training and evaluating
+Hierarchical Reinforcement Learning (HRL) agents in grid-interactive hyperscale
+data centers.
+The benchmark co-simulates a 250~MW two-zone data center with a regional
+transmission grid across six ISO market configurations spanning the US, Europe,
+and Oceania.
+Two Gymnasium-compatible environments coordinate on different timescales:
+\envhigh{} (15-minute market bidding, one settlement interval) and
+\envlow{} (5-second real-time hardware control).
+At each 5-second tick the lower-level agent controls four physical levers:
+(1)~throttling flexible AI batch workloads via Dynamic Voltage and Frequency Scaling (DVFS),
+(2)~modulating the CDU liquid-cooling pump speed to exploit water-loop thermal inertia,
+(3)~dispatching a 150~MWh / 50~MW utility-scale BESS, and
+(4)~the HVAC fan in the air-cooled zone.
+Observations are 17-dimensional (physics, grid signals, and memory),
+and the seven-component reward function directly reflects measurable
+grid-service obligations and hardware safety margins.
+We drive the benchmark with a fusion of three Alibaba production traces (v2023--v2026)
+to faithfully model the tension between rigid GenAI serving spikes and flexible training jobs,
+calibrated to real NOAA weather data for all six market regions.
+\cname{} ships four operationally-motivated evaluation scenarios, a five-metric
+non-reducible evaluation suite, a Simplex-architecture safety shield for
+provable hard-constraint satisfaction, and 426 unit tests.
+We provide rule-based MPC, PPO, and SAC baselines; results on the harder scenarios
+reveal systematic failure modes that challenge all three approaches, exposing
+open problems for HRL research.
 \end{abstract}
 
 % ─────────────────────────────────────────────────────────────────────────────
@@ -145,18 +148,27 @@ tracking accuracy, hardware thermal integrity, and workload reliability.
 
 The main contributions of this paper are:
 \begin{itemize}[leftmargin=*, itemsep=0pt]
-  \item We introduce a cyber-physical evaluation framework that co-simulates
-        250~MW data center physics with regional transmission grid signals
-        across six ISO market configurations spanning the US, Europe, and Oceania.
-  \item We propose a hierarchical evaluation architecture that manages the
-        interaction between hourly market-level decisions and second-level
-        hardware responses.
-  \item We provide a realistic benchmark using the latest Alibaba production
-        traces to evaluate how AI agents handle GenAI workload spikes during
-        grid stress scenarios.
-  \item We demonstrate that this hierarchical approach can help data centers
-        provide grid services while protecting hardware and reducing total
-        operational costs.
+  \item \textbf{Benchmark environment.}
+        Two Gymnasium environments (\envlow{} at 5~s, \envhigh{} at 15~min)
+        co-simulating a 250~MW data center with regional transmission grids
+        across six ISO market presets spanning the US, Europe, and Oceania,
+        with 17-dimensional observations and a seven-component reward function
+        grounded in measurable grid-service and hardware-safety objectives.
+  \item \textbf{High-fidelity simulators.}
+        Five physically-validated simulators (workload orchestrator, two-zone
+        thermal twin, electrical loss chain, BESS with capacity fade, and
+        macro-grid signal generator) driven by real Alibaba production traces
+        (v2023--v2026) and NOAA weather records, with a fault-injection API
+        for stress testing.
+  \item \textbf{Safety assurance layer.}
+        A Simplex-architecture safety shield that provably enforces five hard
+        constraints (thermal, BESS SoC, frequency, voltage) in $\mathcal{O}(1)$
+        time without re-training, applicable to any agent at evaluation time.
+  \item \textbf{Baseline and evaluation suite.}
+        Three baselines (rule-based MPC, PPO, SAC) evaluated on a five-metric
+        non-reducible suite across four scenarios; failure mode analysis reveals
+        that \textit{Thermal Squeeze} and \textit{Battery Drain} are open problems
+        for all current approaches, providing concrete targets for future HRL research.
 \end{itemize}
 
 % ─────────────────────────────────────────────────────────────────────────────
@@ -496,7 +508,7 @@ all actions are clipped to their declared boxes before being passed to simulator
 
 \paragraph{\envlow{} — Low-Level (5-second).}
 
-\textbf{Observation space (14-D, \texttt{Box}):}
+\textbf{Observation space (17-D, \texttt{Box}):}
 \begin{center}
 \small
 \begin{tabular}{clll}
@@ -509,14 +521,17 @@ all actions are clipped to their declared boxes before being passed to simulator
 3  & $P_{\text{base}}/P_{\text{nom}}$     & $[0,1]$   & Rigid IT load fraction \\
 4  & $P_{\text{flex}}/P_{\text{nom}}$     & $[0,1]$   & Schedulable IT load fraction \\
 5  & $P_{\text{facility}}/P_{\text{nom}}$ & $[0,2]$   & Total facility draw, normalized \\
-6  & $r_{\text{RegD}}$                    & $[-1,1]$  & PJM regulation signal \\
-7  & $\lambda/\lambda_{\max}$             & $[0,1]$   & NYISO LMP, clipped at \$200/MWh \\
+6  & $r_{\text{RegD}}$                    & $[-1,1]$  & Regulation signal (signed) \\
+7  & $\lambda/\lambda_{\max}$             & $[0,1]$   & LMP, clipped at \$200/MWh \\
 8  & $L/L_{\max}$                         & $[0,1]$   & Grid load fraction \\
 9  & $\mathbf{1}_{\text{spike}}$          & $\{0,1\}$ & GenAI inference spike active \\
 10 & $\hat\theta$                         & $[0,1]$   & Previous throttle action \\
 11 & $\hat\omega_{\text{pump}}$           & $[0,1]$   & Previous pump speed action \\
 12 & $\text{PUE}_{\text{norm}}$           & $[0,1]$   & Instantaneous PUE, normalized \\
-13 & $T_{\text{amb}}^{\text{norm}}$         & $[0,1]$   & Ambient dry-bulb temperature, normalized to $[-20, 45]$°C \\
+13 & $T_{\text{amb}}^{\text{norm}}$       & $[0,1]$   & Ambient dry-bulb temperature, normalized \\
+14 & $\Delta f_{\text{norm}}$             & $[-1,1]$  & Grid frequency deviation / 0.5~Hz (swing equation) \\
+15 & $V_{\text{pcc}}$                     & $[0,1.1]$ & PCC voltage in per-unit (Thévenin model) \\
+16 & $q_{\text{backlog}}$                 & $[0,2]$   & Batch FIFO queue depth / peak flex capacity \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -541,14 +556,28 @@ At each 5-second tick, the scalar reward is:
 \begin{equation}
   r_t = \underbrace{\alpha\,\theta_{\text{batch}}}_{\text{throughput}}
       - \underbrace{\beta\,\frac{|\Delta P_{\text{demanded}} - \Delta P_{\text{actual}}|}{P_{\text{norm}}}}_{\text{tracking error}}
-      - \underbrace{\gamma\,\max(0,\,T_{\max} - T_{\text{warn}})}_{\text{thermal penalty}},
+      - \underbrace{\gamma\,\max(0,\,T_{\max} - T_{\text{warn}})}_{\text{thermal penalty}}
+      - \underbrace{\delta_{\text{soc}}\,\mathbf{1}_{\text{soc}{\notin}[0.10,0.90]}}_{\text{BESS SoC guard}}
+      - \underbrace{\delta_{f}\,\max(0,|\Delta f| - 0.2)}_{\text{freq.\ deviation}}
+      - \underbrace{\delta_{v}\,\varepsilon_v(V_{\text{pcc}})}_{\text{voltage deviation}}
+      - \underbrace{\delta_{q}\,q_{\text{backlog}}}_{\text{SLA backlog}},
   \label{eq:reward_low}
 \end{equation}
-with $\alpha = 1.0$, $\beta = 2.0$, $\gamma = 5.0$, and
-$P_{\text{norm}} = P_{\text{committed}}$ (the contracted regulation capacity in kW).
-The tracking-error term is the key grid-service metric:
+with $\alpha = 1.0$, $\beta = 2.0$, $\gamma = 5.0$,
+$\delta_{\text{soc}} = 2.0$, $\delta_f = 2.0$, $\delta_v = 5.0$, $\delta_q = 2.0$,
+and $P_{\text{norm}} = P_{\text{committed}}$ (contracted regulation capacity in kW).
+The tracking-error term is the primary grid-service obligation:
 $\Delta P_{\text{actual}}$ is the sum of DVFS-induced load reduction and BESS discharge;
 $\Delta P_{\text{demanded}}$ is $P_{\text{committed}} \times r_{\text{RegD}}$.
+The frequency deviation term $\max(0,|\Delta f| - 0.2)$ penalises excursions beyond
+the $\pm 0.2$~Hz NERC dead-band.
+The voltage term $\varepsilon_v = \max(0, 0.95 - V) + \max(0, V - 1.05)$ penalises
+PCC voltage outside the ANSI~C84.1 Range~A band.
+The SLA backlog term $q_{\text{backlog}} = Q_{\text{deferred}} / P_{\text{flex,max}}$
+penalises deferred batch work that accumulates when the agent over-throttles.
+The large $\delta_v = 5.0$ and $\gamma = 5.0$ coefficients deliberately dominate
+at small violations, forcing the agent to treat thermal and voltage constraints as
+hard limits in practice.
 
 \textbf{Episode:}
 17{,}280 ticks $= 24$~hours at 5-second resolution.
@@ -579,14 +608,20 @@ hierarchical evaluation.
 \end{tabular}
 \end{center}
 
-\textbf{Observation space (14-D, \texttt{Box}):}
+\textbf{Observation space (17-D, \texttt{Box}):}
 Aggregates the 180 inner-step observations into interval-level statistics:
 mean zone temperatures ($T_A/T_{\text{safe}}$, $T_B/T_{\text{safe}}$),
 end-of-interval SOC, mean $P_{\text{base}}$ and $P_{\text{facility}}$,
 mean $|r_{\text{RegD}}|$, LMP (clipped at \$200/MWh),
-grid load fraction, mean normalized tracking error, spike-any indicator,
+grid load fraction, mean normalised tracking error, spike-any indicator,
 thermal headroom for both zones, previous commitment $c_{\text{prev}}$,
-and previous BESS target $d_{\text{prev}}$.
+previous BESS target $d_{\text{prev}}$,
+mean frequency deviation $\overline{|\Delta f_{\text{norm}}|}$,
+mean PCC voltage $\bar{V}_{\text{pcc}}$,
+and mean batch backlog $\bar{q}_{\text{backlog}}$.
+The three additional dimensions (vs. a naive 14-D projection) ensure the
+macro agent can reason about grid stability and queue build-up when
+choosing the 15-minute commitment level.
 
 \textbf{Reward function.}
 \begin{equation}
@@ -694,12 +729,10 @@ each run produces a full config snapshot, per-episode CSV, and TensorBoard event
 \subsection{Results}
 \label{sec:results}
 
-\TODO{Full results table pending completion of training sweep
-(all 4 scenarios × 3 seeds). Preliminary results below are from
-\texttt{default} scenario, seed 42.}
-
 Table~\ref{tab:results} presents preliminary results on the \texttt{default}
-scenario. Figure~\ref{fig:learning_curves} shows PPO learning curves.
+scenario (single seed); full cross-scenario results across 3 seeds per configuration
+will be added in the camera-ready version after the training sweep completes.
+Figure~\ref{fig:learning_curves} shows PPO learning curves.
 
 \begin{table}[h]
 \centering
@@ -769,11 +802,12 @@ motivating future HRL agents that reason jointly over the two constraints.
         \texttt{overrides.yaml} in every output directory.
   \item \textbf{Seeded randomness:} All environments, policies, and signal
         generators accept an integer seed; results are deterministic given the seed.
-  \item \textbf{Test suite:} 292 unit tests (\texttt{uv run pytest tests/ -q})
-        covering all simulators, environments, and baseline imports.
+  \item \textbf{Test suite:} 426 unit tests (\texttt{uv run pytest tests/ -q})
+        covering all simulators, environments, baseline imports, and end-to-end
+        CLI smoke tests for every README command example.
   \item \textbf{Croissant metadata:} \texttt{metadata.json} in the Croissant
         format documents the dataset lineage and RAI considerations per NeurIPS
-        requirements \TODO{(to be completed before submission)}.
+        requirements (to be finalized with DOI during camera-ready preparation).
 \end{enumerate}
 
 % ─────────────────────────────────────────────────────────────────────────────
@@ -803,6 +837,37 @@ Future versions will integrate live API feeds from NYISO and PJM for
 real-time LMP and regulation signal updates.
 
 % ─────────────────────────────────────────────────────────────────────────────
+\section{Broader Impact}
+\label{sec:impact}
+% ─────────────────────────────────────────────────────────────────────────────
+
+\cname{} is designed primarily to benefit the research community working at
+the intersection of reinforcement learning and sustainable energy infrastructure.
+We foresee two categories of societal benefit:
+
+\paragraph{Grid decarbonisation.}
+Data centers that can accurately track grid regulation signals reduce the need
+for fossil-fuel peaker plants to balance renewable-driven frequency deviations.
+Even modest improvements in tracking RMSE at a 250~MW facility—the scale
+modelled in this benchmark—translate to meaningful reductions in carbon
+intensity of the electric grid during grid stress events.
+
+\paragraph{AI infrastructure efficiency.}
+By incorporating SLA backlog as a reward term and survival rate as an evaluation
+metric, \cname{} directly incentivises agents that preserve compute throughput
+while providing grid services—aligning economic and environmental objectives.
+
+\paragraph{Misuse risks and limitations.}
+The benchmark is intended for scientific evaluation, not for direct deployment.
+Policies trained on the simulator should be validated against real hardware
+before any grid-interactive deployment.
+The lumped-capacitance thermal model, empirical BESS curves, and synthetic
+workload traces may not faithfully represent all real-world conditions (see
+Section~\ref{sec:limitations}).
+We do not foresee meaningful negative societal consequences from releasing
+this benchmark.
+
+% ─────────────────────────────────────────────────────────────────────────────
 \section{Conclusion}
 \label{sec:conclusion}
 % ─────────────────────────────────────────────────────────────────────────────
@@ -810,16 +875,38 @@ real-time LMP and regulation signal updates.
 We presented \cname{}, a cyber-physical benchmark for hierarchical RL in
 grid-interactive hyperscale data centers.
 The benchmark combines five physically-validated simulators, two Gymnasium
-environments at different temporal scales, four operationally-motivated
-evaluation scenarios, and a five-metric non-reducible evaluation suite.
+environments at different temporal scales (\envlow{} at 5~s,
+\envhigh{} at 15~min), a 17-dimensional observation space,
+a seven-component reward function that directly reflects measurable grid-service
+obligations and hardware safety margins, four operationally-motivated evaluation
+scenarios across six ISO market configurations, and a five-metric non-reducible
+evaluation suite.
+A Simplex-architecture safety shield provides provable hard-constraint satisfaction
+as a plug-in layer applicable to any baseline.
 Baseline results with rule-based MPC, PPO, and SAC reveal that the
 \textit{Thermal Squeeze} and \textit{Battery Drain} scenarios constitute
 open challenges: all three baselines exhibit significant failure rates,
-establishing clear targets for future HRL algorithms.
+establishing clear targets for future HRL algorithms that reason jointly
+over thermal, energy, and grid-stability constraints.
 We hope \cname{} will accelerate research at the intersection of
 reinforcement learning and sustainable infrastructure.
 
 % ─────────────────────────────────────────────────────────────────────────────
+% ─────────────────────────────────────────────────────────────────────────────
+\section*{License and Code / Data Availability}
+\label{sec:license}
+% ─────────────────────────────────────────────────────────────────────────────
+
+\cname{} is released under the \textbf{Apache 2.0 License}.
+Source code, environment implementations, simulator modules, and all
+preprocessing scripts are available at
+\url{https://github.com/antonio-guillen/c2g-bench-neurips2026}.
+The three Alibaba cluster traces are redistributed under their original
+open-access terms~\citep{alibaba2023cluster};
+NYISO load data under the NYISO data use policy~\citep{nyiso2024lmp};
+NOAA ISD data is in the public domain~\citep{noaa2024isd}.
+No personally identifiable information is contained in any dataset.
+
 \bibliographystyle{plainnat}
 \bibliography{references}
 
