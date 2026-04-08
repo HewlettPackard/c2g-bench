@@ -743,7 +743,7 @@ C2G-Bench ships four progressively harder 24-hour scenarios (17,280 ticks at 5 s
 
 ```bash
 # Run any scenario × any market
-uv run python baselines/train_ppo.py scenario=scenario_b +market=ercot_north
+uv run python baselines/train_ppo.py scenario=scenario_b market=ercot_north
 ```
 
 ### 8.1. Scene-setting: shared physics
@@ -866,7 +866,7 @@ All four scenarios can be combined with all six markets, yielding **24 distinct 
 
 ```bash
 # Example: Thermal Squeeze under European low-carbon prices
-uv run python baselines/train_ppo.py scenario=scenario_b +market=entso_de experiment.seed=1
+uv run python baselines/train_ppo.py scenario=scenario_b market=entso_de experiment.seed=1
 ```
 
 ---
@@ -1006,7 +1006,7 @@ uv run pytest tests/ -q
 uv run python baselines/train_ppo.py
 
 # PPO — GenAI Crisis + PJM market
-uv run python baselines/train_ppo.py scenario=scenario_a +market=pjm_dom
+uv run python baselines/train_ppo.py scenario=scenario_a market=pjm_dom
 
 # SAC — Thermal Squeeze
 uv run python baselines/train_sac.py algo=sac scenario=scenario_b
@@ -1056,6 +1056,24 @@ Results are written to `results/sweep_results.csv` (one row per run, upserted on
 uv run python scripts/download_weather.py --year 2024
 uv run python scripts/download_energy.py  --year 2024
 ```
+
+### Monitor training with TensorBoard
+
+All training scripts log scalar metrics (episode reward, episode length, thermal/tracking/SOC penalties, shield interventions) to TensorBoard. Logs are written to the Hydra output directory under `tensorboard/`.
+
+```bash
+# Point TensorBoard at the outputs directory to compare all runs:
+uv run tensorboard --logdir outputs/
+
+# Or at a specific run:
+uv run tensorboard --logdir outputs/ppo_default/seed_42/2026-04-08_21-00-00/tensorboard/
+```
+
+Then open [http://localhost:6006](http://localhost:6006) in your browser.
+
+<p align="center">
+  <img src="figures/tensorboard_screenshot.jpg" width="90%" alt="TensorBoard dashboard showing PPO training curves: episode reward, episode length, and per-term reward components"/>
+</p>
 
 ### Explore interactively
 
