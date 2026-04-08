@@ -21,28 +21,33 @@ class TestWeatherLoaderFallback:
     """Behaviour when no CSV is present — synthetic model fallback."""
 
     def test_synthetic_used_when_no_file(self, tmp_path):
-        wl = WeatherLoader(weather_dir=tmp_path, market="nyiso_nyc")
+        with pytest.warns(UserWarning, match="file not found"):
+            wl = WeatherLoader(weather_dir=tmp_path, market="nyiso_nyc")
         assert not wl.loaded
         assert wl.source.startswith("synthetic:")
 
     def test_synthetic_temp_finite(self, tmp_path):
-        wl = WeatherLoader(weather_dir=tmp_path, market="nyiso_nyc")
+        with pytest.warns(UserWarning, match="file not found"):
+            wl = WeatherLoader(weather_dir=tmp_path, market="nyiso_nyc")
         for tick in [0, 720, 8640, 17280]:
             assert math.isfinite(wl.temp_c(tick))
 
     def test_synthetic_norm_in_range(self, tmp_path):
-        wl = WeatherLoader(weather_dir=tmp_path, market="nyiso_nyc")
+        with pytest.warns(UserWarning, match="file not found"):
+            wl = WeatherLoader(weather_dir=tmp_path, market="nyiso_nyc")
         for tick in [0, 720, 8640]:
             n = wl.temp_norm(tick)
             assert 0.0 <= n <= 1.0, f"norm({tick}) = {n}"
 
     def test_fallback_temp_override(self, tmp_path):
-        wl = WeatherLoader(weather_dir=tmp_path, market="nyiso_nyc", fallback_temp_c=28.0)
+        with pytest.warns(UserWarning, match="file not found"):
+            wl = WeatherLoader(weather_dir=tmp_path, market="nyiso_nyc", fallback_temp_c=28.0)
         # synthetic replaces fallback when market file is absent but preset exists
         assert math.isfinite(wl.temp_c(0))
 
     def test_fallback_dewpoint(self, tmp_path):
-        wl = WeatherLoader(weather_dir=tmp_path, market="ercot_north")
+        with pytest.warns(UserWarning, match="file not found"):
+            wl = WeatherLoader(weather_dir=tmp_path, market="ercot_north")
         assert math.isfinite(wl.dewpoint_c(0))
 
 
