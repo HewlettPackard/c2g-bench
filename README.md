@@ -149,13 +149,24 @@ Manages the "Business Handshake." Observes regional market prices, weather forec
 
 > **Decision:** *"How much flexible MW capacity should I commit to the grid operator for the next 15 minutes?"*
 
+Grid operators (PJM, ERCOT, etc.) clear ancillary-service markets in **15-minute settlement intervals**. The data center must declare its regulation capacity *before* the interval starts and cannot renegotiate mid-interval. This is the macro agent's fundamental challenge: it must commit to a MW level under uncertainty about the next 180 RegD ticks, the next GenAI spike, and how much thermal headroom will remain at the end of the interval. The correct strategy is context-dependent — commit aggressively when the BESS is full and LMP is high; commit conservatively when ambient temperature is near the thermal limit or SOC is low. The macro agent never sees individual 5-second ticks; it only receives an aggregated summary *after* the interval completes, making this a **partially observable** planning problem.
+
 - **Action Space (2-D):** `[commit_norm ∈ [0,1], bess_target ∈ [-1,1]]` — MW commitment and average BESS dispatch.
 - **Observation Space (17-D):** Aggregated over 180 sub-steps — mean temps, SOC, tracking error, spike flag, thermal headroom, LMP, previous action, mean frequency deviation, mean PCC voltage, mean backlog norm.
 - **Reward:** mean of sub-step rewards + LMP dispatch revenue − commitment-churn penalty.
 
 ### 5.2. Lower-Level Agent: The Hardware Controller (5 s ticks)
 
-Executes the physical "Handshake." Receives the real-time frequency regulation signal and uses **four physical levers**:
+Executes the physical "Handshake." Receives the real-time frequency regulation signal and uses **four physical levers**. The central difficulty is that these levers have fundamentally different dynamics, costs, and side-effects — the agent must learn to combine them in the right order:
+
+| Lever | Response time | Capacity | Side-effect | Role |
+|-------|--------------|----------|-------------|------|
+| **BESS** `action[3]` | <100 ms | 50 MW / 150 MWh | Depletes; capacity fade over time | **First resort** — fastest, zero-penalty, finite |
+| **CDU pump** `action[1]` | Minutes (τ ≈ 12.7 min) | ~30 MW equivalent | Thermal inertia; slow and partially irreversible on short intervals | **Second resort** — exploits physics cheaply |
+| **HVAC** `action[2]` | Seconds | ~50 MW draw | Affects Zone B only; draws additional facility power | **Defensive** — prevents thermal fault, not a primary regulation lever |
+| **IT throttle** `action[0]` | Milliseconds | Up to full flex load | Accrues FIFO backlog; cuts throughput revenue | **Last resort** — immediate but highest SLA cost |
+
+The optimal policy learns this hierarchy: use BESS first (fast, free), borrow thermal inertia second (slow, cheap), fall back to DVFS only when both are exhausted. This mirrors how FERC-paid fast-response providers operate in real ancillary-service markets.
 
 | Lever | Action dim | Range | Effect |
 |-------|-----------|-------|--------|
