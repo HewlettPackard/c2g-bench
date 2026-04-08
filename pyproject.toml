@@ -35,6 +35,11 @@ dev = [
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[tool.pytest.ini_options]
+markers = [
+    "smoke: end-to-end CLI smoke tests that spawn real subprocesses (run with: pytest -m smoke)",
+]
+
 [tool.ruff.lint]
 select = ["E", "F", "I"]
 
@@ -44,3 +49,8 @@ strict = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["c2g_env", "preprocessing"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+]
