@@ -24,10 +24,19 @@ Usage
 
 Agents
 ------
-  rule_based  — heuristic controller from baselines/rule_based_mpc.py
-  ppo         — loads trained_models/ppo_<scenario>_s42/final_model
-  sac         — loads trained_models/sac_<scenario>_s42/final_model
-  random      — np.random uniform (lower bound)
+  rule_based   — heuristic controller from baselines/rule_based_mpc.py
+  rule_macro   — macro-level heuristic from baselines/rule_based_macro.py
+  bang_bang     — hysteresis on/off controller
+  pid          — multi-loop PID controller
+  mpc_fast     — rolling-horizon MPC (fast env, scipy SLSQP)
+  mpc_macro    — long-horizon MPC (macro env, scipy SLSQP)
+  milp         — MILP economic dispatch (macro env)
+  ppo          — loads trained_models/ppo_<scenario>_s42/final_model
+  sac          — loads trained_models/sac_<scenario>_s42/final_model
+  ppo_lag      — loads trained PPO-Lagrangian model
+  cmaes        — loads CMA-ES trained linear policy
+  pso          — loads PSO trained linear policy
+  random       — np.random uniform (lower bound)
 """
 from __future__ import annotations
 import argparse, csv, time
@@ -38,6 +47,12 @@ import numpy as np
 
 from c2g_env import C2GFastEnv
 from baselines.rule_based_mpc import RuleBasedController
+from baselines.rule_based_macro import RuleBasedMacroController
+from baselines.bang_bang import BangBangController
+from baselines.pid_controller import PIDController
+from baselines.mpc_fast import MPCFastController
+from baselines.mpc_macro import MPCMacroController
+from baselines.milp_dispatch import MILPDispatchController
 
 SCENARIOS    = ["default", "scenario_a", "scenario_b", "scenario_c"]
 T_WARN_NORM  = 33.0 / 35.0   # normalised warning threshold
@@ -83,6 +98,23 @@ def load_sb3_agent(algo: str, scenario: str, seed: int, model_dir: str | None):
         )
     model = cls.load(str(path))
     return SB3Agent(model)
+
+
+class EvolutionaryAgent:
+    """Wraps a CMA-ES or PSO linear policy loaded from .npz."""
+    def __init__(self, npz_path: str | Path):
+        data = np.load(npz_path)
+        self.W = data["W"]
+        self.b = data["b"]
+        self.act_low = data["act_low"]
+        self.act_high = data["act_high"]
+
+    def predict(self, obs: np.ndarray, deterministic: bool = True):
+        if obs.ndim == 1:
+            action = np.clip(self.W @ obs + self.b, self.act_low, self.act_high)
+        else:
+            action = np.clip(obs @ self.W.T + self.b, self.act_low, self.act_high)
+        return action.astype(np.float32), None
 
 
 # ---------------------------------------------------------------------------
@@ -170,8 +202,28 @@ def benchmark(
 
             if agent_name == "rule_based":
                 agent = RuleBasedController()
+            elif agent_name == "rule_macro":
+                agent = RuleBasedMacroController()
+            elif agent_name == "bang_bang":
+                agent = BangBangController()
+            elif agent_name == "pid":
+                agent = PIDController()
+            elif agent_name == "mpc_fast":
+                agent = MPCFastController()
+            elif agent_name == "mpc_macro":
+                agent = MPCMacroController()
+            elif agent_name == "milp":
+                agent = MILPDispatchController()
             elif agent_name == "random":
                 agent = RandomAgent(env_for_space)
+            elif agent_name in ("cmaes", "pso"):
+                npz_name = f"{agent_name}_policy.npz"
+                npz_dir = Path(model_dir) if model_dir else Path("trained_models") / f"{agent_name}_{scenario}_s{seed_start}"
+                npz_path = npz_dir / npz_name
+                if not npz_path.exists():
+                    print(f"    SKIP: No trained policy at {npz_path}")
+                    continue
+                agent = EvolutionaryAgent(npz_path)
             else:
                 try:
                     agent = load_sb3_agent(agent_name, scenario, seed_start, model_dir)
@@ -230,8 +282,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="C2G-Bench evaluation runner")
     parser.add_argument(
         "--agents", nargs="+",
-        default=["rule_based", "random"],
-        help="Agents to evaluate: rule_based random ppo sac",
+        default=["rule_based", "bang_bang", "pid", "random"],
+        help="Agents to evaluate: rule_based rule_macro bang_bang pid mpc_fast mpc_macro milp ppo sac ppo_lag cmaes pso random",
     )
     parser.add_argument(
         "--scenarios", nargs="+",

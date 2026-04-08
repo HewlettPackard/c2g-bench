@@ -2,8 +2,8 @@
 # ══════════════════════════════════════════════════════════════════════════════
 # scripts/run_sweep.sh  —  Full C2G-Bench Training & Evaluation Sweep
 # ══════════════════════════════════════════════════════════════════════════════
-# Runs: 4 scenarios × {PPO, SAC, RuleBased, Random} × 3 seeds    = 48 low-level evals
-#        4 scenarios × {PPO-Macro, HRL, RuleBased-Macro} × 3 seeds = 36 macro evals
+# Runs: 4 scenarios × {PPO, SAC, PPO-Lag, BangBang, PID, MPC, CMA-ES, PSO, RuleBased, Random} × 3 seeds
+#        4 scenarios × {PPO-Macro, HRL, MPC-Macro, MILP, RuleBased-Macro} × 3 seeds
 #   - PPO: 300k steps    (~8 min/run  on H100)
 #   - SAC: 200k steps    (~6 min/run)
 #   - Rule-based: no training, evaluation only
@@ -67,9 +67,32 @@ if algo == "random":
 elif algo == "rule_based":
     from baselines.rule_based_mpc import RuleBasedController
     agent = RuleBasedController()
+elif algo == "bang_bang":
+    from baselines.bang_bang import BangBangController
+    agent = BangBangController()
+elif algo == "pid":
+    from baselines.pid_controller import PIDController
+    agent = PIDController()
+elif algo == "mpc_fast":
+    from baselines.mpc_fast import MPCFastController
+    agent = MPCFastController()
+elif algo in ("cmaes", "pso"):
+    npz_name = f"{algo}_policy.npz"
+    npz_path = Path(model_path) / npz_name if model_path else None
+    if npz_path and npz_path.exists():
+        data = np.load(npz_path)
+        class LinearAgent:
+            def __init__(self, W, b, lo, hi):
+                self.W, self.b, self.lo, self.hi = W, b, lo, hi
+            def predict(self, obs, deterministic=True):
+                a = np.clip(self.W @ obs + self.b, self.lo, self.hi)
+                return a.astype(np.float32), None
+        agent = LinearAgent(data["W"], data["b"], data["act_low"], data["act_high"])
+    else:
+        print(f"  SKIP: no {npz_name} in {model_path}"); exit(0)
 else:
-    # RL agent (PPO/SAC) — load from zip
-    if algo == "ppo":
+    # RL agent (PPO/SAC/PPO-Lagrangian) — load from zip
+    if algo in ("ppo", "ppo_lag"):
         from stable_baselines3 import PPO as AlgoCls
     else:
         from stable_baselines3 import SAC as AlgoCls
@@ -186,6 +209,12 @@ elif algo == "random_macro":
         def predict(self, obs, deterministic=False):
             return env.action_space.sample(), None
     agent = RandomAgent()
+elif algo == "mpc_macro":
+    from baselines.mpc_macro import MPCMacroController
+    agent = MPCMacroController()
+elif algo == "milp":
+    from baselines.milp_dispatch import MILPDispatchController
+    agent = MILPDispatchController()
 else:
     # RL agent (PPO-Macro or HRL)
     from stable_baselines3 import PPO as AlgoCls
@@ -442,9 +471,126 @@ done
 wait
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Phase 7: Generate summary table
 # ══════════════════════════════════════════════════════════════════════════════
-echo -e "\n▸ Phase 7: Generating results summary …"
+# Phase 7: Bang-Bang, PID, MPC evaluation (no training, fast env)
+# ══════════════════════════════════════════════════════════════════════════════
+echo -e "\n▸ Phase 7: Evaluating Bang-Bang, PID, MPC-Fast baselines …"
+for scenario in "${SCENARIOS[@]}"; do
+    for seed in "${SEEDS[@]}"; do
+        for algo in bang_bang pid mpc_fast; do
+            if $DRY_RUN; then
+                echo "  [dry-run] evaluate $algo $scenario $seed"
+            else
+                wait_for_slots
+                evaluate "$algo" "$scenario" "$seed" "" &
+                NJOBS=$((NJOBS + 1))
+            fi
+        done
+    done
+done
+wait
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Phase 8: MPC-Macro & MILP evaluation (no training, macro env)
+# ══════════════════════════════════════════════════════════════════════════════
+echo -e "\n▸ Phase 8: Evaluating MPC-Macro & MILP baselines …"
+for scenario in "${SCENARIOS[@]}"; do
+    for seed in "${SEEDS[@]}"; do
+        for algo in mpc_macro milp; do
+            if $DRY_RUN; then
+                echo "  [dry-run] evaluate_macro $algo $scenario $seed"
+            else
+                wait_for_slots
+                evaluate_macro "$algo" "$scenario" "$seed" "" &
+                NJOBS=$((NJOBS + 1))
+            fi
+        done
+    done
+done
+wait
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Phase 9: CMA-ES training + evaluation
+# ══════════════════════════════════════════════════════════════════════════════
+echo -e "\n▸ Phase 9: CMA-ES training (200 generations × 12 runs) …"
+for scenario in "${SCENARIOS[@]}"; do
+    for seed in "${SEEDS[@]}"; do
+        if $DRY_RUN; then
+            echo "  [dry-run] train CMA-ES $scenario seed=$seed"
+            continue
+        fi
+        wait_for_slots
+        (
+            $PYTHON baselines/train_cmaes.py algo=cmaes scenario="$scenario" experiment.seed="$seed"
+            MODEL_DIR="outputs/cmaes_${scenario}/seed_${seed}"
+            LATEST=$(ls -td "${MODEL_DIR}/"*/ 2>/dev/null | head -1)
+            if [[ -n "$LATEST" && -f "${LATEST}cmaes_policy.npz" ]]; then
+                evaluate "cmaes" "$scenario" "$seed" "$LATEST"
+            else
+                echo "  WARN: No CMA-ES policy found for $scenario/$seed"
+            fi
+        ) &
+        NJOBS=$((NJOBS + 1))
+    done
+done
+wait
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Phase 10: PSO training + evaluation
+# ══════════════════════════════════════════════════════════════════════════════
+echo -e "\n▸ Phase 10: PSO training (200 generations × 12 runs) …"
+for scenario in "${SCENARIOS[@]}"; do
+    for seed in "${SEEDS[@]}"; do
+        if $DRY_RUN; then
+            echo "  [dry-run] train PSO $scenario seed=$seed"
+            continue
+        fi
+        wait_for_slots
+        (
+            $PYTHON baselines/train_pso.py algo=pso scenario="$scenario" experiment.seed="$seed"
+            MODEL_DIR="outputs/pso_${scenario}/seed_${seed}"
+            LATEST=$(ls -td "${MODEL_DIR}/"*/ 2>/dev/null | head -1)
+            if [[ -n "$LATEST" && -f "${LATEST}pso_policy.npz" ]]; then
+                evaluate "pso" "$scenario" "$seed" "$LATEST"
+            else
+                echo "  WARN: No PSO policy found for $scenario/$seed"
+            fi
+        ) &
+        NJOBS=$((NJOBS + 1))
+    done
+done
+wait
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Phase 11: PPO-Lagrangian training + evaluation
+# ══════════════════════════════════════════════════════════════════════════════
+echo -e "\n▸ Phase 11: PPO-Lagrangian training (300k steps × 12 runs) …"
+for scenario in "${SCENARIOS[@]}"; do
+    for seed in "${SEEDS[@]}"; do
+        if $DRY_RUN; then
+            echo "  [dry-run] train PPO-Lagrangian $scenario seed=$seed"
+            continue
+        fi
+        wait_for_slots
+        (
+            $PYTHON baselines/train_ppo_lagrangian.py algo=ppo_lagrangian scenario="$scenario" experiment.seed="$seed"
+            MODEL_DIR="outputs/ppo_lagrangian_${scenario}/seed_${seed}"
+            LATEST=$(ls -td "${MODEL_DIR}/"*/ 2>/dev/null | head -1)
+            if [[ -n "$LATEST" && -f "${LATEST}final_model.zip" ]]; then
+                evaluate "ppo_lag" "$scenario" "$seed" "$LATEST"
+            else
+                echo "  WARN: No PPO-Lagrangian model for $scenario/$seed"
+            fi
+        ) &
+        NJOBS=$((NJOBS + 1))
+    done
+done
+wait
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Phase 12: Generate summary table
+# ══════════════════════════════════════════════════════════════════════════════
+echo -e "\n▸ Phase 12: Generating results summary …"
 $PYTHON - << 'PYEOF'
 import pandas as pd
 from pathlib import Path
@@ -481,7 +627,7 @@ if csv_macro.exists():
 # LaTeX-ready table
 print("═══ LaTeX table rows (paste into paper) ═══")
 for scenario in ["default", "scenario_a", "scenario_b", "scenario_c"]:
-    for algo in ["random", "rule_based", "ppo", "sac"]:
+    for algo in ["random", "bang_bang", "pid", "rule_based", "mpc_fast", "cmaes", "pso", "ppo", "sac", "ppo_lag"]:
         sub = df[(df.scenario == scenario) & (df.algo == algo)]
         if sub.empty:
             continue

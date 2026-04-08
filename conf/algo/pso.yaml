@@ -1,0 +1,6 @@
+name: pso
+
+env: fast          # "fast" or "macro"
+n_particles: 20
+generations: 200
+n_rollouts: 3

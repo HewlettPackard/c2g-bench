@@ -16,6 +16,11 @@ dependencies = [
     "stable-baselines3>=2.3",
     "tensorboard>=2.17",
     "hydra-core>=1.3",
+    # Phase 5 — Evolutionary & optimization baselines
+    "cma>=4.0",
+    "pymoo>=0.6",
+    "seaborn>=0.13.2",
+    "matplotlib>=3.10.8",
 ]
 
 [project.optional-dependencies]
