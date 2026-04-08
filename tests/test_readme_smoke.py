@@ -156,3 +156,32 @@ class TestReadmeSmokeCommands:
             timeout=600,  # two training phases — allow up to 10 min
         )
         _assert_ok(result, "train_hierarchical.py")
+    # ── §10 PPO-Lagrangian ──────────────────────────────────────────────────
+    def test_ppo_lagrangian_default(self):
+        """README §10: train_ppo_lagrangian.py algo=ppo_lagrangian"""
+        result = _run(
+            "baselines/train_ppo_lagrangian.py",
+            ["algo=ppo_lagrangian"] + _FAST_PPO,
+        )
+        _assert_ok(result, "train_ppo_lagrangian.py (default)")
+
+    # ── CMA-ES (minimal generations) ────────────────────────────────────────
+    def test_cmaes_default(self):
+        """Train CMA-ES with 2 generations of 4 individuals."""
+        result = _run(
+            "baselines/train_cmaes.py",
+            ["algo=cmaes", "algo.popsize=4", "algo.generations=2",
+             "algo.n_rollouts=1"],
+        )
+        _assert_ok(result, "train_cmaes.py (default)")
+
+    # ── PSO (minimal generations) ───────────────────────────────────────────
+    def test_pso_default(self):
+        """Train PSO with 2 generations of 4 particles."""
+        result = _run(
+            "baselines/train_pso.py",
+            ["algo=pso", "algo.n_particles=4", "algo.generations=2",
+             "algo.n_rollouts=1"],
+        )
+        _assert_ok(result, "train_pso.py (default)")
+
