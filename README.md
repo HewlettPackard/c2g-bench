@@ -724,6 +724,135 @@ Seven independent physics/data modules, all with exact-exponential or analytical
 | **Weather** | NOAA ISD-Lite | NYC, DCA, SJC, DFW, FRA, BKT | Hourly | 7 CSVs |
 | **Renewable** | Synthetic (IEC/PVUSA calibrated) | Wind + Solar | 5-min | 4 CSVs |
 
+
+### 7.1. Workload Traces — Deep Dive
+
+The benchmark fuses **three Alibaba production traces** to model the IT load of the 250 MW facility.
+Each trace has a distinct statistical character, hardware zone assignment, and role in the control problem.
+
+#### Trace Summary
+
+| File | Source | Duration | Zone | Role | Controllable? |
+|---|---|---|---|---|---|
+| `batch_v2023.csv` | [Alibaba Cluster Trace 2023 (OpenB)](https://github.com/alibaba/clusterdata/tree/master/cluster-trace-pod-v2023) | 33 days | A (GPU liquid-cooled) | `P_flex` — schedulable batch jobs | ✅ DVFS throttle `action[0]` defers work into FIFO queue |
+| `dlrm_v2025.csv` | [Alibaba Cluster Trace 2025](https://github.com/alibaba/clusterdata) | 30 days | B (CPU air-cooled) | `P_base` — rigid DLRM inference serving | ❌ Must be served regardless of grid state |
+| `genai_v2026.csv` | Alibaba 2026 GenAI (1-day, tiled cyclically) | 1 day × ∞ | A (GPU liquid-cooled) | `P_base` — rigid GenAI inference, spike-prone | ❌ Must be served; spikes set `obs[9]=1` |
+
+> **`spot_v2026.csv`** is bundled but excluded from the current release — it requires an
+> arrival-based preemptible scheduler not yet implemented.
+
+---
+
+#### Power Model
+
+All three utilisation signals are translated to rack-level electrical power via the
+**non-linear server power model** (Fan et al., ISCA 2007):
+
+$$P_{server}(u) = N_{racks} \times \bigl[ P_{idle} + (P_{max} - P_{idle}) \cdot u^{\alpha} \bigr]$$
+
+| Stream | Racks | $P_{idle}$ | $P_{max}$ | $\alpha$ | Utilisation normaliser |
+|---|---|---|---|---|---|
+| Batch (Zone A flex) | 1 200 | 8 kW/rack | 25 kW/rack | 1.4 (GPU superlinear) | `gpu_milli_request / 12 620` |
+| GenAI (Zone A base) | 800 | 8 kW/rack | 25 kW/rack | 1.4 | `avg_gpu_duty_cycle / 100` |
+| DLRM (Zone B base) | 2 500 | 4 kW/rack | 16 kW/rack | 1.2 (CPU inference) | `active_gpu_count / 227` |
+
+**Resulting power envelope** (30-day mean at default scenario):
+
+| Stream | Mean power | Max power | Share of total IT |
+|---|---|---|---|
+| DLRM P_base (Zone B) | ~21.7 MW | 40.0 MW | 56% |
+| Batch P_flex (Zone A) | ~10.1 MW | 30.0 MW | 26% |
+| GenAI P_base (Zone A) | ~6.8 MW | 8.3 MW | 18% |
+| **Total IT** | **~38.5 MW** | — | 100% |
+
+74% of IT power is rigid (`P_base`) — the agent's primary controllable lever is
+batch throttling which covers only the remaining 26%.
+
+---
+
+#### Trace Characteristics
+
+**`batch_v2023.csv` — Schedulable Batch (P_flex)**
+
+- **Column:** `gpu_milli_request` (sum of GPU milli-cores requested per 5-min tick)
+- **Statistics:** 78% of ticks have zero arrivals; mean utilisation ≈ 0.043; max = 12 620 gpu-milli
+- **Nature:** Highly bursty. Jobs arrive sporadically with durations from 1–2 825 ticks (5 min to 9.8 days).
+  Unserved work accumulates in a FIFO queue (tracked as `backlog_kw` and `avg_delay_steps` via Little's Law).
+- **Agent implication:** DVFS throttle (`action[0]`) directly gates the batch service rate.
+  Throttling below 1.0 reduces thermal load and peak grid draw at the cost of growing backlog.
+  Reward term 1 (throughput) penalises low `action[0]`.
+
+<p align="center">
+  <img src="notebooks/fig_workload_distributions.png" width="95%" alt="Workload utilisation distributions"/>
+</p>
+<p align="center"><em>Utilisation distributions: batch is 78% zero (bursty); DLRM is near-Gaussian (always-on); GenAI is multimodal low-duty.</em></p>
+
+---
+
+**`dlrm_v2025.csv` — DLRM Inference (P_base, Zone B)**
+
+- **Columns:** `active_gpu_count`, `active_cpu_cores`, `active_mem_gib`
+- **Statistics:** Always non-zero (min=1 GPU); mean ≈ 101 GPUs; near-Gaussian distribution with a clear two-shift diurnal pattern.
+- **Nature:** Continuous, predictable. DLRM (Deep Learning Recommendation Model) serving is the backbone of
+  Zone B — it never drops below idle power. The 30-day trace captures weekday/weekend cycling clearly.
+- **Agent implication:** Contributes the largest fixed baseload (~21.7 MW). The only thermal handle for
+  Zone B is HVAC effort (`action[2]`); DLRM itself cannot be throttled.
+
+---
+
+**`genai_v2026.csv` — GenAI Serving (P_base, Zone A)**
+
+- **Columns:** `total_qps`, `avg_gpu_duty_cycle`, `active_genai_pods`
+- **Statistics:** 288 ticks (1 day) tiled cyclically; duty cycle mean ≈ 6.7%, max 24.4%; spike rate ≈ 25%
+- **Nature:** Multimodal — most time near-idle, with sharp afternoon QPS bursts.
+  Ticks where `avg_gpu_duty_cycle > P75 = 12.19%` are flagged as **spikes** (`obs[9] = 1`).
+  GenAI runs on the same Zone A GPU racks as batch but with strict SLA priority.
+- **Agent implication:** Spikes increase Zone A temperature rapidly (liquid cooling response time τ ≈ 13 min).
+  The safety shield terminates episodes if `T_A > 35°C`. During spikes the agent must reduce batch load
+  (`action[0]`) and possibly increase pump speed (`action[1]`) to prevent thermal fault.
+
+<p align="center">
+  <img src="notebooks/fig_workload_genai_spikes.png" width="95%" alt="GenAI spike analysis"/>
+</p>
+<p align="center"><em>Left: GenAI duty cycle with spike threshold (red dashes) and spike ticks (red dots). Right: spike probability peaks in afternoon hours.</em></p>
+
+---
+
+#### IT Power Breakdown
+
+<p align="center">
+  <img src="notebooks/fig_workload_power_breakdown.png" width="95%" alt="Stacked IT power breakdown"/>
+</p>
+<p align="center"><em>Stacked IT power (MW) over 30 days and 1-week zoom. The DLRM base (orange) dominates; batch flex (blue) provides the agent's only demand-side handle.</em></p>
+
+---
+
+#### Temporal Correlation
+
+<p align="center">
+  <img src="notebooks/fig_workload_acf.png" width="95%" alt="Autocorrelation function for all three traces"/>
+</p>
+<p align="center"><em>ACF up to 24 hours. DLRM is highly persistent (slow decay with 24-hour periodicity). Batch decorrelates fastest — it is the hardest to predict. GenAI reveals its 1-day tile boundary.</em></p>
+
+The DLRM trace has the highest autocorrelation (predictable → MPC/rule-based works well for Zone B).
+Batch is the most volatile (decorrelates within ~2 hours), making it the prime target for RL.
+
+---
+
+#### Batch Queue Dynamics
+
+<p align="center">
+  <img src="notebooks/fig_workload_queue_dynamics.png" width="75%" alt="Batch queue backlog under different throttle policies"/>
+</p>
+<p align="center"><em>Simulated backlog over 7 days at three throttle levels. At 50% throttle the queue stabilises near zero — the mean arrival rate is well within half-capacity. A completely off agent (throttle=0) accumulates ~80 MW equivalent backlog in 7 days.</em></p>
+
+This reveals a key benchmark insight: **the batch queue is stable under mild throttle** (≥ 40%) because
+the mean arrival rate (10.1 MW) is only 34% of full capacity (30 MW). The agent does not need to fully
+commit compute to clear the queue; it has real headroom to throttle for grid regulation.
+
+See [`notebooks/12_workload_deep_dive.ipynb`](notebooks/12_workload_deep_dive.ipynb) for full interactive analysis.
+
+
 ### 6 Global Energy Markets
 
 | Market Key | Region | Grid Operator | Energy Source | Weather Station |
