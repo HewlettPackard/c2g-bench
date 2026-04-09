@@ -847,7 +847,7 @@ Batch is the most volatile (decorrelates within ~2 hours), making it the prime t
 <p align="center">
   <img src="notebooks/fig_workload_queue_dynamics.png" width="75%" alt="Batch queue backlog under different throttle policies"/>
 </p>
-<p align="center"><em>Simulated backlog over 7 days at three throttle levels. At 50% throttle the queue stabilises near zero — the mean arrival rate is well within half-capacity. A completely off agent (throttle=0) accumulates ~80 MW equivalent backlog in 7 days.</em></p>
+<p align="center"><em>Simulated backlog over 7 days at three throttle levels. At 50% throttle the queue stabilises near zero — the mean arrival rate is well within half-capacity. A completely off agent (throttle=0.3) accumulates ~10e3 MW equivalent backlog in 7 days.</em></p>
 
 This reveals a key benchmark insight: **the batch queue is stable under mild throttle** (≥ 40%) because
 the mean arrival rate (10.1 MW) is only 34% of full capacity (30 MW). The agent does not need to fully
