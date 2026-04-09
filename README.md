@@ -733,13 +733,16 @@ Each trace has a distinct statistical character, hardware zone assignment, and r
 #### Trace Summary
 
 | File | Source | Duration | Zone | Role | Controllable? |
-|---|---|---|---|---|---|
-| `batch_v2023.csv` | [Alibaba Cluster Trace 2023 (OpenB)](https://github.com/alibaba/clusterdata/tree/master/cluster-trace-pod-v2023) | 33 days | A (GPU liquid-cooled) | `P_flex` — schedulable batch jobs | ✅ DVFS throttle `action[0]` defers work into FIFO queue |
-| `dlrm_v2025.csv` | [Alibaba Cluster Trace 2025](https://github.com/alibaba/clusterdata) | 30 days | B (CPU air-cooled) | `P_base` — rigid DLRM inference serving | ❌ Must be served regardless of grid state |
-| `genai_v2026.csv` | Alibaba 2026 GenAI (1-day, tiled cyclically) | 1 day × ∞ | A (GPU liquid-cooled) | `P_base` — rigid GenAI inference, spike-prone | ❌ Must be served; spikes set `obs[9]=1` |
+|:---|:---|:---:|:---|:---|:---|
+| `batch_v2023.csv` | [Alibaba GPU v2023 (`openb_pod_list_default.csv`)](https://github.com/alibaba/clusterdata/tree/master/cluster-trace-pod-v2023) | 33 days | A (GPU liquid-cooled) | `P_flex` — schedulable batch jobs | ✅ DVFS throttle `action[0]` defers work into FIFO queue |
+| `dlrm_v2025.csv`  | [Alibaba GPU v2025 (`disaggregated_DLRM_trace.csv`)](https://github.com/alibaba/clusterdata/tree/master/cluster-trace-gpu-v2025) | 30 days | B (CPU air-cooled) | `P_base` — rigid DLRM inference serving | ❌ Must be served regardless of grid state |
+| `genai_v2026.csv` | [Alibaba v2026 GenAI (`qps.csv` and `pod_gpu_duty_cycle_anon.csv`)](https://github.com/alibaba/clusterdata/tree/master/cluster-trace-v2026-GenAI) | 1 day (tiled) | A (GPU liquid-cooled) | `P_base` — rigid GenAI inference, spike-prone | ❌ Must be served; spikes set `obs[9]=1` |
 
 > **`spot_v2026.csv`** is bundled but excluded from the current release — it requires an
 > arrival-based preemptible scheduler not yet implemented.
+>
+> To reproduce these processed CSVs from the raw Alibaba data, see `preprocessing/workload_traces/`.
+> All three files are loaded at startup by `c2g_env.physics.workload.WorkloadSimulator`.
 
 ---
 
