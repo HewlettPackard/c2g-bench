@@ -218,6 +218,7 @@ class C2GFastEnv(gym.Env):
         self._tick           = 0
         self._prev_throttle  = 1.0
         self._prev_pump_speed = 1.0
+        self._prev_regd_signal = 0.0
         self._committed_mw   = float(self._scfg["committed_mw"])
         self._episode_ticks  = int(self._gcfg["episode_ticks"])
         self._dt             = float(self._gcfg["dt_seconds"])
@@ -332,6 +333,7 @@ class C2GFastEnv(gym.Env):
         self._tick           = 0
         self._prev_throttle  = 1.0
         self._prev_pump_speed = 1.0
+        self._prev_regd_signal = 0.0   # overwritten by _build_obs_at_reset
 
         return self._build_obs_at_reset(), {}
 
@@ -403,12 +405,7 @@ class C2GFastEnv(gym.Env):
         elec = self._elec.step(util_A, util_B, p_cool_A_mw, p_hvac_mw + p_pump_mw)
 
         # -----------------------------------------------------------------
-        # 5. Grid regulation signal
-        # -----------------------------------------------------------------
-        gs = self._grid.step(committed_mw=self._committed_mw)
-
-        # -----------------------------------------------------------------
-        # 6. ΔP tracking
+        # 5. ΔP tracking  (against the signal the agent observed last step)
         # -----------------------------------------------------------------
         # Positive regd_signal → grid wants DC to REDUCE net draw.
         # The DC can deliver this by:
@@ -420,11 +417,18 @@ class C2GFastEnv(gym.Env):
         # ΔP_actual = how much the DC has actually reduced its net draw
         delta_p_actual_kw  = flex_reduction_kw + bess_actual_kw
 
-        # ΔP_demanded = committed_mw × regd_signal (signed MW → kW)
+        # ΔP_demanded uses the RegD signal from the *previous* observation,
+        # i.e. the signal the agent actually saw and responded to.
         delta_p_demanded_kw = (self._committed_mw * 1_000.0
-                               * float(gs["regd_signal"]))
+                               * self._prev_regd_signal)
 
         tracking_err_kw = abs(delta_p_demanded_kw - delta_p_actual_kw)
+
+        # -----------------------------------------------------------------
+        # 6. Advance grid for next observation
+        # -----------------------------------------------------------------
+        gs = self._grid.step(committed_mw=self._committed_mw)
+        self._prev_regd_signal = float(gs["regd_signal"])
 
         # -----------------------------------------------------------------
         # 6b. Frequency & voltage signals (safety-critical)
@@ -617,6 +621,7 @@ class C2GFastEnv(gym.Env):
 
         # ── Peek grid tick 0 (advance then rewind) ───────────────────────
         gs = self._grid.step()
+        self._prev_regd_signal = float(gs["regd_signal"])
         self._grid._tick = 0
         self._grid._regd_state = 0.0     # restore pre-step AR(1) state
         self._grid._regd_buffer = []     # restore empty neutrality buffer
