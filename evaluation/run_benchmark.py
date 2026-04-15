@@ -54,11 +54,69 @@ from baselines.pid_controller import PIDController
 from baselines.mpc_fast import MPCFastController
 from baselines.mpc_macro import MPCMacroController
 from baselines.milp_dispatch import MILPDispatchController
+from baselines.metrics_callback import C2GTransitionLoggerCallback
 
 SCENARIOS    = ["default", "scenario_a", "scenario_b", "scenario_c"]
 T_WARN_NORM  = 33.0 / 35.0   # normalised warning threshold
 DT_S         = 300            # seconds per tick
 COMMIT_MW    = {"default": 15.0, "scenario_a": 20.0, "scenario_b": 30.0, "scenario_c": 15.0}
+
+
+def _infer_agent_type(agent_name: str) -> str:
+    """Classify benchmark agents as macro vs hardware controllers."""
+    macro_agents = {"rule_macro", "mpc_macro", "milp", "ppo_macro"}
+    return "macro" if agent_name in macro_agents else "hardware"
+
+
+def _reward_components(
+    env: C2GFastEnv,
+    action: np.ndarray,
+    info: dict[str, Any],
+    committed_mw: float,
+    agent_type: str,
+) -> dict[str, float]:
+    """Build reward decomposition dict for transition logging."""
+    rcfg = getattr(env, "_rcfg", {})
+
+    alpha = float(rcfg.get("alpha", 1.0))
+    beta = float(rcfg.get("beta", 2.0))
+    gamma = float(rcfg.get("gamma_thermal", 5.0))
+    t_warn_a = float(rcfg.get("T_warn_A", 33.0))
+    t_warn_b = float(rcfg.get("T_warn_B", 33.0))
+    soc_pen_c = float(rcfg.get("soc_penalty", 0.0))
+    backlog_pen_c = float(rcfg.get("sla_backlog_penalty", 2.0))
+
+    t_safe = float(getattr(env._thermal, "T_safe", 35.0))
+    temp_headroom = max(t_safe - t_warn_a, 1.0)
+    thermal_pen = (
+        max(0.0, float(info.get("temp_A", 0.0)) - t_warn_a) / temp_headroom
+        + max(0.0, float(info.get("temp_B", 0.0)) - t_warn_b) / temp_headroom
+    )
+
+    action_arr = np.asarray(action, dtype=np.float32).reshape(-1)
+    throttle = float(action_arr[0]) if action_arr.size > 0 else 0.0
+    tracking_err_kw = float(info.get("tracking_err_kw", 0.0))
+    norm_kw = max(committed_mw * 1_000.0, 100.0)
+    soc_pen = soc_pen_c if float(info.get("bess_soc", 0.0)) < 0.12 else 0.0
+
+    p_flex_max_kw = float(getattr(env._workload, "p_flex_max_kw", 1.0))
+    backlog_pen = backlog_pen_c * (float(info.get("backlog_kw", 0.0)) / max(p_flex_max_kw, 1e-9))
+
+    components: dict[str, float] = {
+        "throughput": alpha * throttle,
+        "tracking": -beta * (tracking_err_kw / norm_kw),
+        "thermal": -gamma * thermal_pen,
+        "soc": -soc_pen,
+        "freq": -float(info.get("freq_penalty", 0.0)),
+        "volt": -float(info.get("volt_penalty", 0.0)),
+        "backlog": -backlog_pen,
+    }
+
+    if agent_type == "macro":
+        components["lmp_bonus"] = float(info.get("lmp_bonus", 0.0))
+        components["commit_churn"] = -float(info.get("commit_churn_pen", 0.0))
+
+    return components
 
 
 # ---------------------------------------------------------------------------
@@ -67,8 +125,9 @@ COMMIT_MW    = {"default": 15.0, "scenario_a": 20.0, "scenario_b": 30.0, "scenar
 
 class RandomAgent:
     """Samples uniformly from the action space."""
-    def __init__(self, env: C2GFastEnv):
+    def __init__(self, env: C2GFastEnv, algo_name: str = "random"):
         self._space = env.action_space
+        self.algo_name = algo_name
 
     def predict(self, obs: np.ndarray, deterministic: bool = True):
         return self._space.sample(), None
@@ -76,8 +135,9 @@ class RandomAgent:
 
 class SB3Agent:
     """Wraps a loaded SB3 model (PPO or SAC)."""
-    def __init__(self, model):
+    def __init__(self, model, algo_name: str):
         self._model = model
+        self.algo_name = algo_name
 
     def predict(self, obs: np.ndarray, deterministic: bool = True):
         return self._model.predict(obs, deterministic=deterministic)
@@ -98,17 +158,18 @@ def load_sb3_agent(algo: str, scenario: str, seed: int, model_dir: str | None):
             f"No trained model at {path}.zip — run baselines/train_{algo}.py first."
         )
     model = cls.load(str(path))
-    return SB3Agent(model)
+    return SB3Agent(model, algo_name=algo.lower())
 
 
 class EvolutionaryAgent:
     """Wraps a CMA-ES or PSO linear policy loaded from .npz."""
-    def __init__(self, npz_path: str | Path):
+    def __init__(self, npz_path: str | Path, algo_name: str):
         data = np.load(npz_path)
         self.W = data["W"]
         self.b = data["b"]
         self.act_low = data["act_low"]
         self.act_high = data["act_high"]
+        self.algo_name = algo_name
 
     def predict(self, obs: np.ndarray, deterministic: bool = True):
         if obs.ndim == 1:
@@ -122,10 +183,30 @@ class EvolutionaryAgent:
 # Metric collection
 # ---------------------------------------------------------------------------
 
-def run_episode(agent, scenario: str, seed: int) -> dict[str, float]:
+def run_episode(
+    agent,
+    scenario: str,
+    seed: int,
+    algo_name: str | None = None,
+    agent_type: str = "hardware",
+    episode_number: int = 0,
+    record_transitions: bool = True,
+) -> dict[str, float]:
     """Run one episode and return a metrics dict."""
     env = C2GFastEnv(scenario=scenario)
     obs, _ = env.reset(seed=seed)
+    algo_for_logging = getattr(agent, "algo_name", (algo_name or "unknown"))
+
+    transition_logger = None
+    if record_transitions:
+        transition_logger = C2GTransitionLoggerCallback(
+            output_dir="runs",
+            algorithm_name=algo_for_logging,
+            scenario_name=scenario,
+            agent_type=agent_type,
+            episode_number=episode_number,
+            verbose=0,
+        )
 
     committed_mw  = COMMIT_MW.get(scenario, 15.0)
     rewards       : list[float] = []
@@ -136,9 +217,27 @@ def run_episode(agent, scenario: str, seed: int) -> dict[str, float]:
 
     done = False
     while not done:
+        state = obs.copy()
         action, _ = agent.predict(obs, deterministic=True)
         obs, reward, terminated, truncated, info = env.step(action)
         done = terminated or truncated
+
+        if transition_logger is not None:
+            reward_components = _reward_components(
+                env=env,
+                action=action,
+                info=info,
+                committed_mw=committed_mw,
+                agent_type=agent_type,
+            )
+            transition_logger.record_transition(
+                state=state,
+                action=action,
+                observation=obs,
+                reward=float(reward),
+                done=done,
+                reward_components=reward_components,
+            )
 
         rewards.append(float(reward))
 
@@ -157,6 +256,9 @@ def run_episode(agent, scenario: str, seed: int) -> dict[str, float]:
         # BESS degradation
         if bess_init_age is None:
             bess_init_age = float(info.get("bess_age_frac", 0.0))
+
+    if transition_logger is not None:
+        transition_logger.close()
 
     bess_final_age = float(info.get("bess_age_frac", bess_init_age or 0.0))
     bess_degradation = (bess_final_age - (bess_init_age or 0.0)) * 1e4
@@ -182,8 +284,12 @@ def benchmark(
     n_episodes  : int,
     seed_start  : int,
     model_dir   : str | None,
+    record_transitions: bool = True,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
+
+    if record_transitions:
+        Path("runs").mkdir(parents=True, exist_ok=True)
 
     scenario_bar = tqdm(scenarios, desc="Scenarios", position=0)
     for scenario in scenario_bar:
@@ -192,6 +298,7 @@ def benchmark(
         agent_bar = tqdm(agents, desc="Agents", position=1, leave=False)
         for agent_name in agent_bar:
             agent_bar.set_description(f"Agent: {agent_name}")
+            agent_type = _infer_agent_type(agent_name)
 
             # Instantiate agent once per (agent, scenario) to share weights
             env_for_space = C2GFastEnv(scenario=scenario)
@@ -212,7 +319,7 @@ def benchmark(
             elif agent_name == "milp":
                 agent = MILPDispatchController()
             elif agent_name == "random":
-                agent = RandomAgent(env_for_space)
+                agent = RandomAgent(env_for_space, algo_name=agent_name)
             elif agent_name in ("cmaes", "pso"):
                 npz_name = f"{agent_name}_policy.npz"
                 npz_dir = Path(model_dir) if model_dir else Path("trained_models") / f"{agent_name}_{scenario}_s{seed_start}"
@@ -220,7 +327,7 @@ def benchmark(
                 if not npz_path.exists():
                     print(f"    SKIP: No trained policy at {npz_path}")
                     continue
-                agent = EvolutionaryAgent(npz_path)
+                agent = EvolutionaryAgent(npz_path, algo_name=agent_name)
             else:
                 try:
                     agent = load_sb3_agent(agent_name, scenario, seed_start, model_dir)
@@ -228,10 +335,20 @@ def benchmark(
                     print(f"    SKIP: {exc}")
                     continue
 
+            if not hasattr(agent, "algo_name"):
+                setattr(agent, "algo_name", agent_name)
+
             ep_metrics: list[dict[str, float]] = []
             t0 = time.perf_counter()
             for ep in tqdm(range(n_episodes), desc="Episodes", position=2, leave=False):
-                m = run_episode(agent, scenario, seed=seed_start + ep)
+                m = run_episode(
+                    agent=agent,
+                    scenario=scenario,
+                    seed=seed_start + ep,
+                    agent_type=agent_type,
+                    episode_number=ep,
+                    record_transitions=record_transitions,
+                )
                 ep_metrics.append(m)
 
             elapsed = time.perf_counter() - t0
@@ -323,6 +440,12 @@ if __name__ == "__main__":
         "--output", default="evaluation/results.csv",
         help="Path to write the results CSV",
     )
+    parser.add_argument(
+        "--record_transitions",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enable/disable per-step transition logging under runs/<algo>_<scenario>_<agent>/transitions_<episode>.csv",
+    )
     args = parser.parse_args()
 
     rows = benchmark(
@@ -331,6 +454,7 @@ if __name__ == "__main__":
         n_episodes = args.n_episodes,
         seed_start = args.seed,
         model_dir  = args.model_dir,
+        record_transitions = args.record_transitions,
     )
     print_results_table(rows)
     save_csv(rows, Path(args.output))

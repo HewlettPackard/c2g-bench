@@ -255,3 +255,179 @@ class C2GMetricsCallback(BaseCallback):
             "facility/mean_pue", "facility/mean_p_facility_mw",
             "facility/mean_flex_reduction_kw",
         ]
+
+
+class C2GTransitionLoggerCallback(BaseCallback):
+    """
+    Logs step-wise transitions (state, action, observation, reward) to CSV.
+
+    Supports two modes:
+      1) SB3 callback mode via ``_on_step``.
+      2) Manual mode via ``record_transition`` for evaluation loops.
+    """
+
+    def __init__(
+        self,
+        output_dir: Path | str = "runs",
+        algorithm_name: str | None = None,
+        scenario_name: str | None = None,
+        agent_type: str | None = None,
+        episode_number: int | None = None,
+        verbose: int = 0,
+    ):
+        super().__init__(verbose)
+        base_dir = Path(output_dir)
+        base_dir.mkdir(parents=True, exist_ok=True)
+        if algorithm_name is not None and scenario_name is not None and agent_type is not None:
+            self._output_dir = base_dir / f"{algorithm_name}_{scenario_name}_{agent_type}"
+        else:
+            self._output_dir = base_dir
+        self._output_dir.mkdir(parents=True, exist_ok=True)
+
+        self._algorithm_name = algorithm_name
+        self._scenario_name = scenario_name
+        self._agent_type = agent_type
+        self._episode_number = episode_number
+        self._active = True
+
+        self._csv_file: Any | None = None
+        self._csv_writer: csv.DictWriter | None = None
+
+        self._n_state: int | None = None
+        self._n_obs: int | None = None
+        self._n_act: int | None = None
+        self._reward_component_keys: list[str] = []
+
+        self._global_step = 0
+
+    def _ensure_writer(
+        self,
+        n_state: int,
+        n_act: int,
+        n_obs: int,
+        reward_components: dict[str, float] | None,
+    ) -> None:
+        if self._csv_writer is not None:
+            return
+
+        self._n_state = n_state
+        self._n_act = n_act
+        self._n_obs = n_obs
+
+        if self._episode_number is not None:
+            csv_path = self._output_dir / f"episode{self._episode_number}.csv"
+        else:
+            csv_path = self._output_dir / "episode.csv"
+        if csv_path.exists():
+            csv_path.unlink()
+        write_header = True
+        self._csv_file = open(csv_path, "w", newline="")
+
+        self._reward_component_keys = sorted((reward_components or {}).keys())
+
+        cols = ["timestep"]
+        cols += [f"s_{i}" for i in range(self._n_state)]
+        cols += [f"a_{i}" for i in range(self._n_act)]
+        cols += [f"o_{i}" for i in range(self._n_obs)]
+        cols += ["r"]
+        cols += [f"r_{k}" for k in self._reward_component_keys]
+
+        self._csv_writer = csv.DictWriter(self._csv_file, fieldnames=cols)
+        if write_header:
+            self._csv_writer.writeheader()
+
+    def record_transition(
+        self,
+        state: np.ndarray,
+        action: np.ndarray,
+        observation: np.ndarray,
+        reward: float,
+        done: bool,
+        reward_components: dict[str, float] | None = None,
+    ) -> None:
+        """Manually log one transition tuple for evaluation loops."""
+        if not self._active:
+            return
+
+        s = np.asarray(state, dtype=np.float32).reshape(-1)
+        a = np.asarray(action, dtype=np.float32).reshape(-1)
+        o = np.asarray(observation, dtype=np.float32).reshape(-1)
+        d = bool(done)
+
+        self._ensure_writer(len(s), len(a), len(o), reward_components)
+        if self._csv_writer is None:
+            return
+
+        row: dict[str, float | int] = {
+            "timestep": self._global_step,
+            "r": float(reward),
+        }
+        for i, val in enumerate(s):
+            row[f"s_{i}"] = float(val)
+        for i, val in enumerate(a):
+            row[f"a_{i}"] = float(val)
+        for i, val in enumerate(o):
+            row[f"o_{i}"] = float(val)
+
+        for k in self._reward_component_keys:
+            row[f"r_{k}"] = float((reward_components or {}).get(k, 0.0))
+
+        self._csv_writer.writerow(row)
+        self._global_step += 1
+
+        if d: self.close()
+
+    def close(self) -> None:
+        """Flush and close CSV file."""
+        if self._csv_file is not None and not self._csv_file.closed:
+            self._csv_file.flush()
+            self._csv_file.close()
+        self._active = False
+
+    ## To be used if we enable logging transitions during training
+    def _on_step(self) -> bool:
+        pass
+        # """Called every SB3 training step; logs available transitions."""
+        # obs = self.locals.get("observations", None)
+        # actions = self.locals.get("actions", None)
+        # rewards = self.locals.get("rewards", None)
+        # dones = self.locals.get("dones", [False])
+
+        # if obs is None or actions is None or rewards is None:
+        #     return True
+
+        # obs_batch = np.asarray(obs)
+        # actions_batch = np.asarray(actions)
+        # rewards_batch = np.asarray(rewards)
+        # dones_batch = np.asarray(dones)
+
+        # if obs_batch.ndim == 1:
+        #     obs_batch = obs_batch[np.newaxis, :]
+        # if actions_batch.ndim == 1:
+        #     actions_batch = actions_batch[np.newaxis, :]
+        # if rewards_batch.ndim == 0:
+        #     rewards_batch = rewards_batch.reshape(1)
+        # if dones_batch.ndim == 0:
+        #     dones_batch = dones_batch.reshape(1)
+
+        # # In callback mode, previous-state is not exposed via stable key.
+        # # We duplicate current obs into state/observation columns.
+        # for o, a, r, d in zip(obs_batch, actions_batch, rewards_batch, dones_batch):
+        #     self.record_transition(
+        #         state=o,
+        #         action=a,
+        #         observation=o,
+        #         reward=float(r),
+        #         done=bool(d),
+        #         reward_components=None,
+        #     )
+
+        # if self._csv_file is not None and not self._csv_file.closed and self._global_step % 100 == 0:
+        #     self._csv_file.flush()
+
+    #     return True
+
+    # def _on_training_end(self) -> None:
+        pass
+        # """Flush and close CSV files on training end."""
+        # self.close()
