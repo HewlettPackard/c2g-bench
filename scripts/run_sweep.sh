@@ -293,7 +293,7 @@ echo "════════════════════════�
 echo "  C2G-Bench Full Training & Evaluation Sweep"
 echo "  Scenarios: ${SCENARIOS[*]}"
 echo "  Seeds:     ${SEEDS[*]}"
-echo "  Algos:     PPO, SAC, RuleBased, Random"
+echo "  Algos:     PPO, SAC, RuleBased, Random + HA: CBF, HJ, MPCSF, CPO, Shield-RS, HA-C2G"
 echo "  Parallel:  ${MAX_PARALLEL} jobs"
 echo "  Output:    ${RESULTS_CSV}"
 echo "═══════════════════════════════════════════════════════════════"
@@ -588,9 +588,220 @@ done
 wait
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Phase 12: Generate summary table
+# Phase 12: CBF-PPO training + evaluation (High-Assurance Tier 1)
 # ══════════════════════════════════════════════════════════════════════════════
-echo -e "\n▸ Phase 12: Generating results summary …"
+echo -e "\n▸ Phase 12: CBF-PPO training (300k steps × 12 runs) …"
+for scenario in "${SCENARIOS[@]}"; do
+    for seed in "${SEEDS[@]}"; do
+        if $DRY_RUN; then
+            echo "  [dry-run] train CBF-PPO $scenario seed=$seed"
+            continue
+        fi
+        wait_for_slots
+        (
+            echo "[train] CBF-PPO / ${scenario} / seed=${seed}"
+            OUT_DIR="outputs/cbf_ppo_${scenario}/seed_${seed}"
+            $PYTHON baselines/train_cbf_ppo.py \
+                algo=cbf_ppo \
+                scenario="${scenario}" \
+                experiment.seed="${seed}" \
+                hydra.run.dir="${OUT_DIR}/\${now:%Y-%m-%d_%H-%M-%S}" \
+                2>&1 | tail -5
+
+            LATEST=$(ls -td "${OUT_DIR}"/*/final_model.zip 2>/dev/null | head -1)
+            if [[ -n "$LATEST" ]]; then
+                evaluate "cbf_ppo" "$scenario" "$seed" "${LATEST%.zip}"
+            else
+                echo "  [WARN] CBF-PPO ${scenario}/seed_${seed}: no model found"
+            fi
+        ) &
+        NJOBS=$((NJOBS + 1))
+    done
+done
+wait
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Phase 13: HJ-PPO training + evaluation (High-Assurance Tier 1)
+# ══════════════════════════════════════════════════════════════════════════════
+echo -e "\n▸ Phase 13: HJ-PPO training (300k steps × 12 runs) …"
+for scenario in "${SCENARIOS[@]}"; do
+    for seed in "${SEEDS[@]}"; do
+        if $DRY_RUN; then
+            echo "  [dry-run] train HJ-PPO $scenario seed=$seed"
+            continue
+        fi
+        wait_for_slots
+        (
+            echo "[train] HJ-PPO / ${scenario} / seed=${seed}"
+            OUT_DIR="outputs/hj_ppo_${scenario}/seed_${seed}"
+            $PYTHON baselines/train_hj_ppo.py \
+                algo=hj_ppo \
+                scenario="${scenario}" \
+                experiment.seed="${seed}" \
+                hydra.run.dir="${OUT_DIR}/\${now:%Y-%m-%d_%H-%M-%S}" \
+                2>&1 | tail -5
+
+            LATEST=$(ls -td "${OUT_DIR}"/*/final_model.zip 2>/dev/null | head -1)
+            if [[ -n "$LATEST" ]]; then
+                evaluate "hj_ppo" "$scenario" "$seed" "${LATEST%.zip}"
+            else
+                echo "  [WARN] HJ-PPO ${scenario}/seed_${seed}: no model found"
+            fi
+        ) &
+        NJOBS=$((NJOBS + 1))
+    done
+done
+wait
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Phase 14: MPC-SF-PPO training + evaluation (High-Assurance Tier 1)
+# ══════════════════════════════════════════════════════════════════════════════
+echo -e "\n▸ Phase 14: MPC-SF-PPO training (300k steps × 12 runs) …"
+for scenario in "${SCENARIOS[@]}"; do
+    for seed in "${SEEDS[@]}"; do
+        if $DRY_RUN; then
+            echo "  [dry-run] train MPCSF-PPO $scenario seed=$seed"
+            continue
+        fi
+        wait_for_slots
+        (
+            echo "[train] MPCSF-PPO / ${scenario} / seed=${seed}"
+            OUT_DIR="outputs/mpcsf_ppo_${scenario}/seed_${seed}"
+            $PYTHON baselines/train_mpcsf_ppo.py \
+                algo=mpcsf_ppo \
+                scenario="${scenario}" \
+                experiment.seed="${seed}" \
+                hydra.run.dir="${OUT_DIR}/\${now:%Y-%m-%d_%H-%M-%S}" \
+                2>&1 | tail -5
+
+            LATEST=$(ls -td "${OUT_DIR}"/*/final_model.zip 2>/dev/null | head -1)
+            if [[ -n "$LATEST" ]]; then
+                evaluate "mpcsf_ppo" "$scenario" "$seed" "${LATEST%.zip}"
+            else
+                echo "  [WARN] MPCSF-PPO ${scenario}/seed_${seed}: no model found"
+            fi
+        ) &
+        NJOBS=$((NJOBS + 1))
+    done
+done
+wait
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Phase 15: CPO training + evaluation (High-Assurance Tier 2)
+# ══════════════════════════════════════════════════════════════════════════════
+echo -e "\n▸ Phase 15: CPO training (300k steps × 12 runs) …"
+for scenario in "${SCENARIOS[@]}"; do
+    for seed in "${SEEDS[@]}"; do
+        if $DRY_RUN; then
+            echo "  [dry-run] train CPO $scenario seed=$seed"
+            continue
+        fi
+        wait_for_slots
+        (
+            echo "[train] CPO / ${scenario} / seed=${seed}"
+            OUT_DIR="outputs/cpo_${scenario}/seed_${seed}"
+            $PYTHON baselines/train_cpo.py \
+                algo=cpo \
+                scenario="${scenario}" \
+                experiment.seed="${seed}" \
+                hydra.run.dir="${OUT_DIR}/\${now:%Y-%m-%d_%H-%M-%S}" \
+                2>&1 | tail -5
+
+            LATEST=$(ls -td "${OUT_DIR}"/*/final_model.zip 2>/dev/null | head -1)
+            if [[ -n "$LATEST" ]]; then
+                evaluate "cpo" "$scenario" "$seed" "${LATEST%.zip}"
+            else
+                echo "  [WARN] CPO ${scenario}/seed_${seed}: no model found"
+            fi
+        ) &
+        NJOBS=$((NJOBS + 1))
+    done
+done
+wait
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Phase 16: Shield Reward Shaping training + evaluation (High-Assurance Tier 2)
+# ══════════════════════════════════════════════════════════════════════════════
+echo -e "\n▸ Phase 16: Shield-Reward-Shaping training (300k steps × 12 runs) …"
+for scenario in "${SCENARIOS[@]}"; do
+    for seed in "${SEEDS[@]}"; do
+        if $DRY_RUN; then
+            echo "  [dry-run] train Shield-RS $scenario seed=$seed"
+            continue
+        fi
+        wait_for_slots
+        (
+            echo "[train] Shield-RS / ${scenario} / seed=${seed}"
+            OUT_DIR="outputs/reward_shaping_${scenario}/seed_${seed}"
+            $PYTHON baselines/train_shield_reward_shaping.py \
+                algo=shield_reward_shaping \
+                scenario="${scenario}" \
+                experiment.seed="${seed}" \
+                hydra.run.dir="${OUT_DIR}/\${now:%Y-%m-%d_%H-%M-%S}" \
+                2>&1 | tail -5
+
+            LATEST=$(ls -td "${OUT_DIR}"/*/final_model.zip 2>/dev/null | head -1)
+            if [[ -n "$LATEST" ]]; then
+                evaluate "reward_shaping" "$scenario" "$seed" "${LATEST%.zip}"
+            else
+                echo "  [WARN] Shield-RS ${scenario}/seed_${seed}: no model found"
+            fi
+        ) &
+        NJOBS=$((NJOBS + 1))
+    done
+done
+wait
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Phase 17: HA-C2G training + evaluation (High-Assurance Tier 3)
+# ══════════════════════════════════════════════════════════════════════════════
+echo -e "\n▸ Phase 17: HA-C2G neuro-symbolic training (300k steps × 12 runs) …"
+for scenario in "${SCENARIOS[@]}"; do
+    for seed in "${SEEDS[@]}"; do
+        if $DRY_RUN; then
+            echo "  [dry-run] train HA-C2G $scenario seed=$seed"
+            continue
+        fi
+        wait_for_slots
+        (
+            echo "[train] HA-C2G / ${scenario} / seed=${seed}"
+            OUT_DIR="outputs/ha_c2g_${scenario}/seed_${seed}"
+            $PYTHON baselines/train_ha_c2g.py \
+                algo=ha_c2g \
+                scenario="${scenario}" \
+                experiment.seed="${seed}" \
+                hydra.run.dir="${OUT_DIR}/\${now:%Y-%m-%d_%H-%M-%S}" \
+                2>&1 | tail -5
+
+            LATEST=$(ls -td "${OUT_DIR}"/*/final_model.zip 2>/dev/null | head -1)
+            if [[ -n "$LATEST" ]]; then
+                evaluate "ha_c2g" "$scenario" "$seed" "${LATEST%.zip}"
+            else
+                echo "  [WARN] HA-C2G ${scenario}/seed_${seed}: no model found"
+            fi
+        ) &
+        NJOBS=$((NJOBS + 1))
+    done
+done
+wait
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Phase 18: HA Benchmark Evaluation (all shields × all scenarios)
+# ══════════════════════════════════════════════════════════════════════════════
+echo -e "\n▸ Phase 18: HA Benchmark evaluation (11 metrics) …"
+if $DRY_RUN; then
+    echo "  [dry-run] python evaluation/run_ha_benchmark.py --agents all --n_episodes 5"
+else
+    $PYTHON evaluation/run_ha_benchmark.py \
+        --agents simplex cbf hj mpcsf \
+        --n_episodes 5 \
+        --output results/ha_benchmark_results.csv
+fi
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Phase 19: Generate summary table
+# ══════════════════════════════════════════════════════════════════════════════
+echo -e "\n▸ Phase 19: Generating results summary …"
 $PYTHON - << 'PYEOF'
 import pandas as pd
 from pathlib import Path
@@ -627,7 +838,7 @@ if csv_macro.exists():
 # LaTeX-ready table
 print("═══ LaTeX table rows (paste into paper) ═══")
 for scenario in ["default", "scenario_a", "scenario_b", "scenario_c"]:
-    for algo in ["random", "bang_bang", "pid", "rule_based", "mpc_fast", "cmaes", "pso", "ppo", "sac", "ppo_lag"]:
+    for algo in ["random", "bang_bang", "pid", "rule_based", "mpc_fast", "cmaes", "pso", "ppo", "sac", "ppo_lag", "cbf_ppo", "hj_ppo", "mpcsf_ppo", "cpo", "reward_shaping", "ha_c2g"]:
         sub = df[(df.scenario == scenario) & (df.algo == algo)]
         if sub.empty:
             continue

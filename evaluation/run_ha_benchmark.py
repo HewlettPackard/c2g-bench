@@ -1,0 +1,418 @@
+"""
+evaluation/run_ha_benchmark.py  —  High-Assurance Benchmark Evaluation
+=======================================================================
+Evaluates all high-assurance safety controllers on all scenarios,
+collecting the extended 11-metric set designed for the HA benchmark.
+
+Standard metrics (from run_benchmark.py):
+  1. mean_reward           — mean step reward
+  2. tracking_rmse         — RMSE of regulation signal tracking error
+  3. thermal_viol_rate     — fraction of ticks with T > T_warn
+  4. throughput_ratio      — mean batch compute utilisation
+  5. bess_degradation      — cumulative battery ageing
+  6. survival_rate         — fraction of full-length episodes
+
+HA-specific metrics (new):
+  7.  hard_violation_rate  — fraction of steps with ANY C1-C5 breach
+  8.  shield_intervention_rate — fraction of steps where shield modified action
+  9.  constraint_margin    — mean min distance to nearest constraint boundary
+  10. worst_case_margin    — global minimum margin across all constraints
+  11. computational_overhead_ms — wall-clock time per filter() call
+
+HA Agents
+---------
+  simplex_ppo     — Simplex shield + PPO (existing baseline)
+  cbf_ppo         — CBF safety filter + PPO
+  hj_ppo          — Hamilton-Jacobi reachability + PPO
+  mpcsf_ppo       — MPC Safety Filter + PPO
+  ppo_lagrangian  — PPO-Lagrangian (constrained RL)
+  cpo             — Constrained Policy Optimisation
+  reward_shaping  — Shield reward shaping + PPO
+  ha_c2g          — Full neuro-symbolic HA (CBM + Gate + Shield)
+
+Usage
+-----
+  uv run python evaluation/run_ha_benchmark.py
+  uv run python evaluation/run_ha_benchmark.py --agents cbf_ppo ha_c2g
+  uv run python evaluation/run_ha_benchmark.py --scenarios default scenario_b
+"""
+from __future__ import annotations
+
+import argparse
+import csv
+import time
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+from tqdm import tqdm
+
+from c2g_env import C2GFastEnv
+from baselines.safety_shield import SafetyShield
+from baselines.safety.cbf_shield import CBFShield
+from baselines.safety.hj_shield import HJShield
+from baselines.safety.mpc_safety_filter import MPCSafetyFilter
+
+SCENARIOS = ["default", "scenario_a", "scenario_b", "scenario_c"]
+T_WARN_NORM = 33.0 / 35.0
+T_SAFE = 35.0
+SOC_MIN = 0.10
+SOC_MAX = 0.95
+
+# Obs indices
+_I_TEMP_A   = 0
+_I_TEMP_B   = 1
+_I_SOC      = 2
+_I_FREQ_DEV = 14
+_I_VPCC     = 15
+
+
+# ── Shield wrappers for evaluation ────────────────────────────────
+
+class ShieldEvaluator:
+    """Wraps a shield for evaluation, collecting per-step metrics."""
+
+    def __init__(self, shield_type: str, shield):
+        self.shield_type = shield_type
+        self.shield = shield
+        self._filter_times: list[float] = []
+
+    def filter(self, action, obs):
+        t0 = time.perf_counter()
+        safe_action, was_modified, info = self.shield.filter(action, obs)
+        elapsed_ms = (time.perf_counter() - t0) * 1000
+        self._filter_times.append(elapsed_ms)
+        return safe_action, was_modified, info
+
+    @property
+    def mean_filter_time_ms(self) -> float:
+        return float(np.mean(self._filter_times)) if self._filter_times else 0.0
+
+    def reset(self):
+        if hasattr(self.shield, "reset"):
+            self.shield.reset()
+        self._filter_times = []
+
+
+class NoShield:
+    """Dummy shield that passes actions through unchanged."""
+    def filter(self, action, obs):
+        return action.copy(), False, {}
+    def reset(self):
+        pass
+
+
+def get_shield(agent_name: str) -> ShieldEvaluator:
+    """Get the appropriate shield for the agent type."""
+    if agent_name == "simplex_ppo":
+        return ShieldEvaluator("simplex", SafetyShield())
+    elif agent_name == "cbf_ppo":
+        return ShieldEvaluator("cbf", CBFShield())
+    elif agent_name == "hj_ppo":
+        return ShieldEvaluator("hj", HJShield(precompute=True))
+    elif agent_name == "mpcsf_ppo":
+        return ShieldEvaluator("mpcsf", MPCSafetyFilter(horizon=5))
+    elif agent_name in ("ppo_lagrangian", "cpo", "reward_shaping"):
+        # Soft-guarantee methods: use Simplex shield at eval for fair comparison
+        return ShieldEvaluator("simplex_eval", SafetyShield())
+    elif agent_name == "ha_c2g":
+        return ShieldEvaluator("simplex_ha", SafetyShield())
+    else:
+        return ShieldEvaluator("none", NoShield())
+
+
+def compute_constraint_margin(obs: np.ndarray) -> float:
+    """Compute minimum distance to any constraint boundary."""
+    T_A = float(obs[_I_TEMP_A]) * T_SAFE
+    T_B = float(obs[_I_TEMP_B]) * T_SAFE
+    soc = float(obs[_I_SOC])
+    freq_dev = abs(float(obs[_I_FREQ_DEV]) * 0.5)
+    v_pcc = float(obs[_I_VPCC])
+
+    margins = [
+        T_SAFE - T_A,                      # C1
+        T_SAFE - T_B,                      # C2
+        soc - SOC_MIN,                     # C3 low
+        SOC_MAX - soc,                     # C3 high
+        0.5 - freq_dev,                    # C4
+        v_pcc - 0.90,                      # C5
+    ]
+    return float(min(margins))
+
+
+def check_hard_violation(obs: np.ndarray) -> bool:
+    """Check if ANY hard constraint (C1-C5) is violated."""
+    T_A = float(obs[_I_TEMP_A]) * T_SAFE
+    T_B = float(obs[_I_TEMP_B]) * T_SAFE
+    soc = float(obs[_I_SOC])
+    freq_dev = abs(float(obs[_I_FREQ_DEV]) * 0.5)
+    v_pcc = float(obs[_I_VPCC])
+
+    return (
+        T_A >= T_SAFE or
+        T_B >= T_SAFE or
+        soc < SOC_MIN or
+        soc > SOC_MAX or
+        freq_dev >= 0.5 or
+        v_pcc < 0.90
+    )
+
+
+# ── Agent loader ──────────────────────────────────────────────────
+
+class RandomAgent:
+    def predict(self, obs, deterministic=True):
+        action = np.array([
+            np.random.uniform(0, 1),
+            np.random.uniform(0, 1),
+            np.random.uniform(0, 1),
+            np.random.uniform(-1, 1),
+        ], dtype=np.float32)
+        return action, None
+
+
+def load_agent(agent_name: str, scenario: str, seed: int, model_dir: str | None):
+    """Load a trained agent. Returns (agent, needs_shield) tuple."""
+    if agent_name == "random":
+        return RandomAgent(), False
+
+    # For RL-based agents, try to load from trained_models/
+    from stable_baselines3 import PPO
+    algo_map = {
+        "simplex_ppo": "shielded_ppo",
+        "cbf_ppo": "cbf_ppo",
+        "hj_ppo": "hj_ppo",
+        "mpcsf_ppo": "mpcsf_ppo",
+        "ppo_lagrangian": "ppo_lagrangian",
+        "cpo": "cpo",
+        "reward_shaping": "shield_reward_shaping",
+        "ha_c2g": "ha_c2g",
+    }
+    algo_key = algo_map.get(agent_name, agent_name)
+    if model_dir:
+        path = Path(model_dir) / "final_model"
+    else:
+        path = Path("trained_models") / f"{algo_key}_{scenario}_s{seed}" / "final_model"
+
+    if path.with_suffix(".zip").exists():
+        model = PPO.load(str(path))
+
+        class SB3Agent:
+            def __init__(self, m):
+                self._m = m
+            def predict(self, obs, deterministic=True):
+                return self._m.predict(obs, deterministic=deterministic)
+
+        return SB3Agent(model), True
+    else:
+        print(f"    SKIP: No model at {path}.zip — using random agent")
+        return RandomAgent(), True
+
+
+# ── Episode runner ────────────────────────────────────────────────
+
+def run_ha_episode(
+    agent, shield_eval: ShieldEvaluator, scenario: str, seed: int
+) -> dict[str, float]:
+    """Run one episode and return all 11 HA metrics."""
+    env = C2GFastEnv(scenario=scenario)
+    obs, _ = env.reset(seed=seed)
+    shield_eval.reset()
+
+    rewards: list[float] = []
+    tracking_errs: list[float] = []
+    thermal_viols = 0
+    hard_violations = 0
+    interventions = 0
+    throughputs: list[float] = []
+    margins: list[float] = []
+    worst_margin = float("inf")
+    bess_init_age = None
+
+    done = False
+    n_steps = 0
+    while not done:
+        action, _ = agent.predict(obs, deterministic=True)
+
+        # Apply safety shield
+        safe_action, was_modified, shield_info = shield_eval.filter(action, obs)
+        if was_modified:
+            interventions += 1
+
+        obs, reward, terminated, truncated, info = env.step(safe_action)
+        done = terminated or truncated
+        n_steps += 1
+
+        rewards.append(float(reward))
+
+        # Thermal violations (soft, T > T_warn)
+        if obs[_I_TEMP_A] >= T_WARN_NORM or obs[_I_TEMP_B] >= T_WARN_NORM:
+            thermal_viols += 1
+
+        # Hard violations (any C1-C5 breach)
+        if check_hard_violation(obs):
+            hard_violations += 1
+
+        # Constraint margin
+        margin = compute_constraint_margin(obs)
+        margins.append(margin)
+        worst_margin = min(worst_margin, margin)
+
+        # Tracking error
+        tracking_errs.append(info.get("tracking_err_kw", 0.0) ** 2)
+
+        # Throughput
+        tp = info.get("throughput_ratio", None)
+        if tp is not None:
+            throughputs.append(float(tp))
+
+        # BESS
+        if bess_init_age is None:
+            bess_init_age = float(info.get("bess_age_frac", 0.0))
+
+    bess_final_age = float(info.get("bess_age_frac", bess_init_age or 0.0))
+    bess_degradation = (bess_final_age - (bess_init_age or 0.0)) * 1e4
+    survived = 1.0 if n_steps >= 288 else 0.0
+
+    return {
+        # Standard metrics
+        "mean_reward": float(np.mean(rewards)),
+        "total_reward": float(np.sum(rewards)),
+        "tracking_rmse": float(np.sqrt(np.mean(tracking_errs))) if tracking_errs else 0.0,
+        "thermal_viol_rate": thermal_viols / max(n_steps, 1),
+        "throughput_ratio": float(np.mean(throughputs)) if throughputs else 0.0,
+        "bess_degradation": bess_degradation,
+        "episode_length": n_steps,
+        "survived": survived,
+        # HA-specific metrics
+        "hard_violation_rate": hard_violations / max(n_steps, 1),
+        "shield_intervention_rate": interventions / max(n_steps, 1),
+        "constraint_margin": float(np.mean(margins)) if margins else 0.0,
+        "worst_case_margin": worst_margin if worst_margin != float("inf") else 0.0,
+        "computational_overhead_ms": shield_eval.mean_filter_time_ms,
+    }
+
+
+# ── Main benchmark loop ──────────────────────────────────────────
+
+HA_AGENTS = [
+    "simplex_ppo",
+    "cbf_ppo",
+    "hj_ppo",
+    "mpcsf_ppo",
+    "ppo_lagrangian",
+    "cpo",
+    "reward_shaping",
+    "ha_c2g",
+    "random",
+]
+
+
+def benchmark(
+    agents: list[str],
+    scenarios: list[str],
+    n_episodes: int,
+    seed_start: int,
+    model_dir: str | None,
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+
+    for scenario in tqdm(scenarios, desc="Scenarios"):
+        for agent_name in tqdm(agents, desc="Agents", leave=False):
+            agent, needs_shield = load_agent(
+                agent_name, scenario, seed_start, model_dir)
+            shield_eval = get_shield(agent_name)
+
+            ep_metrics: list[dict] = []
+            t0 = time.perf_counter()
+            for ep in range(n_episodes):
+                m = run_ha_episode(agent, shield_eval, scenario,
+                                   seed=seed_start + ep)
+                ep_metrics.append(m)
+            elapsed = time.perf_counter() - t0
+
+            # Aggregate
+            keys = list(ep_metrics[0].keys())
+            agg = {k: float(np.mean([m[k] for m in ep_metrics])) for k in keys}
+            agg["survival_rate"] = float(np.mean([m["survived"] for m in ep_metrics]))
+
+            row = {
+                "scenario": scenario,
+                "agent": agent_name,
+                "shield_type": shield_eval.shield_type,
+                "n_episodes": n_episodes,
+                "wall_time_s": round(elapsed, 2),
+                **{k: round(v, 6) for k, v in agg.items() if k != "survived"},
+            }
+            rows.append(row)
+            tqdm.write(
+                f"  {agent_name:20s}/{scenario:12s}  "
+                f"reward={agg['mean_reward']:7.2f}  "
+                f"hard_viol={agg['hard_violation_rate']:.4f}  "
+                f"shield={agg['shield_intervention_rate']:.4f}  "
+                f"margin={agg['constraint_margin']:.2f}  "
+                f"survive={agg['survival_rate']:.2f}  "
+                f"ms/step={agg['computational_overhead_ms']:.2f}"
+            )
+
+    return rows
+
+
+def print_results_table(rows: list[dict[str, Any]]) -> None:
+    if not rows:
+        return
+    cols = list(rows[0].keys())
+    widths = {c: len(c) for c in cols}
+    str_rows = []
+    for row in rows:
+        sr = {}
+        for c in cols:
+            v = row[c]
+            sr[c] = f"{v:.4f}" if isinstance(v, float) else str(v)
+            widths[c] = max(widths[c], len(sr[c]))
+        str_rows.append(sr)
+
+    header = " | ".join(c.rjust(widths[c]) for c in cols)
+    sep = "-+-".join("-" * widths[c] for c in cols)
+    print(f"\n{header}")
+    print(sep)
+    for sr in str_rows:
+        print(" | ".join(sr[c].rjust(widths[c]) for c in cols))
+    print()
+
+
+def save_csv(rows: list[dict[str, Any]], path: Path) -> None:
+    if not rows:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+        writer.writeheader()
+        writer.writerows(rows)
+    print(f"\n[HA-Bench] Results saved → {path}")
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description="C2G-Bench High-Assurance evaluation runner")
+    parser.add_argument(
+        "--agents", nargs="+", default=HA_AGENTS,
+        help="Agents to evaluate")
+    parser.add_argument(
+        "--scenarios", nargs="+", default=SCENARIOS,
+        choices=SCENARIOS)
+    parser.add_argument("--n_episodes", type=int, default=5)
+    parser.add_argument("--seed", type=int, default=100)
+    parser.add_argument("--model_dir", default=None)
+    parser.add_argument(
+        "--output", default="evaluation/ha_results.csv")
+    args = parser.parse_args()
+
+    rows = benchmark(
+        agents=args.agents,
+        scenarios=args.scenarios,
+        n_episodes=args.n_episodes,
+        seed_start=args.seed,
+        model_dir=args.model_dir)
+    print_results_table(rows)
+    save_csv(rows, Path(args.output))

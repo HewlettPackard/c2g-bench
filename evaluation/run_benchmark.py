@@ -37,6 +37,15 @@ Agents
   cmaes        — loads CMA-ES trained linear policy
   pso          — loads PSO trained linear policy
   random       — np.random uniform (lower bound)
+
+High-Assurance Agents
+  simplex_ppo  — PPO + Simplex safety shield (runtime filter)
+  cbf_ppo      — PPO + Control Barrier Function shield
+  hj_ppo       — PPO + Hamilton-Jacobi reachability shield
+  mpcsf_ppo    — PPO + Model-Predictive Safety Filter
+  cpo          — Constrained Policy Optimisation
+  reward_shaping — PPO w/ shield-penalty reward shaping
+  ha_c2g       — HA-C2G (CBM + safe projection + physics shield)
 """
 from __future__ import annotations
 import argparse, csv, time
@@ -55,6 +64,12 @@ from baselines.mpc_fast import MPCFastController
 from baselines.mpc_macro import MPCMacroController
 from baselines.milp_dispatch import MILPDispatchController
 from baselines.metrics_callback import C2GTransitionLoggerCallback
+
+# ── High-Assurance agents ────────────────────────────────────────
+from baselines.safety.cbf_shield import CBFShield, CBFShieldedAgent
+from baselines.safety.hj_shield import HJShield
+from baselines.safety.mpc_safety_filter import MPCSafetyFilter
+from baselines.safety_shield import SafetyShield
 
 SCENARIOS    = ["default", "scenario_a", "scenario_b", "scenario_c"]
 T_WARN_NORM  = 33.0 / 35.0   # normalised warning threshold
@@ -177,6 +192,18 @@ class EvolutionaryAgent:
         else:
             action = np.clip(obs @ self.W.T + self.b, self.act_low, self.act_high)
         return action.astype(np.float32), None
+
+
+class ShieldedSB3Agent:
+    """Wraps an SB3 model with a runtime safety shield."""
+    def __init__(self, model, shield):
+        self._model = model
+        self._shield = shield
+
+    def predict(self, obs: np.ndarray, deterministic: bool = True):
+        action, state = self._model.predict(obs, deterministic=deterministic)
+        safe_action, _, _ = self._shield.filter(action, obs)
+        return safe_action, state
 
 
 # ---------------------------------------------------------------------------
@@ -328,6 +355,41 @@ def benchmark(
                     print(f"    SKIP: No trained policy at {npz_path}")
                     continue
                 agent = EvolutionaryAgent(npz_path, algo_name=agent_name)
+            # ── High-Assurance shielded agents ─────────────────
+            elif agent_name == "simplex_ppo":
+                try:
+                    base = load_sb3_agent("ppo", scenario, seed_start, model_dir)
+                    agent = ShieldedSB3Agent(base._model, SafetyShield())
+                except FileNotFoundError as exc:
+                    print(f"    SKIP: {exc}")
+                    continue
+            elif agent_name == "cbf_ppo":
+                try:
+                    base = load_sb3_agent("ppo", scenario, seed_start, model_dir)
+                    agent = ShieldedSB3Agent(base._model, CBFShield())
+                except FileNotFoundError as exc:
+                    print(f"    SKIP: {exc}")
+                    continue
+            elif agent_name == "hj_ppo":
+                try:
+                    base = load_sb3_agent("ppo", scenario, seed_start, model_dir)
+                    agent = ShieldedSB3Agent(base._model, HJShield(precompute=True))
+                except FileNotFoundError as exc:
+                    print(f"    SKIP: {exc}")
+                    continue
+            elif agent_name == "mpcsf_ppo":
+                try:
+                    base = load_sb3_agent("ppo", scenario, seed_start, model_dir)
+                    agent = ShieldedSB3Agent(base._model, MPCSafetyFilter())
+                except FileNotFoundError as exc:
+                    print(f"    SKIP: {exc}")
+                    continue
+            elif agent_name in ("cpo", "reward_shaping", "ha_c2g"):
+                try:
+                    agent = load_sb3_agent(agent_name, scenario, seed_start, model_dir)
+                except FileNotFoundError as exc:
+                    print(f"    SKIP: {exc}")
+                    continue
             else:
                 try:
                     agent = load_sb3_agent(agent_name, scenario, seed_start, model_dir)
@@ -423,7 +485,9 @@ if __name__ == "__main__":
     parser.add_argument(
         "--agents", nargs="+",
         default=["rule_based", "bang_bang", "pid", "random"],
-        help="Agents to evaluate: rule_based rule_macro bang_bang pid mpc_fast mpc_macro milp ppo sac ppo_lag cmaes pso random",
+        help="Agents to evaluate: rule_based rule_macro bang_bang pid mpc_fast "
+             "mpc_macro milp ppo sac ppo_lag cmaes pso random "
+             "simplex_ppo cbf_ppo hj_ppo mpcsf_ppo cpo reward_shaping ha_c2g",
     )
     parser.add_argument(
         "--scenarios", nargs="+",
