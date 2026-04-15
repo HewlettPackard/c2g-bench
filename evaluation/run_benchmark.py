@@ -44,6 +44,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+from tqdm import tqdm
 
 from c2g_env import C2GFastEnv
 from baselines.rule_based_mpc import RuleBasedController
@@ -188,13 +189,13 @@ def benchmark(
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
 
-    for scenario in scenarios:
-        print(f"\n{'─'*60}")
-        print(f"Scenario: {scenario}")
-        print(f"{'─'*60}")
+    scenario_bar = tqdm(scenarios, desc="Scenarios", position=0)
+    for scenario in scenario_bar:
+        scenario_bar.set_description(f"Scenario: {scenario}")
 
-        for agent_name in agents:
-            print(f"  Agent: {agent_name}")
+        agent_bar = tqdm(agents, desc="Agents", position=1, leave=False)
+        for agent_name in agent_bar:
+            agent_bar.set_description(f"Agent: {agent_name}")
 
             # Instantiate agent once per (agent, scenario) to share weights
             env_for_space = C2GFastEnv(scenario=scenario)
@@ -233,7 +234,7 @@ def benchmark(
 
             ep_metrics: list[dict[str, float]] = []
             t0 = time.perf_counter()
-            for ep in range(n_episodes):
+            for ep in tqdm(range(n_episodes), desc="Episodes", position=2, leave=False):
                 m = run_episode(agent, scenario, seed=seed_start + ep)
                 ep_metrics.append(m)
 
@@ -252,14 +253,40 @@ def benchmark(
                 **{k: round(v, 4) for k, v in agg.items() if k != "survived"},
             }
             rows.append(row)
-            print(
-                f"    reward={agg['mean_reward']:7.2f}  "
+            tqdm.write(
+                f"  {agent_name}/{scenario}  "
+                f"reward={agg['mean_reward']:7.2f}  "
                 f"tracking_rmse={agg['tracking_rmse']:8.0f}kW  "
                 f"thermal_viol={agg['thermal_viol_rate']:.3f}  "
                 f"survive={agg['survival_rate']:.2f}"
             )
 
     return rows
+
+
+def print_results_table(rows: list[dict[str, Any]]) -> None:
+    """Print results as a formatted table."""
+    if not rows:
+        return
+    cols = list(rows[0].keys())
+    # Compute column widths
+    widths = {c: len(c) for c in cols}
+    str_rows = []
+    for row in rows:
+        sr = {}
+        for c in cols:
+            v = row[c]
+            sr[c] = f"{v:.4f}" if isinstance(v, float) else str(v)
+            widths[c] = max(widths[c], len(sr[c]))
+        str_rows.append(sr)
+
+    header = " | ".join(c.rjust(widths[c]) for c in cols)
+    sep = "-+-".join("-" * widths[c] for c in cols)
+    print(f"\n{header}")
+    print(sep)
+    for sr in str_rows:
+        print(" | ".join(sr[c].rjust(widths[c]) for c in cols))
+    print()
 
 
 def save_csv(rows: list[dict[str, Any]], path: Path) -> None:
@@ -309,4 +336,5 @@ if __name__ == "__main__":
         seed_start = args.seed,
         model_dir  = args.model_dir,
     )
+    print_results_table(rows)
     save_csv(rows, Path(args.output))
