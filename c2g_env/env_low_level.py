@@ -278,7 +278,7 @@ class C2GFastEnv(gym.Env):
 
         # --- Build / reset simulators ------------------------------------
         self._workload = WorkloadOrchestrator(
-            trace_dir=gcfg["trace_dir"], seed=rng_seed
+            trace_dir=gcfg["trace_dir"], dt_seconds=self._dt, seed=rng_seed
         )
         self._thermal = ThermalTwin(dt_seconds=self._dt)
         # Pass scenario ambient temperature so reset provides a warm-start
