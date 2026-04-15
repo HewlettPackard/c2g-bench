@@ -146,12 +146,8 @@ def run_episode(agent, scenario: str, seed: int) -> dict[str, float]:
         if obs[0] >= T_WARN_NORM or obs[1] >= T_WARN_NORM:
             thermal_viols += 1
 
-        # Tracking error: regd_signal * committed_mw vs actual BESS response
-        # obs[6] = regd_signal ([-1,1]); info["delta_p_kw"] = BESS dispatch
-        regd = float(obs[6])
-        target_kw  = regd * committed_mw * 1e3          # kW
-        actual_kw  = float(info.get("delta_p_kw", 0.0))
-        tracking_errs.append((target_kw - actual_kw) ** 2)
+        # Tracking error: reuse the env's own computation (against prev regd signal)
+        tracking_errs.append(info["tracking_err_kw"] ** 2)
 
         # Throughput ratio: flex_kw / flex_nom_kw
         tp = info.get("throughput_ratio", None)
