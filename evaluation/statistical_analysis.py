@@ -292,6 +292,7 @@ def compute_all_summaries(
     rows: list[dict[str, Any]],
     metrics: list[str] | None = None,
     confidence: float = 0.95,
+    use_bootstrap: bool = True,
 ) -> list[MetricSummary]:
     """Compute MetricSummary for every (agent, scenario, metric) triple."""
     groups = group_by_agent_scenario(rows)
@@ -307,7 +308,8 @@ def compute_all_summaries(
             values = np.array([r[metric] for r in group_rows if metric in r])
             if len(values) == 0:
                 continue
-            s = summarise_metric(values, metric, agent, scenario, confidence)
+            s = summarise_metric(values, metric, agent, scenario, confidence,
+                                use_bootstrap=use_bootstrap)
             summaries.append(s)
     return summaries
 
@@ -497,8 +499,8 @@ def generate_latex_table(
         "\\end{tabular}}",
         f"\\vspace{{0.5em}}",
         f"\\\\\\footnotesize{{$^{{***}}p<0.001$, $^{{**}}p<0.01$, "
-        f"$^{{*}}p<0.05$ vs. HA-C2G (Welch's $t$-test). "
-        f"95\\% bootstrap CIs from $N$ seeds.}}",
+        f"$^{{*}}p<0.05$ vs. HA-C2G (Welch's $t$-test or Mann-Whitney $U$ "
+        f"when $n<5$). CIs from $N$ seeds.}}",
         f"\\end{{table}}",
     ])
     return "\n".join(lines)
@@ -568,12 +570,17 @@ if __name__ == "__main__":
     parser.add_argument("--confidence", type=float, default=0.95, help="CI level")
     parser.add_argument("--latex", type=Path, default=None, help="Output LaTeX table file")
     parser.add_argument("--scenario", default="default", help="Scenario for LaTeX table")
+    parser.add_argument("--ci_method", choices=["bootstrap", "t"], default="bootstrap",
+                        help="CI method: 'bootstrap' (non-parametric) or 't' (Student-t)")
     args = parser.parse_args()
 
     rows = load_multiseed_csv(args.csv)
     print(f"Loaded {len(rows)} rows from {args.csv}")
 
-    summaries = compute_all_summaries(rows, confidence=args.confidence)
+    use_bootstrap = args.ci_method == "bootstrap"
+    summaries = compute_all_summaries(rows, confidence=args.confidence,
+                                      use_bootstrap=use_bootstrap)
+    print(f"CI method: {args.ci_method}  confidence: {args.confidence}")
     comparisons = compute_pairwise_comparisons(
         rows, baseline=args.baseline, alpha=args.alpha)
 
