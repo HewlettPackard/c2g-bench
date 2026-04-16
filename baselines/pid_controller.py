@@ -1,17 +1,19 @@
 """
 baselines/pid_controller.py  —  Multi-Loop PID Controller
 ==========================================================
-Four independent PID loops map observation signals to the four action
-dimensions.  Anti-windup via integral clamping.
+Three PID loops for thermal/SOC control, plus proportional BESS response.
 
 Loop assignment
 ---------------
-  Loop 0 (BESS → tracking):   error = regd_signal          → bess_dispatch
-  Loop 1 (Pump → Zone A):     error = T_setpoint - temp_A  → pump_speed
-  Loop 2 (HVAC → Zone B):     error = T_setpoint - temp_B  → hvac_effort
-  Loop 3 (Throttle → SOC):    error = SOC_target  - SOC    → throttle_bias
+  Loop 0 (BESS → tracking):   bess_dispatch = regd_signal (proportional)
+  Loop 1 (Pump → Zone A):     error = temp_A - T_setpoint  → pump_speed
+  Loop 2 (HVAC → Zone B):     error = temp_B - T_setpoint  → hvac_effort
+  Loop 3 (Throttle → SOC):    error = SOC - SOC_target     → throttle_bias
 
-Each loop produces a raw output that is clipped to the action range.
+BESS uses direct proportional response (not PID) since regd_signal is an
+external setpoint, not a controllable process variable — true feedback
+control isn't possible. The other loops use standard PID with anti-windup.
+
 Loop 3 (throttle) acts as a bias: throttle = 1.0 + bias (clamped [0, 1]).
 When SOC is below target, bias < 0 → reduces throttle → sheds load →
 frees capacity for BESS charging.
@@ -103,7 +105,9 @@ class PIDController:
         Target SOC for the throttle-bias loop.  Default 0.50.
     dt : float
         Environment timestep in seconds.  Default 5.0.
-    bess_gains, pump_gains, hvac_gains, throttle_gains : tuple[float, float, float]
+    bess_gain : float
+        Proportional gain for BESS response to regd signal.  Default 1.0.
+    pump_gains, hvac_gains, throttle_gains : tuple[float, float, float]
         (Kp, Ki, Kd) for each PID loop.
     """
 
@@ -112,16 +116,15 @@ class PIDController:
         T_setpoint_norm: float = 30.0 / _T_SAFE,
         soc_target: float = 0.50,
         dt: float = 5.0,
-        bess_gains: tuple[float, float, float] = (2.0, 0.05, 0.1),
+        bess_gain: float = 1.0,
         pump_gains: tuple[float, float, float] = (5.0, 0.1, 0.5),
         hvac_gains: tuple[float, float, float] = (5.0, 0.1, 0.5),
         throttle_gains: tuple[float, float, float] = (1.0, 0.02, 0.0),
     ) -> None:
         self.T_sp = T_setpoint_norm
         self.soc_target = soc_target
+        self.bess_gain = bess_gain
 
-        # Loop 0: regd → BESS (signed, range [-1, 1])
-        self._pid_bess = _PIDLoop(*bess_gains, dt=dt, out_min=-1.0, out_max=1.0)
         # Loop 1: thermal error → pump speed (range [0.15, 1])
         self._pid_pump = _PIDLoop(*pump_gains, dt=dt, out_min=0.15, out_max=1.0)
         # Loop 2: thermal error → HVAC effort (range [0, 1])
@@ -131,7 +134,6 @@ class PIDController:
 
     def reset(self) -> None:
         """Reset all integrators (call between episodes)."""
-        self._pid_bess.reset()
         self._pid_pump.reset()
         self._pid_hvac.reset()
         self._pid_throttle.reset()
@@ -156,22 +158,20 @@ class PIDController:
         soc      = float(obs[_I_SOC])
         regd     = float(obs[_I_REGD])
 
-        # ── Loop 0: BESS tracks regulation signal ────────────────────
-        # Positive regd → grid wants DC to reduce draw → discharge (positive)
-        # Error = regd_signal (we want to match it)
-        bess_dispatch = self._pid_bess.step(regd)
+        # ── BESS: proportional response to regulation signal ─────────
+        # regd > 0 → grid wants DC to reduce draw → discharge (positive)
+        # regd < 0 → grid wants DC to increase draw → charge (negative)
+        bess_dispatch = float(np.clip(self.bess_gain * regd, -1.0, 1.0))
 
-        # SOC guards: override PID output near limits
+        # SOC guards: disable dispatch near limits
         if soc < 0.12 and bess_dispatch > 0:
             bess_dispatch = 0.0
-            self._pid_bess._integral *= 0.5  # wind-down integral
         if soc > 0.93 and bess_dispatch < 0:
             bess_dispatch = 0.0
-            self._pid_bess._integral *= 0.5
 
         # ── Loop 1: Pump controls Zone A temperature ─────────────────
-        # Error = setpoint - actual (positive when too hot → increase pump)
-        pump_error = temp_A_n - self.T_sp  # positive when hot
+        # Error = actual - setpoint (positive when too hot → increase pump)
+        pump_error = temp_A_n - self.T_sp
         pump_speed = self._pid_pump.step(pump_error)
 
         # ── Loop 2: HVAC controls Zone B temperature ─────────────────
@@ -180,7 +180,7 @@ class PIDController:
 
         # ── Loop 3: Throttle bias from SOC recovery ──────────────────
         # When SOC < target → error negative → bias negative → reduce throttle
-        soc_error = self.soc_target - soc
+        soc_error = soc - self.soc_target  # negative when SOC low
         throttle_bias = self._pid_throttle.step(soc_error)
         throttle = float(np.clip(1.0 + throttle_bias, 0.0, 1.0))
 
