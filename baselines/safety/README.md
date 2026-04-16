@@ -324,7 +324,7 @@ This is the flagship method, porting the 3-layer architecture from our SC'26 pap
 
 Where `α=0.5` (gate_alpha) and `β=0.3` (gate_beta) are configurable.
 
-**Safe projection:** `safe_action = sigmoid_bound(raw_action) × gate(concepts)`
+**Action attenuation:** `gated_action = raw_action × gate(concepts)` (applied in `HAC2GShieldWrapper._apply_gate()` before shielding)
 
 **Joint training:** `ConceptAndGateSupervisionCallback` runs every `train_freq` steps:
 1. Sample mini-batch from rollout buffer
@@ -340,7 +340,7 @@ Where `α=0.5` (gate_alpha) and `β=0.3` (gate_beta) are configurable.
 - [ ] `GateSupervisionLoss.compute(gate_values, concept_targets)` returns scalar loss
 - [ ] Gate targets for throttle use `α·max(cooling_demand_A, cooling_demand_B)`
 - [ ] Gate targets for BESS use `β·(1 − bess_headroom)`
-- [ ] `SafeProjectionLayer.forward(raw_action, concepts)` applies sigmoid + gate
+- [ ] `HAC2GShieldWrapper._apply_gate()` multiplies raw action by gate values
 - [ ] `ConceptAndGateSupervisionCallback` jointly trains encoder AND gate
 - [ ] Auxiliary loss = concept_loss × decaying_weight + gate_loss
 
@@ -354,15 +354,16 @@ Where `α=0.5` (gate_alpha) and `β=0.3` (gate_beta) are configurable.
 
 **Shield-in-the-loop training flow:**
 ```
-obs → encoder → concepts → gate(concepts) × sigmoid(raw_action) → shield.filter() → env.step()
-                                                                       ↓
-                                                               if modified: reward -= 0.5
+obs → encoder → concepts → gate(concepts) × raw_action → shield.filter() → env.step()
+                                                               ↓
+                                                       if modified: reward -= 0.5
 ```
 
 **Verification checklist:**
 - [ ] `HAC2GShieldWrapper` applies `SafetyShield.filter()` in `step()`
 - [ ] Shield penalty: `reward -= shield_penalty` when shield modifies action
-- [ ] `info["shield_active"]` tracks whether shield intervened
+- [ ] `info["shield_active"]` is `True` when shield modified the action
+- [ ] `info["gate_applied"]` is `True` when concept gate is active
 - [ ] `info["proof_tree"]` contains serialised proof tree for auditability
 - [ ] Training uses `C2GGatedConceptFeatureExtractor` as policy feature extractor
 - [ ] `ConceptGateSupervisionCallback` trains encoder+gate every `train_freq` steps

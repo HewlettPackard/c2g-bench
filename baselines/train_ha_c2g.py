@@ -125,14 +125,19 @@ class HAC2GShieldWrapper(gym.Wrapper):
         return obs, info
 
     def _apply_gate(self, action: np.ndarray, obs: np.ndarray) -> np.ndarray:
-        """Apply concept-conditioned gate to attenuate action (Layer 2)."""
+        """Apply concept-conditioned gate to attenuate action (Layer 2).
+
+        Device-safe: builds tensors on the same device as the encoder
+        parameters (CPU or CUDA), then brings results back to numpy.
+        """
         if self.concept_encoder is None or self.safety_gate is None:
             return action
         with torch.no_grad():
-            obs_t = torch.FloatTensor(obs).unsqueeze(0)
+            device = next(self.concept_encoder.parameters()).device
+            obs_t = torch.as_tensor(obs, dtype=torch.float32, device=device).unsqueeze(0)
             concepts = self.concept_encoder(obs_t)
             gate = self.safety_gate(concepts)  # (1, action_dim)
-            gate_np = gate.squeeze(0).cpu().numpy()
+            gate_np = gate.squeeze(0).detach().cpu().numpy()
         # Apply gate: a_gated = a_raw * gate
         # For BESS (action 3, ∈ [-1,1]), gate attenuates magnitude
         gated = action.copy()
@@ -158,6 +163,7 @@ class HAC2GShieldWrapper(gym.Wrapper):
 
         info.update(shield_info)
         info["shield_stats"] = self.shield.stats.as_dict()
+        info["shield_active"] = was_modified
         info["gate_applied"] = self.concept_encoder is not None
 
         # Generate proof tree (expensive, only for evaluation)

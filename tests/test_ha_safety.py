@@ -588,33 +588,87 @@ class TestGateBehavioral:
             f"Gate should meaningfully reduce throttle: got {throttle_gate_high:.3f}"
 
     def test_gate_applied_in_wrapper(self):
-        """HAC2GShieldWrapper actually applies gate to actions."""
+        """HAC2GShieldWrapper.step() applies gate to actions in the real runtime path."""
         import torch
         import numpy as np
+        import gymnasium as gym
+        import importlib
+        import sys
         from baselines.safety.concept_bottleneck import C2GConceptEncoder
         from baselines.safety.safe_projection import SafeProjectionGate
 
+        # Import HAC2GShieldWrapper despite hydra dependency at module level
+        # by mocking hydra/omegaconf if not installed
+        for mod_name in ("hydra", "hydra.core", "hydra.core.hydra_config", "omegaconf"):
+            if mod_name not in sys.modules:
+                sys.modules[mod_name] = type(sys)("mock_" + mod_name)
+        if not hasattr(sys.modules["omegaconf"], "DictConfig"):
+            sys.modules["omegaconf"].DictConfig = type("DictConfig", (), {})
+            sys.modules["omegaconf"].OmegaConf = type("OmegaConf", (), {})
+        if not hasattr(sys.modules["hydra"], "main"):
+            sys.modules["hydra"].main = lambda **kw: (lambda f: f)
+        if not hasattr(sys.modules["hydra.core.hydra_config"], "HydraConfig"):
+            sys.modules["hydra.core.hydra_config"].HydraConfig = type("HydraConfig", (), {})
+
+        from baselines.train_ha_c2g import HAC2GShieldWrapper
+
+        # Build a tiny 4-action dummy env with 17-D obs
+        base_env = gym.make("MountainCarContinuous-v0")
+        # Monkey-patch obs/action spaces to match C2G dimensions
+        base_env.observation_space = gym.spaces.Box(
+            low=-10, high=10, shape=(17,), dtype=np.float32)
+        base_env.action_space = gym.spaces.Box(
+            low=-1, high=1, shape=(4,), dtype=np.float32)
+        # Monkey-patch step/reset to return correct shapes
+        _original_reset = base_env.reset
+        _original_step = base_env.step
+        def _fake_reset(**kw):
+            _original_reset(**kw)
+            obs = np.random.randn(17).astype(np.float32)
+            return obs, {}
+        def _fake_step(action):
+            # Record what action the env actually received
+            _fake_step.last_action = action.copy()
+            obs = np.random.randn(17).astype(np.float32)
+            return obs, 1.0, False, False, {}
+        base_env.reset = _fake_reset
+        base_env.step = _fake_step
+
+        # Create encoder + gate with init_bias=0 → gate ≈ 0.5
         encoder = C2GConceptEncoder(obs_dim=17, n_concepts=10)
         gate = SafeProjectionGate(concept_dim=10, action_dim=4, init_bias=0.0)
-        # With init_bias=0 → sigmoid(0) = 0.5, so gate ≈ 0.5 for all actions
 
-        # Create a mock env
-        import gymnasium as gym
-        mock_env = gym.make("MountainCarContinuous-v0")
+        # Build a passthrough mock shield
+        class PassthroughShield:
+            def reset(self): pass
+            def filter(self, action, obs):
+                self.received_action = action.copy()
+                return action, False, {}
+            class stats:
+                @staticmethod
+                def as_dict(): return {}
 
-        # We can't import HAC2GShieldWrapper directly (it's in train script),
-        # so test the _apply_gate logic directly
-        obs = np.random.randn(17).astype(np.float32)
-        action = np.array([0.8, 0.7, 0.6, 0.5], dtype=np.float32)
+        mock_shield = PassthroughShield()
 
-        with torch.no_grad():
-            obs_t = torch.FloatTensor(obs).unsqueeze(0)
-            concepts = encoder(obs_t)
-            gate_vals = gate(concepts)
-            gate_np = gate_vals.squeeze(0).cpu().numpy()
+        wrapper = HAC2GShieldWrapper(
+            base_env,
+            shield=mock_shield,
+            shield_penalty=0.5,
+            concept_encoder=encoder,
+            safety_gate=gate,
+        )
+        wrapper.reset()
 
-        gated = action * gate_np
-        # With bias=0 → gate ≈ 0.5, so gated should be roughly half
-        assert np.all(gated < action), \
-            f"Gate should attenuate actions: action={action}, gated={gated}"
-        assert np.allclose(gated, action * gate_np, atol=1e-6)
+        raw_action = np.array([0.8, 0.7, 0.6, 0.5], dtype=np.float32)
+        obs, reward, term, trunc, info = wrapper.step(raw_action)
+
+        # The shield should have received the GATED action, not the raw one
+        received = mock_shield.received_action
+        assert not np.allclose(received, raw_action, atol=0.01), \
+            f"Shield received raw action unchanged — gate not applied! " \
+            f"raw={raw_action}, received={received}"
+        # With init_bias=0 → gate ≈ 0.5, so received ≈ raw * 0.5
+        assert np.all(np.abs(received) < np.abs(raw_action) + 1e-6), \
+            "Gated action magnitude should be ≤ raw action magnitude"
+        assert info["gate_applied"] is True
+        assert "shield_active" in info
