@@ -48,6 +48,7 @@ import numpy as np
 from tqdm import tqdm
 
 from c2g_env import C2GFastEnv
+from baselines.metrics_callback import C2GTransitionLoggerCallback
 from baselines.safety_shield import SafetyShield
 from baselines.safety.cbf_shield import CBFShield
 from baselines.safety.hj_shield import HJShield
@@ -58,6 +59,13 @@ T_WARN_NORM = 33.0 / 35.0
 T_SAFE = 35.0
 SOC_MIN = 0.10
 SOC_MAX = 0.95
+_VALID_ACTIONS = ("throttle_batch", "pump_speed_A", "hvac_effort", "bess_dispatch")
+_ACTION_BOUNDS: dict[str, tuple[float, float]] = {
+    "throttle_batch": (0.0, 1.0),
+    "pump_speed_A": (0.0, 1.0),
+    "hvac_effort": (0.0, 1.0),
+    "bess_dispatch": (-1.0, 1.0),
+}
 
 # Obs indices
 _I_TEMP_A   = 0
@@ -65,6 +73,43 @@ _I_TEMP_B   = 1
 _I_SOC      = 2
 _I_FREQ_DEV = 14
 _I_VPCC     = 15
+
+
+def _parse_fixed_action_args(values: list[str] | None) -> dict[str, float]:
+    if not values:
+        return {}
+
+    fixed_action_values: dict[str, float] = {}
+    for item in values:
+        if "=" not in item:
+            raise ValueError(
+                f"Invalid --fixed-action '{item}'. Expected format action=value."
+            )
+        action_name, raw_value = item.split("=", 1)
+        action_name = action_name.strip()
+        if action_name not in _ACTION_BOUNDS:
+            valid = ", ".join(_VALID_ACTIONS)
+            raise ValueError(
+                f"Invalid action '{action_name}' in --fixed-action. Valid actions: {valid}"
+            )
+        try:
+            value = float(raw_value)
+        except ValueError as exc:
+            raise ValueError(
+                f"Invalid fixed value for action '{action_name}': {raw_value}"
+            ) from exc
+        if not np.isfinite(value):
+            raise ValueError(
+                f"Invalid fixed value for action '{action_name}': {raw_value}. Value must be finite."
+            )
+        lo, hi = _ACTION_BOUNDS[action_name]
+        if value < lo or value > hi:
+            raise ValueError(
+                f"Invalid fixed value for action '{action_name}': {value}. "
+                f"Expected range [{lo}, {hi}]."
+            )
+        fixed_action_values[action_name] = value
+    return fixed_action_values
 
 
 # ── Shield wrappers for evaluation ────────────────────────────────
@@ -212,12 +257,35 @@ def load_agent(agent_name: str, scenario: str, seed: int, model_dir: str | None)
 # ── Episode runner ────────────────────────────────────────────────
 
 def run_ha_episode(
-    agent, shield_eval: ShieldEvaluator, scenario: str, seed: int
+    agent,
+    shield_eval: ShieldEvaluator,
+    scenario: str,
+    seed: int,
+    agent_name: str,
+    episode_number: int,
+    record_transitions: bool,
+    unavailable_actions: tuple[str, ...] = (),
+    fixed_action_values: dict[str, float] | None = None,
 ) -> dict[str, float]:
     """Run one episode and return all 11 HA metrics."""
-    env = C2GFastEnv(scenario=scenario)
+    env = C2GFastEnv(
+        scenario=scenario,
+        unavailable_actions=unavailable_actions,
+        fixed_action_values=fixed_action_values,
+    )
     obs, _ = env.reset(seed=seed)
     shield_eval.reset()
+
+    transition_logger = None
+    if record_transitions:
+        transition_logger = C2GTransitionLoggerCallback(
+            output_dir="runs",
+            algorithm_name=agent_name,
+            scenario_name=scenario,
+            agent_type="ha",
+            episode_number=episode_number,
+            verbose=0,
+        )
 
     rewards: list[float] = []
     tracking_errs: list[float] = []
@@ -232,6 +300,7 @@ def run_ha_episode(
     done = False
     n_steps = 0
     while not done:
+        state = obs.copy()
         action, _ = agent.predict(obs, deterministic=True)
 
         # Apply safety shield
@@ -242,6 +311,16 @@ def run_ha_episode(
         obs, reward, terminated, truncated, info = env.step(safe_action)
         done = terminated or truncated
         n_steps += 1
+
+        if transition_logger is not None:
+            transition_logger.record_transition(
+                state=state,
+                action=safe_action,
+                observation=obs,
+                reward=float(reward),
+                done=done,
+                reward_components=None,
+            )
 
         rewards.append(float(reward))
 
@@ -269,6 +348,9 @@ def run_ha_episode(
         # BESS
         if bess_init_age is None:
             bess_init_age = float(info.get("bess_age_frac", 0.0))
+
+    if transition_logger is not None:
+        transition_logger.close()
 
     bess_final_age = float(info.get("bess_age_frac", bess_init_age or 0.0))
     bess_degradation = (bess_final_age - (bess_init_age or 0.0)) * 1e4
@@ -314,8 +396,14 @@ def benchmark(
     n_episodes: int,
     seed_start: int,
     model_dir: str | None,
+    record_transitions: bool,
+    unavailable_actions: tuple[str, ...],
+    fixed_action_values: dict[str, float] | None,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
+
+    if record_transitions:
+        Path("runs").mkdir(parents=True, exist_ok=True)
 
     for scenario in tqdm(scenarios, desc="Scenarios"):
         for agent_name in tqdm(agents, desc="Agents", leave=False):
@@ -326,8 +414,17 @@ def benchmark(
             ep_metrics: list[dict] = []
             t0 = time.perf_counter()
             for ep in range(n_episodes):
-                m = run_ha_episode(agent, shield_eval, scenario,
-                                   seed=seed_start + ep)
+                m = run_ha_episode(
+                    agent,
+                    shield_eval,
+                    scenario,
+                    seed=seed_start + ep,
+                    agent_name=agent_name,
+                    episode_number=ep,
+                    record_transitions=record_transitions,
+                    unavailable_actions=unavailable_actions,
+                    fixed_action_values=fixed_action_values,
+                )
                 ep_metrics.append(m)
             elapsed = time.perf_counter() - t0
 
@@ -389,7 +486,7 @@ def save_csv(rows: list[dict[str, Any]], path: Path) -> None:
         writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
         writer.writeheader()
         writer.writerows(rows)
-    print(f"\n[HA-Bench] Results saved → {path}")
+    print(f"\n[HA-Bench] Results saved -> {path}")
 
 
 if __name__ == "__main__":
@@ -405,14 +502,46 @@ if __name__ == "__main__":
     parser.add_argument("--seed", type=int, default=100)
     parser.add_argument("--model_dir", default=None)
     parser.add_argument(
+        "--record_transitions",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Enable/disable per-step transition logging under runs/<algo>_<scenario>_ha/episode*.csv",
+    )
+    parser.add_argument(
+        "--disable-actions", "--disabled_actions",
+        nargs="*",
+        default=None,
+        choices=_VALID_ACTIONS,
+        help="Low-level actions to mark unavailable: throttle_batch pump_speed_A hvac_effort bess_dispatch",
+    )
+    parser.add_argument(
+        "--fixed-action",
+        action="append",
+        default=[],
+        help="Optional fixed value for a disabled action, e.g. --fixed-action hvac_effort=0.8",
+    )
+    parser.add_argument(
         "--output", default="evaluation/ha_results.csv")
     args = parser.parse_args()
+
+    if args.disable_actions is not None and len(args.disable_actions) == 0:
+        parser.error("--disable-actions/--disabled_actions was provided but no actions were listed.")
+
+    try:
+        fixed_action_values = _parse_fixed_action_args(args.fixed_action)
+    except ValueError as exc:
+        parser.error(str(exc))
+
+    unavailable_actions = tuple(args.disable_actions or ())
 
     rows = benchmark(
         agents=args.agents,
         scenarios=args.scenarios,
         n_episodes=args.n_episodes,
         seed_start=args.seed,
-        model_dir=args.model_dir)
+        model_dir=args.model_dir,
+        record_transitions=args.record_transitions,
+        unavailable_actions=unavailable_actions,
+        fixed_action_values=fixed_action_values)
     print_results_table(rows)
     save_csv(rows, Path(args.output))

@@ -25,21 +25,20 @@ class TestDataLogging:
                     rows = list(reader)
 
                 fieldnames = reader.fieldnames or []
-                s_idxs = sorted(
-                    int(name.split("_", 1)[1])
-                    for name in fieldnames
-                    if name.startswith("s_") and name.split("_", 1)[1].isdigit()
-                )
+                
+                # Extract state columns with semantic names (s_temp_A_norm, s_bess_soc, etc.)
+                s_cols = sorted([name for name in fieldnames if name.startswith("s_")])
 
                 # For every consecutive pair (prev_row, curr_row) from index 1 to
                 # the last row: curr_row state must equal prev_row observation.
                 for row_idx, (prev_row, curr_row) in enumerate(zip(rows, rows[1:]), start=1):
-                    for i in s_idxs:
-                        s_key = f"s_{i}"
-                        o_key = f"o_{i}"
-                        if o_key not in fieldnames:
-                            continue
-                        assert float(curr_row[s_key]) == pytest.approx(float(prev_row[o_key]), abs=1e-6), (
-                            f"Transition mismatch in {csv_path.name} at row {row_idx}, dim {i}: "
-                            f"{s_key}={curr_row[s_key]} vs prev {o_key}={prev_row[o_key]}"
+                    for s_col in s_cols:
+                        o_col = s_col.replace("s_", "o_", 1)
+                        
+                        if o_col not in fieldnames:
+                            raise Exception(f"Expected observation column {o_col} corresponding to state column {s_col} not found in {csv_path.name}")
+                        
+                        assert float(curr_row[s_col]) == pytest.approx(float(prev_row[o_col]), abs=1e-6), (
+                            f"Transition mismatch in {csv_path.name} at row {row_idx}, {s_col}: "
+                            f"{s_col}={curr_row[s_col]} vs prev {o_col}={prev_row[o_col]}"
                         )
