@@ -46,6 +46,9 @@ TIER_COLOURS = {
     "reward_shaping": "#e377c2",
     # Tier 3: neuro-symbolic (gold)
     "ha_c2g":    "#bcbd22",
+    # Tier 3 ablations (teal family)
+    "cbm_only":  "#66c2a5",
+    "cbm_gate":  "#fc8d62",
     # Standard baselines (grey family)
     "ppo":       "#7f7f7f",
     "sac":       "#aec7e8",
@@ -64,6 +67,8 @@ TIER_LABELS = {
     "cpo": "CPO",
     "reward_shaping": "Shield-RS",
     "ha_c2g": "HA-C2G",
+    "cbm_only": "CBM-Only",
+    "cbm_gate": "CBM+Gate",
     "ppo": "PPO",
     "sac": "SAC",
     "random": "Random",

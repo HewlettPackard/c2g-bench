@@ -476,3 +476,61 @@ class TestCrossShieldConsistency:
     def test_has_reset(self, shield):
         assert hasattr(shield, "reset")
         shield.reset()  # should not raise
+
+
+# =========================================================================
+# I. Ablation Consistency Tests
+# =========================================================================
+
+@pytest.mark.skipif(not TORCH_AVAILABLE, reason="torch not installed")
+class TestAblations:
+    """Verify CBM-Only and CBM+Gate feature extractors produce correct dims."""
+
+    def test_cbm_only_feature_extractor(self):
+        """CBM-Only uses C2GConceptFeatureExtractor → output dim = obs + concepts."""
+        from baselines.safety.concept_bottleneck import C2GConceptFeatureExtractor
+        import gymnasium as gym
+        obs_space = gym.spaces.Box(low=-10, high=10, shape=(17,))
+        fe = C2GConceptFeatureExtractor(obs_space, n_concepts=10)
+        obs = torch.randn(4, 17)
+        features = fe(obs)
+        assert features.shape == (4, 27)  # 17 obs + 10 concepts
+
+    def test_cbm_gate_feature_extractor(self):
+        """CBM+Gate uses C2GGatedConceptFeatureExtractor → obs + concepts + gate."""
+        from baselines.safety.concept_bottleneck import C2GGatedConceptFeatureExtractor
+        import gymnasium as gym
+        obs_space = gym.spaces.Box(low=-10, high=10, shape=(17,))
+        fe = C2GGatedConceptFeatureExtractor(obs_space, n_concepts=10, action_dim=4)
+        obs = torch.randn(4, 17)
+        features = fe(obs)
+        assert features.shape == (4, 31)  # 17 obs + 10 concepts + 4 gate
+
+    def test_cbm_only_no_gate(self):
+        """CBM-Only feature extractor should NOT have a safety_gate attribute."""
+        from baselines.safety.concept_bottleneck import C2GConceptFeatureExtractor
+        import gymnasium as gym
+        obs_space = gym.spaces.Box(low=-10, high=10, shape=(17,))
+        fe = C2GConceptFeatureExtractor(obs_space, n_concepts=10)
+        assert not hasattr(fe, 'safety_gate')
+
+    def test_cbm_gate_has_gate(self):
+        """CBM+Gate feature extractor should have a safety_gate attribute."""
+        from baselines.safety.concept_bottleneck import C2GGatedConceptFeatureExtractor
+        import gymnasium as gym
+        obs_space = gym.spaces.Box(low=-10, high=10, shape=(17,))
+        fe = C2GGatedConceptFeatureExtractor(obs_space, n_concepts=10, action_dim=4)
+        assert hasattr(fe, 'safety_gate')
+
+    def test_ablation_ladder_output_dims(self):
+        """Verify output dim ladder: CBM-Only(27) < CBM+Gate(31)."""
+        from baselines.safety.concept_bottleneck import (
+            C2GConceptFeatureExtractor, C2GGatedConceptFeatureExtractor,
+        )
+        import gymnasium as gym
+        obs_space = gym.spaces.Box(low=-10, high=10, shape=(17,))
+        fe_cbm = C2GConceptFeatureExtractor(obs_space, n_concepts=10)
+        fe_gate = C2GGatedConceptFeatureExtractor(obs_space, n_concepts=10, action_dim=4)
+        assert fe_cbm.features_dim == 27
+        assert fe_gate.features_dim == 31
+        assert fe_cbm.features_dim < fe_gate.features_dim

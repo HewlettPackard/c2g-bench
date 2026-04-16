@@ -786,9 +786,75 @@ done
 wait
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Phase 18: HA Benchmark Evaluation (all shields × all scenarios)
+# Phase 18: CBM-Only ablation training (Tier 3 Ablation)
 # ══════════════════════════════════════════════════════════════════════════════
-echo -e "\n▸ Phase 18: HA Benchmark evaluation (11 metrics) …"
+echo -e "\n▸ Phase 18: CBM-Only ablation training (300k steps × 12 runs) …"
+for scenario in "${SCENARIOS[@]}"; do
+    for seed in "${SEEDS[@]}"; do
+        if $DRY_RUN; then
+            echo "  [dry-run] train CBM-Only $scenario seed=$seed"
+            continue
+        fi
+        wait_for_slots
+        (
+            echo "[train] CBM-Only / ${scenario} / seed=${seed}"
+            OUT_DIR="outputs/cbm_only_${scenario}/seed_${seed}"
+            $PYTHON baselines/train_cbm_only.py \
+                algo=cbm_only \
+                scenario="${scenario}" \
+                experiment.seed="${seed}" \
+                hydra.run.dir="${OUT_DIR}/\${now:%Y-%m-%d_%H-%M-%S}" \
+                2>&1 | tail -5
+
+            LATEST=$(ls -td "${OUT_DIR}"/*/final_model.zip 2>/dev/null | head -1)
+            if [[ -n "$LATEST" ]]; then
+                evaluate "cbm_only" "$scenario" "$seed" "${LATEST%.zip}"
+            else
+                echo "  [WARN] CBM-Only ${scenario}/seed_${seed}: no model found"
+            fi
+        ) &
+        NJOBS=$((NJOBS + 1))
+    done
+done
+wait
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Phase 19: CBM+Gate ablation training (Tier 3 Ablation)
+# ══════════════════════════════════════════════════════════════════════════════
+echo -e "\n▸ Phase 19: CBM+Gate ablation training (300k steps × 12 runs) …"
+for scenario in "${SCENARIOS[@]}"; do
+    for seed in "${SEEDS[@]}"; do
+        if $DRY_RUN; then
+            echo "  [dry-run] train CBM+Gate $scenario seed=$seed"
+            continue
+        fi
+        wait_for_slots
+        (
+            echo "[train] CBM+Gate / ${scenario} / seed=${seed}"
+            OUT_DIR="outputs/cbm_gate_${scenario}/seed_${seed}"
+            $PYTHON baselines/train_cbm_gate.py \
+                algo=cbm_gate \
+                scenario="${scenario}" \
+                experiment.seed="${seed}" \
+                hydra.run.dir="${OUT_DIR}/\${now:%Y-%m-%d_%H-%M-%S}" \
+                2>&1 | tail -5
+
+            LATEST=$(ls -td "${OUT_DIR}"/*/final_model.zip 2>/dev/null | head -1)
+            if [[ -n "$LATEST" ]]; then
+                evaluate "cbm_gate" "$scenario" "$seed" "${LATEST%.zip}"
+            else
+                echo "  [WARN] CBM+Gate ${scenario}/seed_${seed}: no model found"
+            fi
+        ) &
+        NJOBS=$((NJOBS + 1))
+    done
+done
+wait
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Phase 20: HA Benchmark Evaluation (all shields × all scenarios)
+# ══════════════════════════════════════════════════════════════════════════════
+echo -e "\n▸ Phase 20: HA Benchmark evaluation (11 metrics) …"
 if $DRY_RUN; then
     echo "  [dry-run] python evaluation/run_ha_benchmark.py --agents all --n_episodes 5"
 else
@@ -799,9 +865,9 @@ else
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Phase 19: Generate summary table
+# Phase 21: Generate summary table
 # ══════════════════════════════════════════════════════════════════════════════
-echo -e "\n▸ Phase 19: Generating results summary …"
+echo -e "\n▸ Phase 21: Generating results summary …"
 $PYTHON - << 'PYEOF'
 import pandas as pd
 from pathlib import Path
@@ -838,7 +904,7 @@ if csv_macro.exists():
 # LaTeX-ready table
 print("═══ LaTeX table rows (paste into paper) ═══")
 for scenario in ["default", "scenario_a", "scenario_b", "scenario_c"]:
-    for algo in ["random", "bang_bang", "pid", "rule_based", "mpc_fast", "cmaes", "pso", "ppo", "sac", "ppo_lag", "cbf_ppo", "hj_ppo", "mpcsf_ppo", "cpo", "reward_shaping", "ha_c2g"]:
+    for algo in ["random", "bang_bang", "pid", "rule_based", "mpc_fast", "cmaes", "pso", "ppo", "sac", "ppo_lag", "cbf_ppo", "hj_ppo", "mpcsf_ppo", "cpo", "reward_shaping", "cbm_only", "cbm_gate", "ha_c2g"]:
         sub = df[(df.scenario == scenario) & (df.algo == algo)]
         if sub.empty:
             continue

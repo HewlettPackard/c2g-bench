@@ -427,6 +427,53 @@ Metrics 7–11 (bold) are new HA-specific metrics not in the base C2G-Bench.
 
 ---
 
+## Tier 3 Ablations
+
+These ablation baselines isolate the contribution of each layer in the HA-C2G stack.  They are essential for NeurIPS reviewers to assess the neuro-symbolic claim.
+
+| Ablation | Layers | Safety Guarantee | Research Question |
+|----------|--------|-----------------|-------------------|
+| `cbm_only` | CBM only | None | Does interpretability alone improve safety? |
+| `cbm_gate` | CBM + Trained Gate | Soft (learned) | Does the trained gate reduce violations without a hard shield? |
+| `ha_c2g` | CBM + Gate + Shield | Hard (Simplex) | Full stack — does the combination outperform each part? |
+
+### A.1  CBM-Only (Concept Bottleneck without Gate or Shield)
+
+| | |
+|---|---|
+| **File** | `baselines/train_cbm_only.py` |
+| **Config** | `conf/algo/cbm_only.yaml` |
+| **Sweep phase** | Phase 18 |
+
+**Description:**  Standard PPO with a concept bottleneck feature extractor.  The policy receives `[obs; concepts]` (dim=27) as features, where concepts are predicted by a supervised neural encoder.  No gate attenuates actions; no shield filters them.  This tests whether interpretable features alone help the policy learn safer behaviour.
+
+**Verification checklist:**
+- [ ] Uses `C2GConceptFeatureExtractor` (NOT gated), output dim = 27
+- [ ] `ConceptSupervisionCallback` trains encoder with decaying MSE loss
+- [ ] No `SafetyShield` wrapper, no `HAC2GShieldWrapper`
+- [ ] No `SafeProjectionGate` anywhere in the pipeline
+- [ ] Same PPO hyperparameters as `ha_c2g` for fair comparison
+
+### A.2  CBM+Gate (Concept Bottleneck + Trained Gate, no Shield)
+
+| | |
+|---|---|
+| **File** | `baselines/train_cbm_gate.py` |
+| **Config** | `conf/algo/cbm_gate.yaml` |
+| **Sweep phase** | Phase 19 |
+
+**Description:**  PPO with concept bottleneck AND the actively trained safe projection gate, but NO physics shield.  The gate attenuates actions based on safety concepts (throttle reduced when cooling demand is high, BESS restricted when headroom is low).  This tests whether the learned gate alone can statistically reduce violations.
+
+**Verification checklist:**
+- [ ] Uses `C2GGatedConceptFeatureExtractor`, output dim = 31
+- [ ] `ConceptGateSupervisionCallback` jointly trains encoder AND gate
+- [ ] Gate targets match HA-C2G: throttle uses α·cooling_demand, BESS uses β·(1−headroom)
+- [ ] No `SafetyShield` wrapper, no `HAC2GShieldWrapper`
+- [ ] No shield penalty in reward
+- [ ] Same PPO hyperparameters as `ha_c2g` for fair comparison
+
+---
+
 ## File Map
 
 ```
@@ -449,6 +496,8 @@ baselines/
 ├── train_cpo.py                     # Tier 2: CPO training
 ├── train_shield_reward_shaping.py   # Tier 2: Shield reward shaping
 └── train_ha_c2g.py                  # Tier 3: HA-C2G full stack
+└── train_cbm_only.py                # Tier 3 Ablation: CBM only
+└── train_cbm_gate.py                # Tier 3 Ablation: CBM + gate (no shield)
 
 conf/algo/
 ├── cbf_ppo.yaml

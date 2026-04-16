@@ -46,6 +46,10 @@ High-Assurance Agents
   cpo          — Constrained Policy Optimisation
   reward_shaping — PPO w/ shield-penalty reward shaping
   ha_c2g       — HA-C2G (CBM + safe projection + physics shield)
+
+Tier 3 Ablations
+  cbm_only     — PPO + concept bottleneck (no gate, no shield)
+  cbm_gate     — PPO + concept bottleneck + trained gate (no shield)
 """
 from __future__ import annotations
 import argparse, csv, time
@@ -384,7 +388,7 @@ def benchmark(
                 except FileNotFoundError as exc:
                     print(f"    SKIP: {exc}")
                     continue
-            elif agent_name in ("cpo", "reward_shaping", "ha_c2g"):
+            elif agent_name in ("cpo", "reward_shaping", "ha_c2g", "cbm_only", "cbm_gate"):
                 try:
                     agent = load_sb3_agent(agent_name, scenario, seed_start, model_dir)
                 except FileNotFoundError as exc:
@@ -487,7 +491,8 @@ if __name__ == "__main__":
         default=["rule_based", "bang_bang", "pid", "random"],
         help="Agents to evaluate: rule_based rule_macro bang_bang pid mpc_fast "
              "mpc_macro milp ppo sac ppo_lag cmaes pso random "
-             "simplex_ppo cbf_ppo hj_ppo mpcsf_ppo cpo reward_shaping ha_c2g",
+             "simplex_ppo cbf_ppo hj_ppo mpcsf_ppo cpo reward_shaping ha_c2g "
+             "cbm_only cbm_gate",
     )
     parser.add_argument(
         "--scenarios", nargs="+",
