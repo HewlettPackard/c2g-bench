@@ -672,3 +672,180 @@ class TestGateBehavioral:
             "Gated action magnitude should be ≤ raw action magnitude"
         assert info["gate_applied"] is True
         assert "shield_active" in info
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Statistical Analysis Tests
+# ═══════════════════════════════════════════════════════════════════
+
+class TestStatisticalAnalysis:
+    """Tests for multi-seed CI and significance infrastructure."""
+
+    def test_bootstrap_ci_basic(self):
+        from evaluation.statistical_analysis import bootstrap_ci
+        values = np.array([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0])
+        lo, hi = bootstrap_ci(values, confidence=0.95)
+        mean = np.mean(values)
+        assert lo < mean < hi, f"CI should bracket mean: [{lo}, {hi}], mean={mean}"
+        assert hi - lo > 0.5, "CI should have non-trivial width"
+        assert hi - lo < 8.0, "CI should not be wider than the range"
+
+    def test_bootstrap_ci_single_value(self):
+        from evaluation.statistical_analysis import bootstrap_ci
+        lo, hi = bootstrap_ci(np.array([42.0]))
+        assert lo == 42.0 and hi == 42.0
+
+    def test_summarise_metric(self):
+        from evaluation.statistical_analysis import summarise_metric
+        values = np.random.RandomState(42).randn(20) * 0.1 + 0.95
+        s = summarise_metric(values, "survival_rate", "ha_c2g", "default")
+        assert s.n_seeds == 20
+        assert s.ci_lower < s.mean < s.ci_upper
+        assert s.iqr_lower <= s.median <= s.iqr_upper
+        assert s.min_val <= s.mean <= s.max_val
+
+    def test_cohens_d(self):
+        from evaluation.statistical_analysis import cohens_d, effect_label
+        a = np.array([10.0, 11.0, 12.0, 10.5, 11.5])
+        b = np.array([5.0, 6.0, 5.5, 6.5, 5.5])
+        d = cohens_d(a, b)
+        assert d > 2.0, f"Large effect expected, got d={d}"
+        assert effect_label(d) == "large"
+        # Small effect
+        c = np.array([10.0, 10.1, 10.2, 10.0, 10.1])
+        d_small = cohens_d(a, c)
+        assert abs(d_small) < abs(d)
+
+    def test_pairwise_test(self):
+        from evaluation.statistical_analysis import pairwise_test
+        np.random.seed(42)
+        a = np.random.randn(20) + 5.0  # clearly different
+        b = np.random.randn(20) + 0.0
+        comp = pairwise_test(a, b, "reward", "default", "agent_a", "agent_b")
+        assert comp.significant, f"Should be significant, p={comp.p_value}"
+        assert comp.p_value < 0.001
+        assert comp.effect_label == "large"
+
+    def test_pairwise_test_not_significant(self):
+        from evaluation.statistical_analysis import pairwise_test
+        np.random.seed(42)
+        a = np.random.randn(10) + 5.0
+        b = np.random.randn(10) + 5.0  # same distribution
+        comp = pairwise_test(a, b, "reward", "default", "agent_a", "agent_b")
+        # May or may not be significant, but p should not be tiny
+        assert comp.p_value > 0.001
+
+    def test_latex_table_generation(self):
+        from evaluation.statistical_analysis import (
+            summarise_metric, generate_latex_table,
+        )
+        sums = []
+        for agent in ["ha_c2g", "cbm_only", "random"]:
+            vals = np.random.RandomState(hash(agent) % 2**31).randn(10) + 0.5
+            s = summarise_metric(vals, "mean_reward", agent, "default")
+            sums.append(s)
+        latex = generate_latex_table(sums, metrics=["mean_reward"], scenario="default")
+        assert "\\begin{table}" in latex
+        assert "\\end{table}" in latex
+        assert "HA-C2G" in latex
+        assert "\\pm" in latex
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Failure Analysis Tests
+# ═══════════════════════════════════════════════════════════════════
+
+class TestFailureAnalysis:
+    """Tests for failure-case analysis infrastructure."""
+
+    def test_per_constraint_margins(self):
+        from evaluation.failure_analysis import compute_per_constraint_margins
+        obs = np.zeros(17, dtype=np.float32)
+        obs[0] = 30.0 / 35.0  # T_A = 30°C → margin = 5°C
+        obs[1] = 34.0 / 35.0  # T_B = 34°C → margin = 1°C
+        obs[2] = 0.5           # SOC = 0.5
+        obs[14] = 0.0          # freq_dev = 0
+        obs[15] = 1.0          # v_pcc = 1.0 pu
+        margins = compute_per_constraint_margins(obs)
+        assert margins["C1:T_A<35"] == pytest.approx(5.0, abs=0.1)
+        assert margins["C2:T_B<35"] == pytest.approx(1.0, abs=0.1)
+        assert margins["C3:SOC_lo"] > 0
+        assert margins["C5:voltage"] > 0
+
+    def test_identify_violations(self):
+        from evaluation.failure_analysis import identify_violations
+        margins = {"C1:T_A<35": 2.0, "C2:T_B<35": -0.5, "C3:SOC_lo": 0.3,
+                   "C3:SOC_hi": 0.4, "C4:freq": -0.1, "C5:voltage": 0.05}
+        viols = identify_violations(margins)
+        assert "C2:T_B<35" in viols
+        assert "C4:freq" in viols
+        assert "C1:T_A<35" not in viols
+
+    def test_closest_constraint(self):
+        from evaluation.failure_analysis import closest_constraint
+        margins = {"C1:T_A<35": 2.0, "C2:T_B<35": 0.1, "C5:voltage": 0.5}
+        name, val = closest_constraint(margins)
+        assert name == "C2:T_B<35"
+        assert val == pytest.approx(0.1)
+
+    def test_episode_trace_properties(self):
+        from evaluation.failure_analysis import (
+            EpisodeTrace, ConstraintViolation,
+        )
+        trace = EpisodeTrace(
+            agent="test", scenario="default", seed=42,
+            total_reward=100.0, episode_length=288, survived=True,
+        )
+        trace.violations = [
+            ConstraintViolation(10, "C1:T_A<35", -0.5, [0]*17),
+            ConstraintViolation(20, "C2:T_B<35", -0.3, [0]*17),
+            ConstraintViolation(30, "C1:T_A<35", -0.1, [0]*17),
+        ]
+        trace.margin_trajectory = [1.0, 0.5, -0.5, -0.3, 0.2]
+        assert trace.n_violations == 3
+        assert trace.violation_rate == pytest.approx(3 / 288)
+        assert trace.worst_margin == -0.5
+        assert trace.violated_constraints == {"C1:T_A<35", "C2:T_B<35"}
+        assert trace.first_violation_step == 10
+
+    def test_build_failure_profile(self):
+        from evaluation.failure_analysis import (
+            EpisodeTrace, ConstraintViolation, ShieldIntervention,
+            build_failure_profile, CONSTRAINT_NAMES,
+        )
+        traces = []
+        for seed in range(5):
+            t = EpisodeTrace("agent", "default", seed, 100.0, 288, True)
+            t.margin_trajectory = [1.0, 0.5, 0.1]
+            t.per_constraint_margins = {c: [1.0] for c in CONSTRAINT_NAMES}
+            if seed % 2 == 0:
+                t.violations.append(
+                    ConstraintViolation(50, "C1:T_A<35", -0.1, [0]*17))
+            t.interventions.append(
+                ShieldIntervention(10, [0.5]*4, [0.4]*4, 0.1, "C1:T_A<35"))
+            traces.append(t)
+        profile = build_failure_profile(traces)
+        assert profile.n_seeds == 5
+        assert profile.total_violations == 3  # seeds 0, 2, 4
+        assert profile.total_interventions == 5
+        assert profile.per_constraint_violation_counts["C1:T_A<35"] == 3
+        assert profile.survival_rate == 1.0
+
+    def test_comparative_failures(self):
+        from evaluation.failure_analysis import (
+            EpisodeTrace, ConstraintViolation, find_comparative_failures,
+        )
+        # Agent A fails on seed 0, agent B doesn't
+        ta = EpisodeTrace("A", "default", 0, 90.0, 288, True)
+        ta.violations = [ConstraintViolation(10, "C1:T_A<35", -0.2, [0]*17)]
+        ta.margin_trajectory = [-0.2]
+
+        tb = EpisodeTrace("B", "default", 0, 95.0, 288, True)
+        tb.violations = []
+        tb.margin_trajectory = [0.5]
+
+        cfs = find_comparative_failures([ta], [tb], "A", "B")
+        assert len(cfs) == 1
+        assert cfs[0].failing_agent == "A"
+        assert cfs[0].succeeding_agent == "B"
+        assert "C1:T_A<35" in cfs[0].constraints_only_failing_violates

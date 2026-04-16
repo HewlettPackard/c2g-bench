@@ -412,16 +412,38 @@ if __name__ == "__main__":
         choices=SCENARIOS)
     parser.add_argument("--n_episodes", type=int, default=5)
     parser.add_argument("--seed", type=int, default=100)
+    parser.add_argument("--n_seeds", type=int, default=1,
+                        help="Number of independent seeds. If >1, runs "
+                             "n_episodes per seed and saves per-seed rows "
+                             "for statistical analysis.")
     parser.add_argument("--model_dir", default=None)
     parser.add_argument(
         "--output", default="evaluation/ha_results.csv")
     args = parser.parse_args()
 
-    rows = benchmark(
-        agents=args.agents,
-        scenarios=args.scenarios,
-        n_episodes=args.n_episodes,
-        seed_start=args.seed,
-        model_dir=args.model_dir)
-    print_results_table(rows)
-    save_csv(rows, Path(args.output))
+    if args.n_seeds > 1:
+        # Multi-seed mode: run full benchmark per seed, tag each row
+        all_rows = []
+        for s_idx in range(args.n_seeds):
+            seed = args.seed + s_idx * 1000
+            print(f"\n=== Seed {s_idx+1}/{args.n_seeds} (seed={seed}) ===")
+            rows = benchmark(
+                agents=args.agents,
+                scenarios=args.scenarios,
+                n_episodes=args.n_episodes,
+                seed_start=seed,
+                model_dir=args.model_dir)
+            for r in rows:
+                r["seed"] = seed
+            all_rows.extend(rows)
+        print_results_table(all_rows)
+        save_csv(all_rows, Path(args.output))
+    else:
+        rows = benchmark(
+            agents=args.agents,
+            scenarios=args.scenarios,
+            n_episodes=args.n_episodes,
+            seed_start=args.seed,
+            model_dir=args.model_dir)
+        print_results_table(rows)
+        save_csv(rows, Path(args.output))

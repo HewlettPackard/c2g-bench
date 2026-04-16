@@ -963,3 +963,50 @@ PYEOF
 echo -e "\n═══════════════════════════════════════════════════════════════"
 echo "  Sweep complete.  Results: ${RESULTS_CSV}"
 echo "═══════════════════════════════════════════════════════════════"
+
+# ═══════════════════════════════════════════════════════════════════
+# Phase 23 — Multi-seed HA benchmark (for CIs + significance)
+# ═══════════════════════════════════════════════════════════════════
+echo -e "\n══════════════════════════════════════════════"
+echo "  Phase 23: Multi-seed HA benchmark (10 seeds)"
+echo "══════════════════════════════════════════════"
+
+uv run python evaluation/run_ha_benchmark.py \
+    --n_seeds 10 \
+    --n_episodes 5 \
+    --seed 100 \
+    --output evaluation/ha_results_multiseed.csv
+
+# ═══════════════════════════════════════════════════════════════════
+# Phase 24 — Statistical analysis (CIs + significance tests)
+# ═══════════════════════════════════════════════════════════════════
+echo -e "\n══════════════════════════════════════════════"
+echo "  Phase 24: Statistical analysis"
+echo "══════════════════════════════════════════════"
+
+uv run python evaluation/statistical_analysis.py \
+    evaluation/ha_results_multiseed.csv \
+    --baseline ha_c2g \
+    --alpha 0.05 \
+    --confidence 0.95 \
+    --latex paper/tables/ha_benchmark_table.tex
+
+# ═══════════════════════════════════════════════════════════════════
+# Phase 25 — Failure-case analysis
+# ═══════════════════════════════════════════════════════════════════
+echo -e "\n══════════════════════════════════════════════"
+echo "  Phase 25: Failure-case analysis"
+echo "══════════════════════════════════════════════"
+
+uv run python evaluation/failure_analysis.py \
+    --agents ha_c2g cbm_only cbm_gate cbm_shield simplex_ppo cbf_ppo random \
+    --n_seeds 10 \
+    --seed_start 100 \
+    --output evaluation/failure_analysis.json
+
+echo -e "\n═══════════════════════════════════════════════════════════════"
+echo "  Full sweep + analysis complete."
+echo "  Statistical results: evaluation/ha_results_multiseed.csv"
+echo "  LaTeX table:         paper/tables/ha_benchmark_table.tex"
+echo "  Failure analysis:    evaluation/failure_analysis.json"
+echo "═══════════════════════════════════════════════════════════════"
