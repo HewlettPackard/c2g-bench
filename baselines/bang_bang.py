@@ -5,21 +5,23 @@ The simplest reasonable baseline: binary switching with hysteresis bands.
 
 Policy logic
 ------------
-1. **BESS dispatch** = sign(regd_signal) × 1.0 (full charge or discharge)
-   - No modulation — 100% reactive to grid signal direction.
+1. **BESS dispatch** = sign(regd_signal) × 0.4 (moderate bang-bang)
+   - Binary switching but at ±20 MW instead of ±50 MW to reduce overshoot.
    - SOC guard: disable discharge below 12%, disable charge above 93%.
 
-2. **CDU pump** (Zone A):
+2. **Throttle** (batch load shedding):
+   - 0.7 when regd > 0.05 (grid wants reduced draw → shed batch)
+   - 1.0 otherwise (max throughput)
+
+3. **CDU pump** (Zone A):
    - ON  (1.0) when  temp_A_norm > 31/35 ≈ 0.886
    - OFF (0.3) when  temp_A_norm < 29/35 ≈ 0.829
    - Hysteresis holds previous state between thresholds.
 
-3. **HVAC** (Zone B):
+4. **HVAC** (Zone B):
    - ON  (1.0) when  temp_B_norm > 31/35 ≈ 0.886
    - OFF (0.0) when  temp_B_norm < 29/35 ≈ 0.829
    - Same hysteresis logic.
-
-4. **Throttle** = 1.0 always (maximise throughput, never shed load).
 
 The hysteresis bands prevent rapid on/off chattering and represent a
 plausible "junior engineer's first controller" — the absolute floor
@@ -90,8 +92,14 @@ class BangBangController:
         soc      = float(obs[_I_SOC])
         regd     = float(obs[_I_REGD])
 
-        # ── Throttle: always max ──────────────────────────────────────
-        throttle = 1.0
+        # ── Throttle: bang-bang based on regd direction ────────────────
+        # regd > 0 → grid wants reduced draw → shed some batch load
+        # regd < 0 → grid wants increased draw → max throughput
+        _THROTTLE_LOW = 0.5
+        if regd > 0.05:
+            throttle = _THROTTLE_LOW
+        else:
+            throttle = 1.0
 
         # ── Pump: hysteresis on Zone A temperature ────────────────────
         if temp_A_n >= _PUMP_ON:
@@ -107,15 +115,19 @@ class BangBangController:
             self._hvac_on = False
         hvac_effort = 1.0 if self._hvac_on else 0.0
 
-        # ── BESS: bang-bang on regd direction ─────────────────────────
+        # ── BESS: bang-bang with moderate magnitude ────────────────────
+        # Binary switching (true bang-bang) but at ±0.4 instead of ±1.0
+        # to avoid massive overshoot. 0.4 × 50 MW = 20 MW, closer to
+        # typical committed_mw (10-20 MW) than full 50 MW blast.
+        _BESS_MAG = 0.5
         if abs(regd) < 0.05:
             bess_dispatch = 0.0
         elif regd > 0:
             # Grid wants DC to reduce draw → discharge
-            bess_dispatch = 1.0 if soc > _SOC_DISCHARGE_MIN else 0.0
+            bess_dispatch = _BESS_MAG if soc > _SOC_DISCHARGE_MIN else 0.0
         else:
             # Grid wants DC to increase draw → charge
-            bess_dispatch = -1.0 if soc < _SOC_CHARGE_MAX else 0.0
+            bess_dispatch = -_BESS_MAG if soc < _SOC_CHARGE_MAX else 0.0
 
         return np.array([throttle, pump_speed, hvac_effort, bess_dispatch],
                         dtype=np.float32)
