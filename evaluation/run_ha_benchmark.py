@@ -162,6 +162,12 @@ def get_shield(agent_name: str) -> ShieldEvaluator:
         return ShieldEvaluator("simplex_eval", SafetyShield())
     elif agent_name == "ha_c2g":
         return ShieldEvaluator("simplex_ha", SafetyShield())
+    elif agent_name == "cbm_shield":
+        # CBM + shield (no gate) — shield is active
+        return ShieldEvaluator("simplex_ablation", SafetyShield())
+    elif agent_name in ("cbm_only", "cbm_gate"):
+        # CBM-only and CBM+gate ablations: no shield
+        return ShieldEvaluator("none", NoShield())
     else:
         return ShieldEvaluator("none", NoShield())
 
@@ -386,6 +392,9 @@ HA_AGENTS = [
     "cpo",
     "reward_shaping",
     "ha_c2g",
+    "cbm_only",
+    "cbm_gate",
+    "cbm_shield",
     "random",
 ]
 
@@ -500,6 +509,10 @@ if __name__ == "__main__":
         choices=SCENARIOS)
     parser.add_argument("--n_episodes", type=int, default=5)
     parser.add_argument("--seed", type=int, default=100)
+    parser.add_argument("--n_seeds", type=int, default=1,
+                        help="Number of independent seeds. If >1, runs "
+                             "n_episodes per seed and saves per-seed rows "
+                             "for statistical analysis.")
     parser.add_argument("--model_dir", default=None)
     parser.add_argument(
         "--record_transitions",
@@ -534,14 +547,29 @@ if __name__ == "__main__":
 
     unavailable_actions = tuple(args.disable_actions or ())
 
-    rows = benchmark(
-        agents=args.agents,
-        scenarios=args.scenarios,
-        n_episodes=args.n_episodes,
-        seed_start=args.seed,
-        model_dir=args.model_dir,
-        record_transitions=args.record_transitions,
-        unavailable_actions=unavailable_actions,
-        fixed_action_values=fixed_action_values)
-    print_results_table(rows)
-    save_csv(rows, Path(args.output))
+    if args.n_seeds > 1:
+        # Multi-seed mode: run full benchmark per seed, tag each row
+        all_rows = []
+        for s_idx in range(args.n_seeds):
+            seed = args.seed + s_idx * 1000
+            print(f"\n=== Seed {s_idx+1}/{args.n_seeds} (seed={seed}) ===")
+            rows = benchmark(
+                agents=args.agents,
+                scenarios=args.scenarios,
+                n_episodes=args.n_episodes,
+                seed_start=seed,
+                model_dir=args.model_dir)
+            for r in rows:
+                r["seed"] = seed
+            all_rows.extend(rows)
+        print_results_table(all_rows)
+        save_csv(all_rows, Path(args.output))
+    else:
+        rows = benchmark(
+            agents=args.agents,
+            scenarios=args.scenarios,
+            n_episodes=args.n_episodes,
+            seed_start=args.seed,
+            model_dir=args.model_dir)
+        print_results_table(rows)
+        save_csv(rows, Path(args.output))

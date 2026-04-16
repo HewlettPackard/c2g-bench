@@ -84,10 +84,18 @@ log = logging.getLogger(__name__)
 
 class HAC2GShieldWrapper(gym.Wrapper):
     """
-    Wraps C2GFastEnv with:
-      1. Simplex safety shield (applied to every action)
-      2. Shield penalty reward (−penalty per override)
-      3. Proof tree generation (optional, for evaluation)
+    Wraps C2GFastEnv with the full HA-C2G 3-layer action pipeline:
+
+      Layer 2 — Safe Projection Gate (concept-conditioned action attenuation)
+        a_gated = a_raw ⊙ g(concepts)
+        The gate is trained via auxiliary supervision, and here it is
+        **applied** to the action, not just used as a feature.
+
+      Layer 3 — Simplex Safety Shield (hard constraint enforcement)
+        a_safe = shield(a_gated, obs)
+        Actions violating hard constraints are overridden.
+
+    Plus: shield penalty reward and optional proof tree generation.
 
     This is the "shield-in-the-loop" training paradigm from the SC26
     paper, adapted for C2G-Bench.
@@ -99,11 +107,15 @@ class HAC2GShieldWrapper(gym.Wrapper):
         shield: SafetyShield | None = None,
         shield_penalty: float = 0.5,
         generate_proof_trees: bool = False,
+        concept_encoder: "C2GConceptEncoder | None" = None,
+        safety_gate: "SafeProjectionGate | None" = None,
     ):
         super().__init__(env)
         self.shield = shield or SafetyShield()
         self.shield_penalty = shield_penalty
         self.generate_proof_trees = generate_proof_trees
+        self.concept_encoder = concept_encoder
+        self.safety_gate = safety_gate
         self._last_obs = None
 
     def reset(self, **kwargs):
@@ -112,9 +124,35 @@ class HAC2GShieldWrapper(gym.Wrapper):
         self._last_obs = obs
         return obs, info
 
+    def _apply_gate(self, action: np.ndarray, obs: np.ndarray) -> np.ndarray:
+        """Apply concept-conditioned gate to attenuate action (Layer 2).
+
+        Device-safe: builds tensors on the same device as the encoder
+        parameters (CPU or CUDA), then brings results back to numpy.
+        """
+        if self.concept_encoder is None or self.safety_gate is None:
+            return action
+        with torch.no_grad():
+            device = next(self.concept_encoder.parameters()).device
+            obs_t = torch.as_tensor(obs, dtype=torch.float32, device=device).unsqueeze(0)
+            concepts = self.concept_encoder(obs_t)
+            gate = self.safety_gate(concepts)  # (1, action_dim)
+            gate_np = gate.squeeze(0).detach().cpu().numpy()
+        # Apply gate: a_gated = a_raw * gate
+        # For BESS (action 3, ∈ [-1,1]), gate attenuates magnitude
+        gated = action.copy()
+        gated[:len(gate_np)] = action[:len(gate_np)] * gate_np
+        return gated
+
     def step(self, action):
         obs_prev = self._last_obs if self._last_obs is not None else np.zeros(17, dtype=np.float32)
-        safe_action, was_modified, shield_info = self.shield.filter(action, obs_prev)
+
+        # Layer 2: concept-conditioned gate
+        raw_action = action.copy() if hasattr(action, 'copy') else np.array(action)
+        gated_action = self._apply_gate(action, obs_prev)
+
+        # Layer 3: safety shield
+        safe_action, was_modified, shield_info = self.shield.filter(gated_action, obs_prev)
 
         obs, reward, terminated, truncated, info = self.env.step(safe_action)
         self._last_obs = obs
@@ -125,12 +163,14 @@ class HAC2GShieldWrapper(gym.Wrapper):
 
         info.update(shield_info)
         info["shield_stats"] = self.shield.stats.as_dict()
+        info["shield_active"] = was_modified
+        info["gate_applied"] = self.concept_encoder is not None
 
         # Generate proof tree (expensive, only for evaluation)
         if self.generate_proof_trees:
             tree = ProofTree.from_step(
                 obs=obs_prev,
-                raw_action=action,
+                raw_action=raw_action,
                 safe_action=safe_action,
                 shield_info={"shield_type": "simplex"},
             )
@@ -272,7 +312,13 @@ class ConceptGateSupervisionCallback(BaseCallback):
 # ENV FACTORY
 # ═══════════════════════════════════════════════════════════════════
 
-def make_ha_env_fn(scenario: str, seed: int, shield_penalty: float = 0.5):
+def make_ha_env_fn(
+    scenario: str,
+    seed: int,
+    shield_penalty: float = 0.5,
+    concept_encoder: "C2GConceptEncoder | None" = None,
+    safety_gate: "SafeProjectionGate | None" = None,
+):
     def _init():
         base_env = C2GFastEnv(scenario=scenario)
         env = HAC2GShieldWrapper(
@@ -280,6 +326,8 @@ def make_ha_env_fn(scenario: str, seed: int, shield_penalty: float = 0.5):
             shield=SafetyShield(),
             shield_penalty=shield_penalty,
             generate_proof_trees=False,  # off during training
+            concept_encoder=concept_encoder,
+            safety_gate=safety_gate,
         )
         env.reset(seed=seed)
         return env
@@ -310,9 +358,21 @@ def train(cfg: DictConfig) -> None:
           f"concepts={n_concepts}  gate_α={gate_alpha}  "
           f"shield_penalty={shield_pen}  timesteps={algo_cfg.timesteps:,}")
 
-    # ── Environments ─────────────────────────────────────────────
+    # ── Create shared concept encoder & gate FIRST ───────────────
+    # These are shared between the feature extractor and the env
+    # wrapper, so the gate is both visible to the policy (as a feature)
+    # AND applied to actions (in the wrapper).
+    obs_dim = 17  # C2GFastEnv obs dim
+    shared_concept_encoder = C2GConceptEncoder(
+        obs_dim=obs_dim, n_concepts=n_concepts, hidden=64)
+    shared_safety_gate = SafeProjectionGate(
+        concept_dim=n_concepts, action_dim=4)
+
+    # ── Environments (with gate applied to actions) ──────────────
     vec_env = make_vec_env(
-        make_ha_env_fn(scenario, seed, shield_pen),
+        make_ha_env_fn(scenario, seed, shield_pen,
+                       concept_encoder=shared_concept_encoder,
+                       safety_gate=shared_safety_gate),
         n_envs=algo_cfg.n_envs, seed=seed)
     vec_env = VecNormalize(
         vec_env,
@@ -320,13 +380,18 @@ def train(cfg: DictConfig) -> None:
         clip_obs=algo_cfg.clip_obs, clip_reward=algo_cfg.clip_reward)
 
     eval_env = make_vec_env(
-        make_ha_env_fn(scenario, seed + 999, shield_penalty=0.0),
+        make_ha_env_fn(scenario, seed + 999, shield_penalty=0.0,
+                       concept_encoder=shared_concept_encoder,
+                       safety_gate=shared_safety_gate),
         n_envs=1, seed=seed + 999)
     eval_env = VecNormalize(
         eval_env, norm_obs=True, norm_reward=False,
         clip_obs=algo_cfg.clip_obs, training=False)
 
     # ── Model with Gated Concept Feature Extractor ───────────────
+    #    The feature extractor uses the SAME encoder & gate objects,
+    #    so gradients from the auxiliary loss update them in-place and
+    #    the env wrapper sees the updated parameters.
     net_arch = OmegaConf.to_container(algo_cfg.net_arch, resolve=True)
 
     policy_kwargs = dict(
@@ -335,6 +400,8 @@ def train(cfg: DictConfig) -> None:
             n_concepts=n_concepts,
             action_dim=4,
             hidden=64,
+            concept_encoder=shared_concept_encoder,
+            safety_gate=shared_safety_gate,
         ),
         net_arch=net_arch,
     )
@@ -358,10 +425,14 @@ def train(cfg: DictConfig) -> None:
         seed=seed,
     )
 
-    # ── Extract concept encoder and gate from model ──────────────
+    # ── Verify shared encoder & gate are in the model ──────────────
     fe = model.policy.features_extractor
-    concept_encoder = fe.concept_encoder
-    safety_gate = fe.safety_gate
+    assert fe.concept_encoder is shared_concept_encoder, \
+        "Feature extractor must share the same concept encoder"
+    assert fe.safety_gate is shared_safety_gate, \
+        "Feature extractor must share the same safety gate"
+    concept_encoder = shared_concept_encoder
+    safety_gate = shared_safety_gate
 
     # ── Callbacks ────────────────────────────────────────────────
     checkpoint_cb = CheckpointCallback(

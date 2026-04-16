@@ -476,3 +476,376 @@ class TestCrossShieldConsistency:
     def test_has_reset(self, shield):
         assert hasattr(shield, "reset")
         shield.reset()  # should not raise
+
+
+# =========================================================================
+# I. Ablation Consistency Tests
+# =========================================================================
+
+@pytest.mark.skipif(not TORCH_AVAILABLE, reason="torch not installed")
+class TestAblations:
+    """Verify CBM-Only and CBM+Gate feature extractors produce correct dims."""
+
+    def test_cbm_only_feature_extractor(self):
+        """CBM-Only uses C2GConceptFeatureExtractor → output dim = obs + concepts."""
+        from baselines.safety.concept_bottleneck import C2GConceptFeatureExtractor
+        import gymnasium as gym
+        obs_space = gym.spaces.Box(low=-10, high=10, shape=(17,))
+        fe = C2GConceptFeatureExtractor(obs_space, n_concepts=10)
+        obs = torch.randn(4, 17)
+        features = fe(obs)
+        assert features.shape == (4, 27)  # 17 obs + 10 concepts
+
+    def test_cbm_gate_feature_extractor(self):
+        """CBM+Gate uses C2GGatedConceptFeatureExtractor → obs + concepts + gate."""
+        from baselines.safety.concept_bottleneck import C2GGatedConceptFeatureExtractor
+        import gymnasium as gym
+        obs_space = gym.spaces.Box(low=-10, high=10, shape=(17,))
+        fe = C2GGatedConceptFeatureExtractor(obs_space, n_concepts=10, action_dim=4)
+        obs = torch.randn(4, 17)
+        features = fe(obs)
+        assert features.shape == (4, 31)  # 17 obs + 10 concepts + 4 gate
+
+    def test_cbm_only_no_gate(self):
+        """CBM-Only feature extractor should NOT have a safety_gate attribute."""
+        from baselines.safety.concept_bottleneck import C2GConceptFeatureExtractor
+        import gymnasium as gym
+        obs_space = gym.spaces.Box(low=-10, high=10, shape=(17,))
+        fe = C2GConceptFeatureExtractor(obs_space, n_concepts=10)
+        assert not hasattr(fe, 'safety_gate')
+
+    def test_cbm_gate_has_gate(self):
+        """CBM+Gate feature extractor should have a safety_gate attribute."""
+        from baselines.safety.concept_bottleneck import C2GGatedConceptFeatureExtractor
+        import gymnasium as gym
+        obs_space = gym.spaces.Box(low=-10, high=10, shape=(17,))
+        fe = C2GGatedConceptFeatureExtractor(obs_space, n_concepts=10, action_dim=4)
+        assert hasattr(fe, 'safety_gate')
+
+    def test_ablation_ladder_output_dims(self):
+        """Verify output dim ladder: CBM-Only(27) < CBM+Gate(31)."""
+        from baselines.safety.concept_bottleneck import (
+            C2GConceptFeatureExtractor, C2GGatedConceptFeatureExtractor,
+        )
+        import gymnasium as gym
+        obs_space = gym.spaces.Box(low=-10, high=10, shape=(17,))
+        fe_cbm = C2GConceptFeatureExtractor(obs_space, n_concepts=10)
+        fe_gate = C2GGatedConceptFeatureExtractor(obs_space, n_concepts=10, action_dim=4)
+        assert fe_cbm.features_dim == 27
+        assert fe_gate.features_dim == 31
+        assert fe_cbm.features_dim < fe_gate.features_dim
+
+    def test_cbm_shield_uses_same_extractor_as_cbm_only(self):
+        """CBM+Shield uses the same non-gated extractor as CBM-Only (dim=27).
+        The safety comes from the shield wrapper, not the feature extractor."""
+        from baselines.safety.concept_bottleneck import C2GConceptFeatureExtractor
+        import gymnasium as gym
+        obs_space = gym.spaces.Box(low=-10, high=10, shape=(17,))
+        fe = C2GConceptFeatureExtractor(obs_space, n_concepts=10)
+        assert fe.features_dim == 27
+        assert not hasattr(fe, 'safety_gate')
+
+
+class TestGateBehavioral:
+    """Behavioral tests verifying gate actually modifies actions."""
+
+    def test_gate_attenuates_action_on_high_cooling_demand(self):
+        """When cooling demand is high, a trained gate should reduce
+        the throttle action (action 0)."""
+        import torch
+        from baselines.safety.safe_projection import SafeProjectionGate
+
+        gate = SafeProjectionGate(concept_dim=10, action_dim=4, init_bias=2.0)
+        # Manually set gate weights so high cooling_demand → low throttle gate
+        # This simulates what the supervision loss achieves.
+        with torch.no_grad():
+            # Zero out the first layer, set bias of output to respond to concept 5 (cooling_demand_A)
+            gate.gate[0].weight.zero_()
+            gate.gate[0].bias.zero_()
+            # Make hidden unit 0 respond to concept 5 (cooling_demand_A)
+            gate.gate[0].weight[0, 5] = 5.0
+            # Make output action 0 (throttle) respond negatively to hidden 0
+            gate.gate[2].weight.zero_()
+            gate.gate[2].bias.fill_(3.0)  # baseline: sigmoid(3) ≈ 0.95
+            gate.gate[2].weight[0, 0] = -6.0  # throttle responds to cooling
+
+        # Low cooling demand → gate ≈ 1 (pass-through)
+        low_demand = torch.zeros(1, 10)
+        low_demand[0, 5] = 0.1  # cooling_demand_A = low
+        g_low = gate(low_demand)
+        throttle_gate_low = g_low[0, 0].item()
+
+        # High cooling demand → gate < 1 (attenuated)
+        high_demand = torch.zeros(1, 10)
+        high_demand[0, 5] = 0.9  # cooling_demand_A = high
+        g_high = gate(high_demand)
+        throttle_gate_high = g_high[0, 0].item()
+
+        assert throttle_gate_low > throttle_gate_high, \
+            f"Gate should attenuate throttle when cooling demand is high: " \
+            f"low_demand_gate={throttle_gate_low:.3f}, high_demand_gate={throttle_gate_high:.3f}"
+        assert throttle_gate_high < 0.7, \
+            f"Gate should meaningfully reduce throttle: got {throttle_gate_high:.3f}"
+
+    def test_gate_applied_in_wrapper(self):
+        """HAC2GShieldWrapper.step() applies gate to actions in the real runtime path."""
+        import torch
+        import numpy as np
+        import gymnasium as gym
+        import importlib
+        import sys
+        from baselines.safety.concept_bottleneck import C2GConceptEncoder
+        from baselines.safety.safe_projection import SafeProjectionGate
+
+        # Import HAC2GShieldWrapper despite hydra dependency at module level
+        # by mocking hydra/omegaconf if not installed
+        for mod_name in ("hydra", "hydra.core", "hydra.core.hydra_config", "omegaconf"):
+            if mod_name not in sys.modules:
+                sys.modules[mod_name] = type(sys)("mock_" + mod_name)
+        if not hasattr(sys.modules["omegaconf"], "DictConfig"):
+            sys.modules["omegaconf"].DictConfig = type("DictConfig", (), {})
+            sys.modules["omegaconf"].OmegaConf = type("OmegaConf", (), {})
+        if not hasattr(sys.modules["hydra"], "main"):
+            sys.modules["hydra"].main = lambda **kw: (lambda f: f)
+        if not hasattr(sys.modules["hydra.core.hydra_config"], "HydraConfig"):
+            sys.modules["hydra.core.hydra_config"].HydraConfig = type("HydraConfig", (), {})
+
+        from baselines.train_ha_c2g import HAC2GShieldWrapper
+
+        # Build a tiny 4-action dummy env with 17-D obs
+        base_env = gym.make("MountainCarContinuous-v0")
+        # Monkey-patch obs/action spaces to match C2G dimensions
+        base_env.observation_space = gym.spaces.Box(
+            low=-10, high=10, shape=(17,), dtype=np.float32)
+        base_env.action_space = gym.spaces.Box(
+            low=-1, high=1, shape=(4,), dtype=np.float32)
+        # Monkey-patch step/reset to return correct shapes
+        _original_reset = base_env.reset
+        _original_step = base_env.step
+        def _fake_reset(**kw):
+            _original_reset(**kw)
+            obs = np.random.randn(17).astype(np.float32)
+            return obs, {}
+        def _fake_step(action):
+            # Record what action the env actually received
+            _fake_step.last_action = action.copy()
+            obs = np.random.randn(17).astype(np.float32)
+            return obs, 1.0, False, False, {}
+        base_env.reset = _fake_reset
+        base_env.step = _fake_step
+
+        # Create encoder + gate with init_bias=0 → gate ≈ 0.5
+        encoder = C2GConceptEncoder(obs_dim=17, n_concepts=10)
+        gate = SafeProjectionGate(concept_dim=10, action_dim=4, init_bias=0.0)
+
+        # Build a passthrough mock shield
+        class PassthroughShield:
+            def reset(self): pass
+            def filter(self, action, obs):
+                self.received_action = action.copy()
+                return action, False, {}
+            class stats:
+                @staticmethod
+                def as_dict(): return {}
+
+        mock_shield = PassthroughShield()
+
+        wrapper = HAC2GShieldWrapper(
+            base_env,
+            shield=mock_shield,
+            shield_penalty=0.5,
+            concept_encoder=encoder,
+            safety_gate=gate,
+        )
+        wrapper.reset()
+
+        raw_action = np.array([0.8, 0.7, 0.6, 0.5], dtype=np.float32)
+        obs, reward, term, trunc, info = wrapper.step(raw_action)
+
+        # The shield should have received the GATED action, not the raw one
+        received = mock_shield.received_action
+        assert not np.allclose(received, raw_action, atol=0.01), \
+            f"Shield received raw action unchanged — gate not applied! " \
+            f"raw={raw_action}, received={received}"
+        # With init_bias=0 → gate ≈ 0.5, so received ≈ raw * 0.5
+        assert np.all(np.abs(received) < np.abs(raw_action) + 1e-6), \
+            "Gated action magnitude should be ≤ raw action magnitude"
+        assert info["gate_applied"] is True
+        assert "shield_active" in info
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Statistical Analysis Tests
+# ═══════════════════════════════════════════════════════════════════
+
+class TestStatisticalAnalysis:
+    """Tests for multi-seed CI and significance infrastructure."""
+
+    def test_bootstrap_ci_basic(self):
+        from evaluation.statistical_analysis import bootstrap_ci
+        values = np.array([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0])
+        lo, hi = bootstrap_ci(values, confidence=0.95)
+        mean = np.mean(values)
+        assert lo < mean < hi, f"CI should bracket mean: [{lo}, {hi}], mean={mean}"
+        assert hi - lo > 0.5, "CI should have non-trivial width"
+        assert hi - lo < 8.0, "CI should not be wider than the range"
+
+    def test_bootstrap_ci_single_value(self):
+        from evaluation.statistical_analysis import bootstrap_ci
+        lo, hi = bootstrap_ci(np.array([42.0]))
+        assert lo == 42.0 and hi == 42.0
+
+    def test_summarise_metric(self):
+        from evaluation.statistical_analysis import summarise_metric
+        values = np.random.RandomState(42).randn(20) * 0.1 + 0.95
+        s = summarise_metric(values, "survival_rate", "ha_c2g", "default")
+        assert s.n_seeds == 20
+        assert s.ci_lower < s.mean < s.ci_upper
+        assert s.iqr_lower <= s.median <= s.iqr_upper
+        assert s.min_val <= s.mean <= s.max_val
+
+    def test_cohens_d(self):
+        from evaluation.statistical_analysis import cohens_d, effect_label
+        a = np.array([10.0, 11.0, 12.0, 10.5, 11.5])
+        b = np.array([5.0, 6.0, 5.5, 6.5, 5.5])
+        d = cohens_d(a, b)
+        assert d > 2.0, f"Large effect expected, got d={d}"
+        assert effect_label(d) == "large"
+        # Small effect
+        c = np.array([10.0, 10.1, 10.2, 10.0, 10.1])
+        d_small = cohens_d(a, c)
+        assert abs(d_small) < abs(d)
+
+    def test_pairwise_test(self):
+        from evaluation.statistical_analysis import pairwise_test
+        np.random.seed(42)
+        a = np.random.randn(20) + 5.0  # clearly different
+        b = np.random.randn(20) + 0.0
+        comp = pairwise_test(a, b, "reward", "default", "agent_a", "agent_b")
+        assert comp.significant, f"Should be significant, p={comp.p_value}"
+        assert comp.p_value < 0.001
+        assert comp.effect_label == "large"
+
+    def test_pairwise_test_not_significant(self):
+        from evaluation.statistical_analysis import pairwise_test
+        np.random.seed(42)
+        a = np.random.randn(10) + 5.0
+        b = np.random.randn(10) + 5.0  # same distribution
+        comp = pairwise_test(a, b, "reward", "default", "agent_a", "agent_b")
+        # May or may not be significant, but p should not be tiny
+        assert comp.p_value > 0.001
+
+    def test_latex_table_generation(self):
+        from evaluation.statistical_analysis import (
+            summarise_metric, generate_latex_table,
+        )
+        sums = []
+        for agent in ["ha_c2g", "cbm_only", "random"]:
+            vals = np.random.RandomState(hash(agent) % 2**31).randn(10) + 0.5
+            s = summarise_metric(vals, "mean_reward", agent, "default")
+            sums.append(s)
+        latex = generate_latex_table(sums, metrics=["mean_reward"], scenario="default")
+        assert "\\begin{table}" in latex
+        assert "\\end{table}" in latex
+        assert "HA-C2G" in latex
+        assert "\\pm" in latex
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Failure Analysis Tests
+# ═══════════════════════════════════════════════════════════════════
+
+class TestFailureAnalysis:
+    """Tests for failure-case analysis infrastructure."""
+
+    def test_per_constraint_margins(self):
+        from evaluation.failure_analysis import compute_per_constraint_margins
+        obs = np.zeros(17, dtype=np.float32)
+        obs[0] = 30.0 / 35.0  # T_A = 30°C → margin = 5°C
+        obs[1] = 34.0 / 35.0  # T_B = 34°C → margin = 1°C
+        obs[2] = 0.5           # SOC = 0.5
+        obs[14] = 0.0          # freq_dev = 0
+        obs[15] = 1.0          # v_pcc = 1.0 pu
+        margins = compute_per_constraint_margins(obs)
+        assert margins["C1:T_A<35"] == pytest.approx(5.0, abs=0.1)
+        assert margins["C2:T_B<35"] == pytest.approx(1.0, abs=0.1)
+        assert margins["C3:SOC_lo"] > 0
+        assert margins["C5:voltage"] > 0
+
+    def test_identify_violations(self):
+        from evaluation.failure_analysis import identify_violations
+        margins = {"C1:T_A<35": 2.0, "C2:T_B<35": -0.5, "C3:SOC_lo": 0.3,
+                   "C3:SOC_hi": 0.4, "C4:freq": -0.1, "C5:voltage": 0.05}
+        viols = identify_violations(margins)
+        assert "C2:T_B<35" in viols
+        assert "C4:freq" in viols
+        assert "C1:T_A<35" not in viols
+
+    def test_closest_constraint(self):
+        from evaluation.failure_analysis import closest_constraint
+        margins = {"C1:T_A<35": 2.0, "C2:T_B<35": 0.1, "C5:voltage": 0.5}
+        name, val = closest_constraint(margins)
+        assert name == "C2:T_B<35"
+        assert val == pytest.approx(0.1)
+
+    def test_episode_trace_properties(self):
+        from evaluation.failure_analysis import (
+            EpisodeTrace, ConstraintViolation,
+        )
+        trace = EpisodeTrace(
+            agent="test", scenario="default", seed=42,
+            total_reward=100.0, episode_length=288, survived=True,
+        )
+        trace.violations = [
+            ConstraintViolation(10, "C1:T_A<35", -0.5, [0]*17),
+            ConstraintViolation(20, "C2:T_B<35", -0.3, [0]*17),
+            ConstraintViolation(30, "C1:T_A<35", -0.1, [0]*17),
+        ]
+        trace.margin_trajectory = [1.0, 0.5, -0.5, -0.3, 0.2]
+        assert trace.n_violations == 3
+        assert trace.violation_rate == pytest.approx(3 / 288)
+        assert trace.worst_margin == -0.5
+        assert trace.violated_constraints == {"C1:T_A<35", "C2:T_B<35"}
+        assert trace.first_violation_step == 10
+
+    def test_build_failure_profile(self):
+        from evaluation.failure_analysis import (
+            EpisodeTrace, ConstraintViolation, ShieldIntervention,
+            build_failure_profile, CONSTRAINT_NAMES,
+        )
+        traces = []
+        for seed in range(5):
+            t = EpisodeTrace("agent", "default", seed, 100.0, 288, True)
+            t.margin_trajectory = [1.0, 0.5, 0.1]
+            t.per_constraint_margins = {c: [1.0] for c in CONSTRAINT_NAMES}
+            if seed % 2 == 0:
+                t.violations.append(
+                    ConstraintViolation(50, "C1:T_A<35", -0.1, [0]*17))
+            t.interventions.append(
+                ShieldIntervention(10, [0.5]*4, [0.4]*4, 0.1, "C1:T_A<35"))
+            traces.append(t)
+        profile = build_failure_profile(traces)
+        assert profile.n_seeds == 5
+        assert profile.total_violations == 3  # seeds 0, 2, 4
+        assert profile.total_interventions == 5
+        assert profile.per_constraint_violation_counts["C1:T_A<35"] == 3
+        assert profile.survival_rate == 1.0
+
+    def test_comparative_failures(self):
+        from evaluation.failure_analysis import (
+            EpisodeTrace, ConstraintViolation, find_comparative_failures,
+        )
+        # Agent A fails on seed 0, agent B doesn't
+        ta = EpisodeTrace("A", "default", 0, 90.0, 288, True)
+        ta.violations = [ConstraintViolation(10, "C1:T_A<35", -0.2, [0]*17)]
+        ta.margin_trajectory = [-0.2]
+
+        tb = EpisodeTrace("B", "default", 0, 95.0, 288, True)
+        tb.violations = []
+        tb.margin_trajectory = [0.5]
+
+        cfs = find_comparative_failures([ta], [tb], "A", "B")
+        assert len(cfs) == 1
+        assert cfs[0].failing_agent == "A"
+        assert cfs[0].succeeding_agent == "B"
+        assert "C1:T_A<35" in cfs[0].constraints_only_failing_violates

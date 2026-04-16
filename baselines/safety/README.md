@@ -275,16 +275,16 @@ This is the flagship method, porting the 3-layer architecture from our SC'26 pap
 
 | # | Concept | Formula | Interpretation |
 |---|---------|---------|----------------|
-| 1 | `thermal_margin_A` | `max(0, (T_safe − T_A) / T_safe)` | How far T_A is from limit |
-| 2 | `thermal_margin_B` | `max(0, (T_safe − T_B) / T_safe)` | How far T_B is from limit |
-| 3 | `soc_health` | `(SOC − SOC_min) / (SOC_max − SOC_min)` | SOC normalised within bounds |
-| 4 | `freq_stability` | `max(0, 1 − \|Δf\| / 0.5)` | Distance from frequency limit |
-| 5 | `voltage_margin` | `max(0, V_pcc − V_min) / (1.0 − V_min)` | Voltage headroom |
-| 6 | `cooling_demand_A` | `clip(T_A / T_safe, 0, 1)` | Cooling urgency for room A |
-| 7 | `cooling_demand_B` | `clip(T_B / T_safe, 0, 1)` | Cooling urgency for room B |
-| 8 | `grid_urgency` | `clip(\|regd_signal\| / 0.5, 0, 1)` | Grid regulation demand |
-| 9 | `batch_pressure` | `clip((p_base + p_flex) / 1.0, 0, 1)` | Compute workload pressure |
-| 10 | `bess_headroom` | `min(SOC − SOC_min, SOC_max − SOC) / 0.425` | Bidirectional BESS room |
+| 1 | `thermal_margin_A` | `clip((T_safe − T_A) / (T_safe − 20), 0, 1)` | How far T_A is from limit |
+| 2 | `thermal_margin_B` | `clip((T_safe − T_B) / (T_safe − 20), 0, 1)` | How far T_B is from limit |
+| 3 | `soc_health` | `clip(min(SOC − SOC_min, SOC_max − SOC) / 0.4, 0, 1)` | SOC distance from nearest bound |
+| 4 | `freq_stability` | `clip(1 − \|Δf\| / 0.5, 0, 1)` | Distance from frequency limit |
+| 5 | `voltage_margin` | `clip((V_pcc − 0.90) / 0.10, 0, 1)` | Voltage headroom above UV relay |
+| 6 | `cooling_demand_A` | `clip((T_A − (T_warn−2)) / 4, 0, 1) + 0.3·spike` | Cooling urgency for room A |
+| 7 | `cooling_demand_B` | `clip((T_B − (T_warn−2)) / 4, 0, 1)` | Cooling urgency for room B |
+| 8 | `grid_urgency` | `clip(\|regd_signal\|, 0, 1)` | Grid regulation demand |
+| 9 | `batch_pressure` | `clip(backlog / 1.5, 0, 1)` | Compute workload pressure |
+| 10 | `bess_headroom` | `clip(min(SOC − SOC_min, SOC_max − SOC) / 0.3, 0, 1)` | Bidirectional BESS room |
 
 **Neural encoder architecture:**
 - Input: 17-D observation
@@ -324,7 +324,7 @@ This is the flagship method, porting the 3-layer architecture from our SC'26 pap
 
 Where `α=0.5` (gate_alpha) and `β=0.3` (gate_beta) are configurable.
 
-**Safe projection:** `safe_action = sigmoid_bound(raw_action) × gate(concepts)`
+**Action attenuation:** `gated_action = raw_action × gate(concepts)` (applied in `HAC2GShieldWrapper._apply_gate()` before shielding)
 
 **Joint training:** `ConceptAndGateSupervisionCallback` runs every `train_freq` steps:
 1. Sample mini-batch from rollout buffer
@@ -340,7 +340,7 @@ Where `α=0.5` (gate_alpha) and `β=0.3` (gate_beta) are configurable.
 - [ ] `GateSupervisionLoss.compute(gate_values, concept_targets)` returns scalar loss
 - [ ] Gate targets for throttle use `α·max(cooling_demand_A, cooling_demand_B)`
 - [ ] Gate targets for BESS use `β·(1 − bess_headroom)`
-- [ ] `SafeProjectionLayer.forward(raw_action, concepts)` applies sigmoid + gate
+- [ ] `HAC2GShieldWrapper._apply_gate()` multiplies raw action by gate values
 - [ ] `ConceptAndGateSupervisionCallback` jointly trains encoder AND gate
 - [ ] Auxiliary loss = concept_loss × decaying_weight + gate_loss
 
@@ -354,15 +354,16 @@ Where `α=0.5` (gate_alpha) and `β=0.3` (gate_beta) are configurable.
 
 **Shield-in-the-loop training flow:**
 ```
-obs → encoder → concepts → gate(concepts) × sigmoid(raw_action) → shield.filter() → env.step()
-                                                                       ↓
-                                                               if modified: reward -= 0.5
+obs → encoder → concepts → gate(concepts) × raw_action → shield.filter() → env.step()
+                                                               ↓
+                                                       if modified: reward -= 0.5
 ```
 
 **Verification checklist:**
 - [ ] `HAC2GShieldWrapper` applies `SafetyShield.filter()` in `step()`
 - [ ] Shield penalty: `reward -= shield_penalty` when shield modifies action
-- [ ] `info["shield_active"]` tracks whether shield intervened
+- [ ] `info["shield_active"]` is `True` when shield modified the action
+- [ ] `info["gate_applied"]` is `True` when concept gate is active
 - [ ] `info["proof_tree"]` contains serialised proof tree for auditability
 - [ ] Training uses `C2GGatedConceptFeatureExtractor` as policy feature extractor
 - [ ] `ConceptGateSupervisionCallback` trains encoder+gate every `train_freq` steps
@@ -427,6 +428,74 @@ Metrics 7–11 (bold) are new HA-specific metrics not in the base C2G-Bench.
 
 ---
 
+## Tier 3 Ablations
+
+These ablation baselines isolate the contribution of each layer in the HA-C2G stack.  They are essential for NeurIPS reviewers to assess the neuro-symbolic claim.
+
+| Ablation | Layers | Safety Guarantee | Research Question |
+|----------|--------|-----------------|-------------------|
+| `cbm_only` | CBM only | None | Does interpretability alone improve safety? |
+| `cbm_gate` | CBM + Trained Gate | Soft (learned) | Does the trained gate reduce violations without a hard shield? |
+| `cbm_shield` | CBM + Shield | Hard (Simplex) | Does the gate add value when the hard shield is already present? |
+| `ha_c2g` | CBM + Gate + Shield | Hard (Simplex) | Full stack — does the combination outperform each part? |
+
+### A.1  CBM-Only (Concept Bottleneck without Gate or Shield)
+
+| | |
+|---|---|
+| **File** | `baselines/train_cbm_only.py` |
+| **Config** | `conf/algo/cbm_only.yaml` |
+| **Sweep phase** | Phase 18 |
+
+**Description:**  Standard PPO with a concept bottleneck feature extractor.  The policy receives `[obs; concepts]` (dim=27) as features, where concepts are predicted by a supervised neural encoder.  No gate attenuates actions; no shield filters them.  This tests whether interpretable features alone help the policy learn safer behaviour.
+
+**Verification checklist:**
+- [ ] Uses `C2GConceptFeatureExtractor` (NOT gated), output dim = 27
+- [ ] `ConceptSupervisionCallback` trains encoder with decaying MSE loss
+- [ ] No `SafetyShield` wrapper, no `HAC2GShieldWrapper`
+- [ ] No `SafeProjectionGate` anywhere in the pipeline
+- [ ] Same PPO hyperparameters as `ha_c2g` for fair comparison
+
+### A.2  CBM+Gate (Concept Bottleneck + Trained Gate, no Shield)
+
+| | |
+|---|---|
+| **File** | `baselines/train_cbm_gate.py` |
+| **Config** | `conf/algo/cbm_gate.yaml` |
+| **Sweep phase** | Phase 19 |
+
+**Description:**  PPO with concept bottleneck AND the actively trained safe projection gate, but NO physics shield.  The gate attenuates actions based on safety concepts (throttle reduced when cooling demand is high, BESS restricted when headroom is low).  This tests whether the learned gate alone can statistically reduce violations.
+
+**Verification checklist:**
+- [ ] Uses `C2GGatedConceptFeatureExtractor`, output dim = 31
+- [ ] `ConceptGateSupervisionCallback` jointly trains encoder AND gate
+- [ ] Gate targets match HA-C2G: throttle uses α·cooling_demand, BESS uses β·(1−headroom)
+- [ ] No `SafetyShield` wrapper, no `HAC2GShieldWrapper`
+- [ ] No shield penalty in reward
+- [ ] Same PPO hyperparameters as `ha_c2g` for fair comparison
+
+---
+
+### A.3  CBM+Shield (Concept Bottleneck + Physics Shield, no Gate)
+
+| | |
+|---|---|
+| **File** | `baselines/train_cbm_shield.py` |
+| **Config** | `conf/algo/cbm_shield.yaml` |
+| **Sweep phase** | Phase 20 |
+
+**Description:**  PPO with concept bottleneck feature extractor AND the Simplex physics shield (shield-in-the-loop with reward penalty), but NO trained safety gate.  This isolates whether the gate contributes beyond what the hard shield already provides.
+
+**Verification checklist:**
+- [ ] Uses `C2GConceptFeatureExtractor` (NOT gated), output dim = 27
+- [ ] `HAC2GShieldWrapper` wraps the env (shield active during training)
+- [ ] Shield penalty `−0.5` per override shapes reward
+- [ ] `ConceptSupervisionCallback` trains encoder with decaying MSE loss
+- [ ] No `SafeProjectionGate` anywhere in the pipeline
+- [ ] Same PPO hyperparameters as `ha_c2g` for fair comparison
+
+---
+
 ## File Map
 
 ```
@@ -449,6 +518,9 @@ baselines/
 ├── train_cpo.py                     # Tier 2: CPO training
 ├── train_shield_reward_shaping.py   # Tier 2: Shield reward shaping
 └── train_ha_c2g.py                  # Tier 3: HA-C2G full stack
+└── train_cbm_only.py                # Tier 3 Ablation: CBM only
+└── train_cbm_gate.py                # Tier 3 Ablation: CBM + gate (no shield)
+└── train_cbm_shield.py              # Tier 3 Ablation: CBM + shield (no gate)
 
 conf/algo/
 ├── cbf_ppo.yaml

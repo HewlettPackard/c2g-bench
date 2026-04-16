@@ -311,17 +311,24 @@ if _TORCH_AVAILABLE:
         """
 
         def __init__(self, observation_space, n_concepts: int = 10,
-                     action_dim: int = 4, hidden: int = 64):
+                     action_dim: int = 4, hidden: int = 64,
+                     concept_encoder=None, safety_gate=None):
             obs_dim = observation_space.shape[0]
             features_dim = obs_dim + n_concepts + action_dim
             super().__init__(observation_space, features_dim)
 
-            self.concept_encoder = C2GConceptEncoder(
-                obs_dim=obs_dim, n_concepts=n_concepts, hidden=hidden)
-            # Import here to avoid circular dependency
-            from baselines.safety.safe_projection import SafeProjectionGate
-            self.safety_gate = SafeProjectionGate(
-                concept_dim=n_concepts, action_dim=action_dim)
+            if concept_encoder is not None:
+                self.concept_encoder = concept_encoder
+            else:
+                self.concept_encoder = C2GConceptEncoder(
+                    obs_dim=obs_dim, n_concepts=n_concepts, hidden=hidden)
+            if safety_gate is not None:
+                self.safety_gate = safety_gate
+            else:
+                # Import here to avoid circular dependency
+                from baselines.safety.safe_projection import SafeProjectionGate
+                self.safety_gate = SafeProjectionGate(
+                    concept_dim=n_concepts, action_dim=action_dim)
             self.n_concepts = n_concepts
             self.action_dim = action_dim
 
