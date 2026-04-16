@@ -275,16 +275,16 @@ This is the flagship method, porting the 3-layer architecture from our SC'26 pap
 
 | # | Concept | Formula | Interpretation |
 |---|---------|---------|----------------|
-| 1 | `thermal_margin_A` | `max(0, (T_safe − T_A) / T_safe)` | How far T_A is from limit |
-| 2 | `thermal_margin_B` | `max(0, (T_safe − T_B) / T_safe)` | How far T_B is from limit |
-| 3 | `soc_health` | `(SOC − SOC_min) / (SOC_max − SOC_min)` | SOC normalised within bounds |
-| 4 | `freq_stability` | `max(0, 1 − \|Δf\| / 0.5)` | Distance from frequency limit |
-| 5 | `voltage_margin` | `max(0, V_pcc − V_min) / (1.0 − V_min)` | Voltage headroom |
-| 6 | `cooling_demand_A` | `clip(T_A / T_safe, 0, 1)` | Cooling urgency for room A |
-| 7 | `cooling_demand_B` | `clip(T_B / T_safe, 0, 1)` | Cooling urgency for room B |
-| 8 | `grid_urgency` | `clip(\|regd_signal\| / 0.5, 0, 1)` | Grid regulation demand |
-| 9 | `batch_pressure` | `clip((p_base + p_flex) / 1.0, 0, 1)` | Compute workload pressure |
-| 10 | `bess_headroom` | `min(SOC − SOC_min, SOC_max − SOC) / 0.425` | Bidirectional BESS room |
+| 1 | `thermal_margin_A` | `clip((T_safe − T_A) / (T_safe − 20), 0, 1)` | How far T_A is from limit |
+| 2 | `thermal_margin_B` | `clip((T_safe − T_B) / (T_safe − 20), 0, 1)` | How far T_B is from limit |
+| 3 | `soc_health` | `clip(min(SOC − SOC_min, SOC_max − SOC) / 0.4, 0, 1)` | SOC distance from nearest bound |
+| 4 | `freq_stability` | `clip(1 − \|Δf\| / 0.5, 0, 1)` | Distance from frequency limit |
+| 5 | `voltage_margin` | `clip((V_pcc − 0.90) / 0.10, 0, 1)` | Voltage headroom above UV relay |
+| 6 | `cooling_demand_A` | `clip((T_A − (T_warn−2)) / 4, 0, 1) + 0.3·spike` | Cooling urgency for room A |
+| 7 | `cooling_demand_B` | `clip((T_B − (T_warn−2)) / 4, 0, 1)` | Cooling urgency for room B |
+| 8 | `grid_urgency` | `clip(\|regd_signal\|, 0, 1)` | Grid regulation demand |
+| 9 | `batch_pressure` | `clip(backlog / 1.5, 0, 1)` | Compute workload pressure |
+| 10 | `bess_headroom` | `clip(min(SOC − SOC_min, SOC_max − SOC) / 0.3, 0, 1)` | Bidirectional BESS room |
 
 **Neural encoder architecture:**
 - Input: 17-D observation

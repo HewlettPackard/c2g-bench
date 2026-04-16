@@ -117,6 +117,12 @@ def get_shield(agent_name: str) -> ShieldEvaluator:
         return ShieldEvaluator("simplex_eval", SafetyShield())
     elif agent_name == "ha_c2g":
         return ShieldEvaluator("simplex_ha", SafetyShield())
+    elif agent_name == "cbm_shield":
+        # CBM + shield (no gate) — shield is active
+        return ShieldEvaluator("simplex_ablation", SafetyShield())
+    elif agent_name in ("cbm_only", "cbm_gate"):
+        # CBM-only and CBM+gate ablations: no shield
+        return ShieldEvaluator("none", NoShield())
     else:
         return ShieldEvaluator("none", NoShield())
 
@@ -304,6 +310,9 @@ HA_AGENTS = [
     "cpo",
     "reward_shaping",
     "ha_c2g",
+    "cbm_only",
+    "cbm_gate",
+    "cbm_shield",
     "random",
 ]
 
