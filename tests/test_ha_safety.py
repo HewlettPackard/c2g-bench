@@ -534,3 +534,13 @@ class TestAblations:
         assert fe_cbm.features_dim == 27
         assert fe_gate.features_dim == 31
         assert fe_cbm.features_dim < fe_gate.features_dim
+
+    def test_cbm_shield_uses_same_extractor_as_cbm_only(self):
+        """CBM+Shield uses the same non-gated extractor as CBM-Only (dim=27).
+        The safety comes from the shield wrapper, not the feature extractor."""
+        from baselines.safety.concept_bottleneck import C2GConceptFeatureExtractor
+        import gymnasium as gym
+        obs_space = gym.spaces.Box(low=-10, high=10, shape=(17,))
+        fe = C2GConceptFeatureExtractor(obs_space, n_concepts=10)
+        assert fe.features_dim == 27
+        assert not hasattr(fe, 'safety_gate')

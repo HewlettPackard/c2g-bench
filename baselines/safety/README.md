@@ -435,6 +435,7 @@ These ablation baselines isolate the contribution of each layer in the HA-C2G st
 |----------|--------|-----------------|-------------------|
 | `cbm_only` | CBM only | None | Does interpretability alone improve safety? |
 | `cbm_gate` | CBM + Trained Gate | Soft (learned) | Does the trained gate reduce violations without a hard shield? |
+| `cbm_shield` | CBM + Shield | Hard (Simplex) | Does the gate add value when the hard shield is already present? |
 | `ha_c2g` | CBM + Gate + Shield | Hard (Simplex) | Full stack — does the combination outperform each part? |
 
 ### A.1  CBM-Only (Concept Bottleneck without Gate or Shield)
@@ -474,6 +475,26 @@ These ablation baselines isolate the contribution of each layer in the HA-C2G st
 
 ---
 
+### A.3  CBM+Shield (Concept Bottleneck + Physics Shield, no Gate)
+
+| | |
+|---|---|
+| **File** | `baselines/train_cbm_shield.py` |
+| **Config** | `conf/algo/cbm_shield.yaml` |
+| **Sweep phase** | Phase 20 |
+
+**Description:**  PPO with concept bottleneck feature extractor AND the Simplex physics shield (shield-in-the-loop with reward penalty), but NO trained safety gate.  This isolates whether the gate contributes beyond what the hard shield already provides.
+
+**Verification checklist:**
+- [ ] Uses `C2GConceptFeatureExtractor` (NOT gated), output dim = 27
+- [ ] `HAC2GShieldWrapper` wraps the env (shield active during training)
+- [ ] Shield penalty `−0.5` per override shapes reward
+- [ ] `ConceptSupervisionCallback` trains encoder with decaying MSE loss
+- [ ] No `SafeProjectionGate` anywhere in the pipeline
+- [ ] Same PPO hyperparameters as `ha_c2g` for fair comparison
+
+---
+
 ## File Map
 
 ```
@@ -498,6 +519,7 @@ baselines/
 └── train_ha_c2g.py                  # Tier 3: HA-C2G full stack
 └── train_cbm_only.py                # Tier 3 Ablation: CBM only
 └── train_cbm_gate.py                # Tier 3 Ablation: CBM + gate (no shield)
+└── train_cbm_shield.py              # Tier 3 Ablation: CBM + shield (no gate)
 
 conf/algo/
 ├── cbf_ppo.yaml

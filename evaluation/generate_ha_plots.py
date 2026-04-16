@@ -49,6 +49,7 @@ TIER_COLOURS = {
     # Tier 3 ablations (teal family)
     "cbm_only":  "#66c2a5",
     "cbm_gate":  "#fc8d62",
+    "cbm_shield": "#8da0cb",
     # Standard baselines (grey family)
     "ppo":       "#7f7f7f",
     "sac":       "#aec7e8",
@@ -69,6 +70,7 @@ TIER_LABELS = {
     "ha_c2g": "HA-C2G",
     "cbm_only": "CBM-Only",
     "cbm_gate": "CBM+Gate",
+    "cbm_shield": "CBM+Shield",
     "ppo": "PPO",
     "sac": "SAC",
     "random": "Random",

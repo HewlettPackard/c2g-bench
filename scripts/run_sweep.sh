@@ -852,9 +852,42 @@ done
 wait
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Phase 20: HA Benchmark Evaluation (all shields × all scenarios)
+# Phase 20: CBM+Shield ablation training (Tier 3 Ablation)
 # ══════════════════════════════════════════════════════════════════════════════
-echo -e "\n▸ Phase 20: HA Benchmark evaluation (11 metrics) …"
+echo -e "\n▸ Phase 20: CBM+Shield ablation training (300k steps × 12 runs) …"
+for scenario in "${SCENARIOS[@]}"; do
+    for seed in "${SEEDS[@]}"; do
+        if $DRY_RUN; then
+            echo "  [dry-run] train CBM+Shield $scenario seed=$seed"
+            continue
+        fi
+        wait_for_slots
+        (
+            echo "[train] CBM+Shield / ${scenario} / seed=${seed}"
+            OUT_DIR="outputs/cbm_shield_${scenario}/seed_${seed}"
+            $PYTHON baselines/train_cbm_shield.py \
+                algo=cbm_shield \
+                scenario="${scenario}" \
+                experiment.seed="${seed}" \
+                hydra.run.dir="${OUT_DIR}/\${now:%Y-%m-%d_%H-%M-%S}" \
+                2>&1 | tail -5
+
+            LATEST=$(ls -td "${OUT_DIR}"/*/final_model.zip 2>/dev/null | head -1)
+            if [[ -n "$LATEST" ]]; then
+                evaluate "cbm_shield" "$scenario" "$seed" "${LATEST%.zip}"
+            else
+                echo "  [WARN] CBM+Shield ${scenario}/seed_${seed}: no model found"
+            fi
+        ) &
+        NJOBS=$((NJOBS + 1))
+    done
+done
+wait
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Phase 21: HA Benchmark Evaluation (all shields × all scenarios)
+# ══════════════════════════════════════════════════════════════════════════════
+echo -e "\n▸ Phase 21: HA Benchmark evaluation (11 metrics) …"
 if $DRY_RUN; then
     echo "  [dry-run] python evaluation/run_ha_benchmark.py --agents all --n_episodes 5"
 else
@@ -865,9 +898,9 @@ else
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Phase 21: Generate summary table
+# Phase 22: Generate summary table
 # ══════════════════════════════════════════════════════════════════════════════
-echo -e "\n▸ Phase 21: Generating results summary …"
+echo -e "\n▸ Phase 22: Generating results summary …"
 $PYTHON - << 'PYEOF'
 import pandas as pd
 from pathlib import Path
@@ -904,7 +937,7 @@ if csv_macro.exists():
 # LaTeX-ready table
 print("═══ LaTeX table rows (paste into paper) ═══")
 for scenario in ["default", "scenario_a", "scenario_b", "scenario_c"]:
-    for algo in ["random", "bang_bang", "pid", "rule_based", "mpc_fast", "cmaes", "pso", "ppo", "sac", "ppo_lag", "cbf_ppo", "hj_ppo", "mpcsf_ppo", "cpo", "reward_shaping", "cbm_only", "cbm_gate", "ha_c2g"]:
+    for algo in ["random", "bang_bang", "pid", "rule_based", "mpc_fast", "cmaes", "pso", "ppo", "sac", "ppo_lag", "cbf_ppo", "hj_ppo", "mpcsf_ppo", "cpo", "reward_shaping", "cbm_only", "cbm_gate", "cbm_shield", "ha_c2g"]:
         sub = df[(df.scenario == scenario) & (df.algo == algo)]
         if sub.empty:
             continue
