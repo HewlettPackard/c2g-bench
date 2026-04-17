@@ -160,21 +160,6 @@ class TestFastEnvReset:
         obs, _ = env.reset(seed=0)
         assert obs.shape == (17,)
 
-    def test_reset_accepts_unavailable_actions(self):
-        env = C2GFastEnv(
-            scenario="default",
-            unavailable_actions=("hvac_effort", "bess_dispatch"),
-            fixed_action_values={"bess_dispatch": -0.25},
-        )
-        obs, _ = env.reset(seed=0)
-        assert obs.shape == (17,)
-        assert env.unavailable_actions == ("hvac_effort", "bess_dispatch")
-        assert env.fixed_action_values["bess_dispatch"] == pytest.approx(-0.25)
-
-    def test_reset_invalid_unavailable_action_raises(self):
-        with pytest.raises(ValueError, match="Unknown unavailable actions"):
-            C2GFastEnv(scenario="default", unavailable_actions=("not_real",))
-
 
 # ==========================================================================
 # TestFastEnvStep
@@ -266,30 +251,6 @@ class TestFastEnvStep:
         for _ in range(10):
             _, _, _, _, info = fast_env.step(fast_env.action_space.sample())
             assert info["tracking_err_kw"] >= 0.0
-
-    def test_step_applies_default_unavailable_action_value(self):
-        env = C2GFastEnv(scenario="default", unavailable_actions=("hvac_effort",))
-        env.reset(seed=1)
-        action = np.array([0.2, 0.3, 0.1, 0.4], dtype=np.float32)
-        *_, info = env.step(action)
-        assert info["requested_action"]["hvac_effort"] == pytest.approx(0.1)
-        assert info["applied_action"]["hvac_effort"] == pytest.approx(1.0)
-        assert info["unavailable_actions"] == ("hvac_effort",)
-
-    def test_step_applies_cli_style_fixed_action_override(self):
-        env = C2GFastEnv(
-            scenario="default",
-            unavailable_actions=("bess_dispatch", "pump_speed_A"),
-            fixed_action_values={"bess_dispatch": -0.5, "pump_speed_A": 0.25},
-        )
-        env.reset(seed=1)
-        action = np.array([0.7, 0.9, 0.6, 0.8], dtype=np.float32)
-        *_, info = env.step(action)
-        assert info["applied_action"]["bess_dispatch"] == pytest.approx(-0.5)
-        assert info["applied_action"]["pump_speed_A"] == pytest.approx(0.25)
-        assert info["fixed_action_values"]["bess_dispatch"] == pytest.approx(-0.5)
-        assert "bess_dispatch" in info["action_unavailability"]
-        assert "effects" in info["action_unavailability"]["bess_dispatch"]
 
 
 # ==========================================================================

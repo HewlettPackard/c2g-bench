@@ -323,6 +323,13 @@ class C2GTransitionLoggerCallback(BaseCallback):
         "bess_dispatch",        # a_3
     ]
 
+    ACTION_SHORT_NAMES = {
+        "throttle_batch": "THROTTLE",
+        "pump_speed_A": "PUMP",
+        "hvac_effort": "HVAC",
+        "bess_dispatch": "BESS",
+    }
+
     def __init__(
         self,
         output_dir: Path | str = "runs",
@@ -330,6 +337,8 @@ class C2GTransitionLoggerCallback(BaseCallback):
         scenario_name: str | None = None,
         agent_type: str | None = None,
         episode_number: int | None = None,
+        unavailable_actions: tuple[str, ...] | None = None,
+        fixed_action_values: dict[str, float] | None = None,
         verbose: int = 0,
     ):
         super().__init__(verbose)
@@ -337,6 +346,8 @@ class C2GTransitionLoggerCallback(BaseCallback):
         self._scenario_name = scenario_name
         self._agent_type = agent_type
         self._episode_number = episode_number
+        self._unavailable_actions = tuple(unavailable_actions or ())
+        self._fixed_action_values = dict(fixed_action_values or {})
         self._active = True
 
         self._csv_file: Any | None = None
@@ -364,6 +375,30 @@ class C2GTransitionLoggerCallback(BaseCallback):
             self._output_dir = project_root_runs
         self._output_dir.mkdir(parents=True, exist_ok=True)
 
+    @staticmethod
+    def _format_action_value(value: float) -> str:
+        formatted = f"{value:.3f}".rstrip("0").rstrip(".")
+        return formatted if formatted else "0"
+
+    def _build_ablation_suffix(self) -> str:
+        tags: list[str] = []
+        for action_name in sorted(self._unavailable_actions):
+            short = self.ACTION_SHORT_NAMES.get(action_name, action_name.upper())
+            tags.append(f"{short}_disabled")
+
+        for action_name in sorted(self._fixed_action_values):
+            short = self.ACTION_SHORT_NAMES.get(action_name, action_name.upper())
+            value = self._format_action_value(float(self._fixed_action_values[action_name]))
+            tags.append(f"{short}_{value}")
+
+        return "_" + "_".join(tags) if tags else ""
+
+    @staticmethod
+    def _safe_name(value: str | None, default: str) -> str:
+        if not value:
+            return default
+        return str(value).replace(" ", "-")
+
     def _ensure_writer(
         self,
         n_state: int,
@@ -378,10 +413,14 @@ class C2GTransitionLoggerCallback(BaseCallback):
         self._n_act = n_act
         self._n_obs = n_obs
 
+        algo_tag = self._safe_name(self._algorithm_name, "algo")
+        scenario_tag = self._safe_name(self._scenario_name, "scenario")
+        ablation_suffix = self._build_ablation_suffix()
         if self._episode_number is not None:
-            csv_path = self._output_dir / f"episode{self._episode_number}.csv"
+            csv_name = f"episode{self._episode_number}_{algo_tag}_{scenario_tag}{ablation_suffix}.csv"
         else:
-            csv_path = self._output_dir / "episode.csv"
+            csv_name = f"episode_{algo_tag}_{scenario_tag}{ablation_suffix}.csv"
+        csv_path = self._output_dir / csv_name
         if csv_path.exists():
             csv_path.unlink()
         write_header = True

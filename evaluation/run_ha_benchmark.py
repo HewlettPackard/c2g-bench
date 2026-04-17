@@ -68,6 +68,24 @@ _ACTION_BOUNDS: dict[str, tuple[float, float]] = {
     "bess_dispatch": (-1.0, 1.0),
 }
 
+
+def _make_env(
+    scenario: str,
+    unavailable_actions: tuple[str, ...] = (),
+    fixed_action_values: dict[str, float] | None = None,
+    **kwargs,
+) -> C2GFastEnv:
+    """Return ActionAblationFastEnv when ablation flags are active, else C2GFastEnv."""
+    if unavailable_actions or fixed_action_values:
+        from c2g_env.experiments.action_ablation_env import ActionAblationFastEnv
+        return ActionAblationFastEnv(
+            scenario=scenario,
+            unavailable_actions=unavailable_actions,
+            fixed_action_values=fixed_action_values,
+            **kwargs,
+        )
+    return C2GFastEnv(scenario=scenario, **kwargs)
+
 # Obs indices
 _I_TEMP_A   = 0
 _I_TEMP_B   = 1
@@ -319,7 +337,7 @@ def run_ha_episode(
     fixed_action_values: dict[str, float] | None = None,
 ) -> dict[str, float]:
     """Run one episode and return all 11 HA metrics."""
-    env = C2GFastEnv(
+    env = _make_env(
         scenario=scenario,
         unavailable_actions=unavailable_actions,
         fixed_action_values=fixed_action_values,
@@ -335,6 +353,8 @@ def run_ha_episode(
             scenario_name=scenario,
             agent_type="ha",
             episode_number=episode_number,
+            unavailable_actions=unavailable_actions,
+            fixed_action_values=fixed_action_values,
             verbose=0,
         )
 
@@ -465,7 +485,8 @@ def benchmark(
     rows: list[dict[str, Any]] = []
 
     if record_transitions:
-        Path("runs").mkdir(parents=True, exist_ok=True)
+        project_root = Path(__file__).resolve().parent.parent
+        (project_root / "runs").mkdir(parents=True, exist_ok=True)
 
     for scenario in tqdm(scenarios, desc="Scenarios"):
         for agent_name in tqdm(agents, desc="Agents", leave=False):

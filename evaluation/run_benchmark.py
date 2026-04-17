@@ -89,6 +89,24 @@ _ACTION_BOUNDS: dict[str, tuple[float, float]] = {
 }
 
 
+def _make_env(
+    scenario: str,
+    unavailable_actions: tuple[str, ...] = (),
+    fixed_action_values: dict[str, float] | None = None,
+    **kwargs,
+) -> C2GFastEnv:
+    """Return ActionAblationFastEnv when ablation flags are active, else C2GFastEnv."""
+    if unavailable_actions or fixed_action_values:
+        from c2g_env.experiments.action_ablation_env import ActionAblationFastEnv
+        return ActionAblationFastEnv(
+            scenario=scenario,
+            unavailable_actions=unavailable_actions,
+            fixed_action_values=fixed_action_values,
+            **kwargs,
+        )
+    return C2GFastEnv(scenario=scenario, **kwargs)
+
+
 def _parse_fixed_action_args(values: list[str] | None) -> dict[str, float]:
     if not values:
         return {}
@@ -271,7 +289,7 @@ def run_episode(
     fixed_action_values: dict[str, float] | None = None,
 ) -> dict[str, float]:
     """Run one episode and return a metrics dict."""
-    env = C2GFastEnv(
+    env = _make_env(
         scenario=scenario,
         unavailable_actions=unavailable_actions,
         fixed_action_values=fixed_action_values,
@@ -287,6 +305,8 @@ def run_episode(
             scenario_name=scenario,
             agent_type=agent_type,
             episode_number=episode_number,
+            unavailable_actions=unavailable_actions,
+            fixed_action_values=fixed_action_values,
             verbose=0,
         )
 
@@ -373,7 +393,8 @@ def benchmark(
     rows: list[dict[str, Any]] = []
 
     if record_transitions:
-        Path("runs").mkdir(parents=True, exist_ok=True)
+        project_root = Path(__file__).resolve().parent.parent
+        (project_root / "runs").mkdir(parents=True, exist_ok=True)
 
     scenario_bar = tqdm(scenarios, desc="Scenarios", position=0)
     for scenario in scenario_bar:
@@ -385,7 +406,7 @@ def benchmark(
             agent_type = _infer_agent_type(agent_name)
 
             # Instantiate agent once per (agent, scenario) to share weights
-            env_for_space = C2GFastEnv(
+            env_for_space = _make_env(
                 scenario=scenario,
                 unavailable_actions=unavailable_actions,
                 fixed_action_values=fixed_action_values,

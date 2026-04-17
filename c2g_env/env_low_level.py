@@ -70,7 +70,7 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any
 
 import numpy as np
 import yaml
@@ -104,96 +104,6 @@ _ZB_ALPHA    = 1.2
 
 _CONFIG_PATH = Path(__file__).parent / "config.yaml"
 
-_ACTION_NAMES = (
-    "throttle_batch",
-    "pump_speed_A",
-    "hvac_effort",
-    "bess_dispatch",
-)
-
-_ACTION_INDEX = {name: idx for idx, name in enumerate(_ACTION_NAMES)}
-
-_ACTION_BOUNDS = {
-    "throttle_batch": (0.0, 1.0),
-    "pump_speed_A": (0.0, 1.0),
-    "hvac_effort": (0.0, 1.0),
-    "bess_dispatch": (-1.0, 1.0),
-}
-
-_ABLATION_DEFAULTS = {
-    "throttle_batch": 1.0,
-    "pump_speed_A": 1.0,
-    "hvac_effort": 1.0,
-    "bess_dispatch": 0.0,
-}
-
-_ACTION_EFFECTS = {
-    "throttle_batch": {
-        "states": ["p_flex_nom_norm", "p_facility_norm", "backlog_norm", "prev_throttle"],
-        "reward_components": ["throughput", "tracking_error", "sla_backlog"],
-        "internal_signals": ["flex_reduction_kw", "delta_p_actual_kw", "tracking_err_kw"],
-    },
-    "pump_speed_A": {
-        "states": ["temp_A_norm", "p_facility_norm", "prev_pump_speed", "pue_norm"],
-        "reward_components": ["thermal", "voltage"],
-        "internal_signals": ["temp_A", "p_pump_mw", "v_pcc_pu"],
-    },
-    "hvac_effort": {
-        "states": ["temp_B_norm", "p_facility_norm", "pue_norm"],
-        "reward_components": ["thermal", "voltage"],
-        "internal_signals": ["temp_B", "p_facility_mw", "v_pcc_pu"],
-    },
-    "bess_dispatch": {
-        "states": ["bess_soc", "p_facility_norm", "freq_dev_norm", "v_pcc_pu"],
-        "reward_components": ["tracking_error", "bess_soc", "frequency", "voltage"],
-        "internal_signals": ["bess_actual_kw", "delta_p_actual_kw", "tracking_err_kw", "freq_dev_hz"],
-    },
-}
-
-
-def _normalise_action_names(action_names: Iterable[str] | None) -> tuple[str, ...]:
-    if action_names is None:
-        return ()
-
-    cleaned = []
-    invalid = []
-    for action_name in action_names:
-        if action_name not in _ACTION_INDEX:
-            invalid.append(action_name)
-            continue
-        if action_name not in cleaned:
-            cleaned.append(action_name)
-
-    if invalid:
-        valid = ", ".join(_ACTION_NAMES)
-        bad = ", ".join(sorted(str(name) for name in invalid))
-        raise ValueError(f"Unknown unavailable actions: {bad}. Valid actions: {valid}")
-
-    return tuple(cleaned)
-
-
-def _normalise_fixed_action_values(
-    fixed_action_values: Mapping[str, float] | None,
-) -> dict[str, float]:
-    if fixed_action_values is None:
-        return {}
-
-    cleaned: dict[str, float] = {}
-    invalid = []
-    for action_name, value in fixed_action_values.items():
-        if action_name not in _ACTION_BOUNDS:
-            invalid.append(action_name)
-            continue
-        low, high = _ACTION_BOUNDS[action_name]
-        cleaned[action_name] = float(np.clip(float(value), low, high))
-
-    if invalid:
-        valid = ", ".join(_ACTION_NAMES)
-        bad = ", ".join(sorted(str(name) for name in invalid))
-        raise ValueError(f"Unknown fixed_action_values keys: {bad}. Valid actions: {valid}")
-
-    return cleaned
-
 
 def _inverse_rack_util(p_zone_kw: float, n_racks: int,
                        p_idle_kw: float, p_range_kw: float,
@@ -221,11 +131,6 @@ class C2GFastEnv(gym.Env):
         ``"scenario_b"``, or ``"scenario_c"``.
     config_path : str or Path, optional
         Override path to ``config.yaml``.
-    unavailable_actions : iterable of str, optional
-        Action names to disable during ``step()``.
-    fixed_action_values : mapping of str -> float, optional
-        Fixed values for disabled actions. When omitted, per-action
-        defaults from ``ABLATION_DEFAULTS`` are used.
     """
 
     metadata = {"render_modes": []}
@@ -235,10 +140,6 @@ class C2GFastEnv(gym.Env):
     # ------------------------------------------------------------------
     _ACT_LOW  = np.array([0.0,  0.0,  0.0, -1.0], dtype=np.float32)  # throttle, pump, hvac, bess
     _ACT_HIGH = np.array([1.0,  1.0,  1.0,  1.0], dtype=np.float32)
-    ACTION_NAMES = _ACTION_NAMES
-    ACTION_INDEX = _ACTION_INDEX
-    ABLATION_DEFAULTS = _ABLATION_DEFAULTS
-    ACTION_EFFECTS = _ACTION_EFFECTS
 
     _OBS_LOW  = np.array([
         0.0,  # temp_A_norm
@@ -284,8 +185,6 @@ class C2GFastEnv(gym.Env):
         self,
         scenario: str = "default",
         config_path: str | Path | None = None,
-        unavailable_actions: Iterable[str] | None = None,
-        fixed_action_values: Mapping[str, float] | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__()
@@ -298,8 +197,6 @@ class C2GFastEnv(gym.Env):
         self._rcfg   = full_cfg["reward"]
         self._scfg   = full_cfg[scenario]
         self._scenario = scenario
-        self._unavailable_actions = _normalise_action_names(unavailable_actions)
-        self._fixed_action_values = _normalise_fixed_action_values(fixed_action_values)
 
         self.action_space = spaces.Box(
             low=self._ACT_LOW, high=self._ACT_HIGH, dtype=np.float32
@@ -325,14 +222,6 @@ class C2GFastEnv(gym.Env):
         self._committed_mw   = float(self._scfg["committed_mw"])
         self._episode_ticks  = int(self._gcfg["episode_ticks"])
         self._dt             = float(self._gcfg["dt_seconds"])
-
-    @property
-    def unavailable_actions(self) -> tuple[str, ...]:
-        return self._unavailable_actions
-
-    @property
-    def fixed_action_values(self) -> dict[str, float]:
-        return dict(self._fixed_action_values)
 
     # ------------------------------------------------------------------
     # Public API helpers
@@ -464,27 +353,12 @@ class C2GFastEnv(gym.Env):
         -------
         obs, reward, terminated, truncated, info
         """
-        action = np.clip(action.astype(np.float32), self._ACT_LOW, self._ACT_HIGH)
-        requested_action = {
-            name: float(action[idx]) for idx, name in enumerate(self.ACTION_NAMES)
-        }
-        applied_action = dict(requested_action)
-        unavailable_action_info: dict[str, dict[str, Any]] = {}
-        for action_name in self._unavailable_actions:
-            applied_value = float(
-                self._fixed_action_values.get(action_name, self.ABLATION_DEFAULTS[action_name])
-            )
-            unavailable_action_info[action_name] = {
-                "requested": requested_action[action_name],
-                "applied": applied_value,
-                "effects": self.ACTION_EFFECTS[action_name],
-            }
-            applied_action[action_name] = applied_value
-
-        throttle_batch = applied_action["throttle_batch"]
-        pump_speed_A   = applied_action["pump_speed_A"]
-        hvac_effort    = applied_action["hvac_effort"]
-        bess_dispatch  = applied_action["bess_dispatch"]
+        action         = np.clip(action.astype(np.float32),
+                                 self._ACT_LOW, self._ACT_HIGH)
+        throttle_batch = float(action[0])
+        pump_speed_A   = float(action[1])
+        hvac_effort    = float(action[2])
+        bess_dispatch  = float(action[3])   # [-1, 1]
 
         # Scale BESS dispatch to MW.
         # Positive = discharge (DC injects power back to grid side).
@@ -685,12 +559,6 @@ class C2GFastEnv(gym.Env):
             "freq_penalty":          freq_pen,
             "volt_penalty":          volt_pen,
             "scenario":              self._scenario,
-            "requested_action":      requested_action,
-            "applied_action":        applied_action,
-            "unavailable_actions":   self._unavailable_actions,
-            "fixed_action_values":   self.fixed_action_values,
-            "action_unavailability": unavailable_action_info,
-            "action_effects":        self.ACTION_EFFECTS,
         }
         return obs, reward, terminated, truncated, info
 
