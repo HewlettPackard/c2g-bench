@@ -33,6 +33,35 @@ Metrics tracked per episode
 
   ep/length               ticks in episode (288 = full; < 288 = early term)
   ep/survived             1 if full episode completed, else 0
+
+Metrics tracked per step (C2GTransitionLoggerCallback)
+State / Observation / Action Space
+-----------------------------------
+
+Observations (s_i / o_i, 17-D normalised):
+  s_0 / o_0               temp_A_norm — Zone A (liquid-cooled GPU) temperature / T_safe
+  s_1 / o_1               temp_B_norm — Zone B (air-cooled CPU) temperature / T_safe
+  s_2 / o_2               bess_soc — Battery state of charge [0, 1]
+  s_3 / o_3               p_base_norm — Rigid IT load fraction (GenAI + DLRM)
+  s_4 / o_4               p_flex_nom_norm — Schedulable batch capacity at full throttle
+  s_5 / o_5               p_facility_norm — Total facility power draw
+  s_6 / o_6               regd_signal — Grid RegD regulation signal [-1, 1]
+  s_7 / o_7               lmp_norm — Locational marginal price (normalised)
+  s_8 / o_8               grid_load_norm — Regional grid load stress indicator
+  s_9 / o_9               is_spike — GenAI serving spike flag {0, 1}
+  s_10 / o_10             prev_throttle — Previous DVFS throttle action (action memory)
+  s_11 / o_11             prev_pump_speed — Previous CDU pump speed action (action memory)
+  s_12 / o_12             pue_norm — Power Usage Effectiveness / 2
+  s_13 / o_13             T_amb_norm — Ambient temperature / 50
+  s_14 / o_14             freq_dev_norm — Grid frequency deviation / 0.5 Hz
+  s_15 / o_15             v_pcc_pu — PCC voltage in per-unit (Thévenin model)
+  s_16 / o_16             backlog_norm — Deferred batch FIFO queue depth / p_flex_max
+
+Actions (a_i, 4-D continuous):
+  a_0                     throttle_batch — DVFS throttle [0=full speed, 1=fully throttled]
+  a_1                     pump_speed_A — CDU pump speed Zone A [0, 1]
+  a_2                     hvac_effort — Zone B HVAC fan effort [0, 1]
+  a_3                     bess_dispatch — BESS dispatch [−1=full charge, +1=full discharge]
 """
 from __future__ import annotations
 
@@ -266,6 +295,41 @@ class C2GTransitionLoggerCallback(BaseCallback):
       2) Manual mode via ``record_transition`` for evaluation loops.
     """
 
+    # Semantic lookup tables for state, observation, and action indices
+    STATE_NAMES = [
+        "temp_A_norm",          # s_0 / o_0
+        "temp_B_norm",          # s_1 / o_1
+        "bess_soc",             # s_2 / o_2
+        "p_base_norm",          # s_3 / o_3
+        "p_flex_nom_norm",      # s_4 / o_4
+        "p_facility_norm",      # s_5 / o_5
+        "regd_signal",          # s_6 / o_6
+        "lmp_norm",             # s_7 / o_7
+        "grid_load_norm",       # s_8 / o_8
+        "is_spike",             # s_9 / o_9
+        "prev_throttle",        # s_10 / o_10
+        "prev_pump_speed",      # s_11 / o_11
+        "pue_norm",             # s_12 / o_12
+        "T_amb_norm",           # s_13 / o_13
+        "freq_dev_norm",        # s_14 / o_14
+        "v_pcc_pu",             # s_15 / o_15
+        "backlog_norm",         # s_16 / o_16
+    ]
+
+    ACTION_NAMES = [
+        "throttle_batch",       # a_0
+        "pump_speed_A",         # a_1
+        "hvac_effort",          # a_2
+        "bess_dispatch",        # a_3
+    ]
+
+    ACTION_SHORT_NAMES = {
+        "throttle_batch": "THROTTLE",
+        "pump_speed_A": "PUMP",
+        "hvac_effort": "HVAC",
+        "bess_dispatch": "BESS",
+    }
+
     def __init__(
         self,
         output_dir: Path | str = "runs",
@@ -273,21 +337,17 @@ class C2GTransitionLoggerCallback(BaseCallback):
         scenario_name: str | None = None,
         agent_type: str | None = None,
         episode_number: int | None = None,
+        unavailable_actions: tuple[str, ...] | None = None,
+        fixed_action_values: dict[str, float] | None = None,
         verbose: int = 0,
     ):
         super().__init__(verbose)
-        base_dir = Path(output_dir)
-        base_dir.mkdir(parents=True, exist_ok=True)
-        if algorithm_name is not None and scenario_name is not None and agent_type is not None:
-            self._output_dir = base_dir / f"{algorithm_name}_{scenario_name}_{agent_type}"
-        else:
-            self._output_dir = base_dir
-        self._output_dir.mkdir(parents=True, exist_ok=True)
-
         self._algorithm_name = algorithm_name
         self._scenario_name = scenario_name
         self._agent_type = agent_type
         self._episode_number = episode_number
+        self._unavailable_actions = tuple(unavailable_actions or ())
+        self._fixed_action_values = dict(fixed_action_values or {})
         self._active = True
 
         self._csv_file: Any | None = None
@@ -299,6 +359,45 @@ class C2GTransitionLoggerCallback(BaseCallback):
         self._reward_component_keys: list[str] = []
 
         self._global_step = 0
+
+        # Transition logs are only written under <project_root>/runs.
+        project_root_runs = Path(__file__).resolve().parent.parent / output_dir
+        if not project_root_runs.exists() or not project_root_runs.is_dir():
+            self._output_dir = project_root_runs
+            self._active = False
+            if self.verbose >= 1:
+                print(f"[transition_logger] Skipping logging: missing {project_root_runs}")
+            return
+
+        if algorithm_name is not None and scenario_name is not None and agent_type is not None:
+            self._output_dir = project_root_runs / f"{algorithm_name}_{scenario_name}_{agent_type}"
+        else:
+            self._output_dir = project_root_runs
+        self._output_dir.mkdir(parents=True, exist_ok=True)
+
+    @staticmethod
+    def _format_action_value(value: float) -> str:
+        formatted = f"{value:.3f}".rstrip("0").rstrip(".")
+        return formatted if formatted else "0"
+
+    def _build_ablation_suffix(self) -> str:
+        tags: list[str] = []
+        for action_name in sorted(self._unavailable_actions):
+            short = self.ACTION_SHORT_NAMES.get(action_name, action_name.upper())
+            tags.append(f"{short}_disabled")
+
+        for action_name in sorted(self._fixed_action_values):
+            short = self.ACTION_SHORT_NAMES.get(action_name, action_name.upper())
+            value = self._format_action_value(float(self._fixed_action_values[action_name]))
+            tags.append(f"{short}_{value}")
+
+        return "_" + "_".join(tags) if tags else ""
+
+    @staticmethod
+    def _safe_name(value: str | None, default: str) -> str:
+        if not value:
+            return default
+        return str(value).replace(" ", "-")
 
     def _ensure_writer(
         self,
@@ -314,10 +413,14 @@ class C2GTransitionLoggerCallback(BaseCallback):
         self._n_act = n_act
         self._n_obs = n_obs
 
+        algo_tag = self._safe_name(self._algorithm_name, "algo")
+        scenario_tag = self._safe_name(self._scenario_name, "scenario")
+        ablation_suffix = self._build_ablation_suffix()
         if self._episode_number is not None:
-            csv_path = self._output_dir / f"episode{self._episode_number}.csv"
+            csv_name = f"episode{self._episode_number}_{ablation_suffix}.csv"
         else:
-            csv_path = self._output_dir / "episode.csv"
+            csv_name = f"episode_{ablation_suffix}.csv"
+        csv_path = self._output_dir / csv_name
         if csv_path.exists():
             csv_path.unlink()
         write_header = True
@@ -326,9 +429,28 @@ class C2GTransitionLoggerCallback(BaseCallback):
         self._reward_component_keys = sorted((reward_components or {}).keys())
 
         cols = ["timestep"]
-        cols += [f"s_{i}" for i in range(self._n_state)]
-        cols += [f"a_{i}" for i in range(self._n_act)]
-        cols += [f"o_{i}" for i in range(self._n_obs)]
+        
+        # Map state indices to semantic names
+        for i in range(min(n_state, len(self.STATE_NAMES))):
+            cols.append(f"s_{self.STATE_NAMES[i]}")
+        # Fall back to generic names if more states than documented
+        for i in range(len(self.STATE_NAMES), n_state):
+            cols.append(f"s_{i}")
+        
+        # Map action indices to semantic names
+        for i in range(min(n_act, len(self.ACTION_NAMES))):
+            cols.append(f"a_{self.ACTION_NAMES[i]}")
+        # Fall back to generic names if more actions than documented
+        for i in range(len(self.ACTION_NAMES), n_act):
+            cols.append(f"a_{i}")
+        
+        # Map observation indices to semantic names
+        for i in range(min(n_obs, len(self.STATE_NAMES))):
+            cols.append(f"o_{self.STATE_NAMES[i]}")
+        # Fall back to generic names if more observations than documented
+        for i in range(len(self.STATE_NAMES), n_obs):
+            cols.append(f"o_{i}")
+        
         cols += ["r"]
         cols += [f"r_{k}" for k in self._reward_component_keys]
 
@@ -362,12 +484,27 @@ class C2GTransitionLoggerCallback(BaseCallback):
             "timestep": self._global_step,
             "r": float(reward),
         }
+        
+        # Map state values to semantic names
         for i, val in enumerate(s):
-            row[f"s_{i}"] = float(val)
+            if i < len(self.STATE_NAMES):
+                row[f"s_{self.STATE_NAMES[i]}"] = float(val)
+            else:
+                row[f"s_{i}"] = float(val)
+        
+        # Map action values to semantic names
         for i, val in enumerate(a):
-            row[f"a_{i}"] = float(val)
+            if i < len(self.ACTION_NAMES):
+                row[f"a_{self.ACTION_NAMES[i]}"] = float(val)
+            else:
+                row[f"a_{i}"] = float(val)
+        
+        # Map observation values to semantic names
         for i, val in enumerate(o):
-            row[f"o_{i}"] = float(val)
+            if i < len(self.STATE_NAMES):
+                row[f"o_{self.STATE_NAMES[i]}"] = float(val)
+            else:
+                row[f"o_{i}"] = float(val)
 
         for k in self._reward_component_keys:
             row[f"r_{k}"] = float((reward_components or {}).get(k, 0.0))

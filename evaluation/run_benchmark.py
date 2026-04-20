@@ -80,6 +80,68 @@ SCENARIOS    = ["default", "scenario_a", "scenario_b", "scenario_c"]
 T_WARN_NORM  = 33.0 / 35.0   # normalised warning threshold
 DT_S         = 300            # seconds per tick
 COMMIT_MW    = {"default": 15.0, "scenario_a": 20.0, "scenario_b": 30.0, "scenario_c": 15.0}
+_VALID_ACTIONS = ("throttle_batch", "pump_speed_A", "hvac_effort", "bess_dispatch")
+_ACTION_BOUNDS: dict[str, tuple[float, float]] = {
+    "throttle_batch": (0.0, 1.0),
+    "pump_speed_A": (0.0, 1.0),
+    "hvac_effort": (0.0, 1.0),
+    "bess_dispatch": (-1.0, 1.0),
+}
+
+
+def _make_env(
+    scenario: str,
+    unavailable_actions: tuple[str, ...] = (),
+    fixed_action_values: dict[str, float] | None = None,
+    **kwargs,
+) -> C2GFastEnv:
+    """Return ActionAblationFastEnv when ablation flags are active, else C2GFastEnv."""
+    if unavailable_actions or fixed_action_values:
+        from c2g_env.experiments.action_ablation_env import ActionAblationFastEnv
+        return ActionAblationFastEnv(
+            scenario=scenario,
+            unavailable_actions=unavailable_actions,
+            fixed_action_values=fixed_action_values,
+            **kwargs,
+        )
+    return C2GFastEnv(scenario=scenario, **kwargs)
+
+
+def _parse_fixed_action_args(values: list[str] | None) -> dict[str, float]:
+    if not values:
+        return {}
+
+    fixed_action_values: dict[str, float] = {}
+    for item in values:
+        if "=" not in item:
+            raise ValueError(
+                f"Invalid --fixed-action '{item}'. Expected format action=value."
+            )
+        action_name, raw_value = item.split("=", 1)
+        action_name = action_name.strip()
+        if action_name not in _ACTION_BOUNDS:
+            valid = ", ".join(_VALID_ACTIONS)
+            raise ValueError(
+                f"Invalid action '{action_name}' in --fixed-action. Valid actions: {valid}"
+            )
+        try:
+            value = float(raw_value)
+        except ValueError as exc:
+            raise ValueError(
+                f"Invalid fixed value for action '{action_name}': {raw_value}"
+            ) from exc
+        if not np.isfinite(value):
+            raise ValueError(
+                f"Invalid fixed value for action '{action_name}': {raw_value}. Value must be finite."
+            )
+        lo, hi = _ACTION_BOUNDS[action_name]
+        if value < lo or value > hi:
+            raise ValueError(
+                f"Invalid fixed value for action '{action_name}': {value}. "
+                f"Expected range [{lo}, {hi}]."
+            )
+        fixed_action_values[action_name] = value
+    return fixed_action_values
 
 
 def _infer_agent_type(agent_name: str) -> str:
@@ -223,9 +285,15 @@ def run_episode(
     agent_type: str = "hardware",
     episode_number: int = 0,
     record_transitions: bool = True,
+    unavailable_actions: tuple[str, ...] = (),
+    fixed_action_values: dict[str, float] | None = None,
 ) -> dict[str, float]:
     """Run one episode and return a metrics dict."""
-    env = C2GFastEnv(scenario=scenario)
+    env = _make_env(
+        scenario=scenario,
+        unavailable_actions=unavailable_actions,
+        fixed_action_values=fixed_action_values,
+    )
     obs, _ = env.reset(seed=seed)
     algo_for_logging = getattr(agent, "algo_name", (algo_name or "unknown"))
 
@@ -237,6 +305,8 @@ def run_episode(
             scenario_name=scenario,
             agent_type=agent_type,
             episode_number=episode_number,
+            unavailable_actions=unavailable_actions,
+            fixed_action_values=fixed_action_values,
             verbose=0,
         )
 
@@ -317,11 +387,14 @@ def benchmark(
     seed_start  : int,
     model_dir   : str | None,
     record_transitions: bool = True,
+    unavailable_actions: tuple[str, ...] = (),
+    fixed_action_values: dict[str, float] | None = None,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
 
     if record_transitions:
-        Path("runs").mkdir(parents=True, exist_ok=True)
+        project_root = Path(__file__).resolve().parent.parent
+        (project_root / "runs").mkdir(parents=True, exist_ok=True)
 
     scenario_bar = tqdm(scenarios, desc="Scenarios", position=0)
     for scenario in scenario_bar:
@@ -333,7 +406,11 @@ def benchmark(
             agent_type = _infer_agent_type(agent_name)
 
             # Instantiate agent once per (agent, scenario) to share weights
-            env_for_space = C2GFastEnv(scenario=scenario)
+            env_for_space = _make_env(
+                scenario=scenario,
+                unavailable_actions=unavailable_actions,
+                fixed_action_values=fixed_action_values,
+            )
             env_for_space.reset(seed=0)
 
             if agent_name == "rule_based":
@@ -415,6 +492,8 @@ def benchmark(
                     agent_type=agent_type,
                     episode_number=ep,
                     record_transitions=record_transitions,
+                    unavailable_actions=unavailable_actions,
+                    fixed_action_values=fixed_action_values,
                 )
                 ep_metrics.append(m)
 
@@ -478,7 +557,7 @@ def save_csv(rows: list[dict[str, Any]], path: Path) -> None:
         writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
         writer.writeheader()
         writer.writerows(rows)
-    print(f"\nResults saved → {path}")
+    print(f"\nResults saved -> {path}")
 
 
 # ---------------------------------------------------------------------------
@@ -513,10 +592,33 @@ if __name__ == "__main__":
     parser.add_argument(
         "--record_transitions",
         action=argparse.BooleanOptionalAction,
-        default=True,
+        default=False,
         help="Enable/disable per-step transition logging under runs/<algo>_<scenario>_<agent>/transitions_<episode>.csv",
     )
+    parser.add_argument(
+        "--disable-actions", "--disabled_actions",
+        nargs="*",
+        default=None,
+        choices=_VALID_ACTIONS,
+        help="Low-level actions to mark unavailable: throttle_batch pump_speed_A hvac_effort bess_dispatch",
+    )
+    parser.add_argument(
+        "--fixed-action",
+        action="append",
+        default=[],
+        help="Optional fixed value for a disabled action, e.g. --fixed-action hvac_effort=0.8",
+    )
     args = parser.parse_args()
+
+    if args.disable_actions is not None and len(args.disable_actions) == 0:
+        parser.error("--disable-actions/--disabled_actions was provided but no actions were listed.")
+
+    try:
+        fixed_action_values = _parse_fixed_action_args(args.fixed_action)
+    except ValueError as exc:
+        parser.error(str(exc))
+
+    unavailable_actions = tuple(args.disable_actions or ())
 
     rows = benchmark(
         agents     = args.agents,
@@ -525,6 +627,8 @@ if __name__ == "__main__":
         seed_start = args.seed,
         model_dir  = args.model_dir,
         record_transitions = args.record_transitions,
+        unavailable_actions = unavailable_actions,
+        fixed_action_values = fixed_action_values,
     )
     print_results_table(rows)
     save_csv(rows, Path(args.output))

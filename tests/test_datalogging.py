@@ -1,5 +1,5 @@
 from __future__ import annotations
-import csv, json
+import csv, json, os
 from pathlib import Path
 import numpy as np
 import pytest
@@ -25,21 +25,82 @@ class TestDataLogging:
                     rows = list(reader)
 
                 fieldnames = reader.fieldnames or []
-                s_idxs = sorted(
-                    int(name.split("_", 1)[1])
-                    for name in fieldnames
-                    if name.startswith("s_") and name.split("_", 1)[1].isdigit()
-                )
+                
+                # Extract state columns with semantic names (s_temp_A_norm, s_bess_soc, etc.)
+                s_cols = sorted([name for name in fieldnames if name.startswith("s_")])
 
                 # For every consecutive pair (prev_row, curr_row) from index 1 to
                 # the last row: curr_row state must equal prev_row observation.
                 for row_idx, (prev_row, curr_row) in enumerate(zip(rows, rows[1:]), start=1):
-                    for i in s_idxs:
-                        s_key = f"s_{i}"
-                        o_key = f"o_{i}"
-                        if o_key not in fieldnames:
-                            continue
-                        assert float(curr_row[s_key]) == pytest.approx(float(prev_row[o_key]), abs=1e-6), (
-                            f"Transition mismatch in {csv_path.name} at row {row_idx}, dim {i}: "
-                            f"{s_key}={curr_row[s_key]} vs prev {o_key}={prev_row[o_key]}"
+                    for s_col in s_cols:
+                        o_col = s_col.replace("s_", "o_", 1)
+                        
+                        if o_col not in fieldnames:
+                            raise Exception(f"Expected observation column {o_col} corresponding to state column {s_col} not found in {csv_path.name}")
+                        
+                        assert float(curr_row[s_col]) == pytest.approx(float(prev_row[o_col]), abs=1e-6), (
+                            f"Transition mismatch in {csv_path.name} at row {row_idx}, {s_col}: "
+                            f"{s_col}={curr_row[s_col]} vs prev {o_col}={prev_row[o_col]}"
                         )
+
+    def test_datalogging_column_schema(self):
+        """
+        Verify that every CSV file in runs/ has the correct column schema:
+        - 17 o_* columns (observations)
+        - 17 s_* columns (states)
+        - 4 a_* columns (actions)
+        - 7 r_* columns (reward components)
+        - 1 r column (total reward)
+        """
+        runs_dir = "runs"
+        
+        # Exit if runs/ doesn't exist
+        if not os.path.exists(runs_dir) or not os.path.isdir(runs_dir):
+            pytest.skip("runs/ directory does not exist")
+        
+        # Recursively walk through runs/ and collect all CSV files
+        all_csv_files = []
+        for root, dirs, files in os.walk(runs_dir):
+            for file in files:
+                if file.endswith(".csv"):
+                    all_csv_files.append(os.path.join(root, file))
+        
+        # Exit if no CSV files found
+        if not all_csv_files:
+            pytest.skip("No CSV files found in runs/")
+        
+        errors = []
+        
+        for csv_path in all_csv_files:
+            with open(csv_path, newline="") as f:
+                reader = csv.DictReader(f)
+                fieldnames = reader.fieldnames or []
+            
+            # Count columns by prefix
+            o_cols = [col for col in fieldnames if col.startswith("o_")]
+            s_cols = [col for col in fieldnames if col.startswith("s_")]
+            a_cols = [col for col in fieldnames if col.startswith("a_")]
+            r_component_cols = [col for col in fieldnames if col.startswith("r_")]
+            r_total_cols = [col for col in fieldnames if col == "r"]
+            
+            file_errors = []
+            
+            if len(o_cols) != 17:
+                file_errors.append(f"o_* columns: expected 17, found {len(o_cols)}")
+            if len(s_cols) != 17:
+                file_errors.append(f"s_* columns: expected 17, found {len(s_cols)}")
+            if len(a_cols) != 4:
+                file_errors.append(f"a_* columns: expected 4, found {len(a_cols)}")
+            if len(r_component_cols) != 7:
+                file_errors.append(f"r_* columns: expected 7, found {len(r_component_cols)}")
+            if len(r_total_cols) != 1:
+                file_errors.append(f"r column: expected 1, found {len(r_total_cols)}")
+            
+            if file_errors:
+                rel_path = os.path.relpath(csv_path, runs_dir)
+                error_msg = f"{rel_path}: " + "; ".join(file_errors)
+                errors.append(error_msg)
+        
+        if errors:
+            error_report = "\n".join(errors)
+            raise AssertionError(f"Column schema violations found:\n{error_report}")
