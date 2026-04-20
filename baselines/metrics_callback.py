@@ -74,6 +74,91 @@ from stable_baselines3.common.callbacks import BaseCallback
 
 T_WARN = 33.0   # °C — thermal warning threshold (mirrors config.yaml)
 
+STATE_COLUMNS = [
+    "s_temp_A_norm",
+    "s_temp_B_norm",
+    "s_bess_soc",
+    "s_p_base_norm",
+    "s_p_flex_nom_norm",
+    "s_p_facility_norm",
+    "s_regd_signal",
+    "s_lmp_norm",
+    "s_grid_load_norm",
+    "s_is_spike",
+    "s_prev_throttle",
+    "s_prev_pump_speed",
+    "s_pue_norm",
+    "s_T_amb_norm",
+    "s_freq_dev_norm",
+    "s_v_pcc_pu",
+    "s_backlog_norm",
+]
+
+REWARD_COLUMNS = [
+    "total_reward",
+    "r_throughput",
+    "r_tracking",
+    "r_thermal",
+    "r_soc",
+    "r_freq",
+    "r_volt",
+    "r_backlog",
+]
+
+ACTION_NAMES = [
+    "throttle_batch",
+    "pump_speed_A",
+    "hvac_effort",
+    "bess_dispatch",
+]
+
+ACTION_SHORT_NAMES = {
+    "throttle_batch": "THROTTLE",
+    "pump_speed_A": "PUMP",
+    "hvac_effort": "HVAC",
+    "bess_dispatch": "BESS",
+}
+
+VALID_ACTIONS = tuple(ACTION_SHORT_NAMES.keys())
+STATE_NAMES = [col.removeprefix("s_") for col in STATE_COLUMNS]
+
+
+def _format_action_value(value: float) -> str:
+    formatted = f"{value:.3f}".rstrip("0").rstrip(".")
+    return formatted if formatted else "0"
+
+
+def _sorted_ablation_actions(
+    unavailable_actions: tuple[str, ...],
+    fixed_action_values: dict[str, float],
+) -> list[str]:
+    # Sort by short action tag so suffixes are stable and human-readable
+    # (for example BESS before THROTTLE).
+    action_names = set(unavailable_actions) | set(fixed_action_values.keys())
+    return sorted(
+        action_names,
+        key=lambda name: ACTION_SHORT_NAMES.get(name, name.upper()),
+    )
+
+
+def build_ablation_suffix(
+    unavailable_actions: tuple[str, ...] | None,
+    fixed_action_values: dict[str, float] | None,
+) -> str:
+    unavailable = tuple(unavailable_actions or ())
+    fixed = dict(fixed_action_values or {})
+
+    tags: list[str] = []
+    for action_name in _sorted_ablation_actions(unavailable, fixed):
+        short = ACTION_SHORT_NAMES.get(action_name, action_name.upper())
+        if action_name in unavailable:
+            tags.append(f"{short}_disabled")
+        if action_name in fixed:
+            value = _format_action_value(float(fixed[action_name]))
+            tags.append(f"{short}_{value}")
+
+    return f"__{'_'.join(tags)}" if tags else ""
+
 
 class C2GMetricsCallback(BaseCallback):
     """
@@ -296,39 +381,9 @@ class C2GTransitionLoggerCallback(BaseCallback):
     """
 
     # Semantic lookup tables for state, observation, and action indices
-    STATE_NAMES = [
-        "temp_A_norm",          # s_0 / o_0
-        "temp_B_norm",          # s_1 / o_1
-        "bess_soc",             # s_2 / o_2
-        "p_base_norm",          # s_3 / o_3
-        "p_flex_nom_norm",      # s_4 / o_4
-        "p_facility_norm",      # s_5 / o_5
-        "regd_signal",          # s_6 / o_6
-        "lmp_norm",             # s_7 / o_7
-        "grid_load_norm",       # s_8 / o_8
-        "is_spike",             # s_9 / o_9
-        "prev_throttle",        # s_10 / o_10
-        "prev_pump_speed",      # s_11 / o_11
-        "pue_norm",             # s_12 / o_12
-        "T_amb_norm",           # s_13 / o_13
-        "freq_dev_norm",        # s_14 / o_14
-        "v_pcc_pu",             # s_15 / o_15
-        "backlog_norm",         # s_16 / o_16
-    ]
-
-    ACTION_NAMES = [
-        "throttle_batch",       # a_0
-        "pump_speed_A",         # a_1
-        "hvac_effort",          # a_2
-        "bess_dispatch",        # a_3
-    ]
-
-    ACTION_SHORT_NAMES = {
-        "throttle_batch": "THROTTLE",
-        "pump_speed_A": "PUMP",
-        "hvac_effort": "HVAC",
-        "bess_dispatch": "BESS",
-    }
+    STATE_NAMES = STATE_NAMES
+    ACTION_NAMES = ACTION_NAMES
+    ACTION_SHORT_NAMES = ACTION_SHORT_NAMES
 
     def __init__(
         self,
@@ -375,23 +430,8 @@ class C2GTransitionLoggerCallback(BaseCallback):
             self._output_dir = project_root_runs
         self._output_dir.mkdir(parents=True, exist_ok=True)
 
-    @staticmethod
-    def _format_action_value(value: float) -> str:
-        formatted = f"{value:.3f}".rstrip("0").rstrip(".")
-        return formatted if formatted else "0"
-
     def _build_ablation_suffix(self) -> str:
-        tags: list[str] = []
-        for action_name in sorted(self._unavailable_actions):
-            short = self.ACTION_SHORT_NAMES.get(action_name, action_name.upper())
-            tags.append(f"{short}_disabled")
-
-        for action_name in sorted(self._fixed_action_values):
-            short = self.ACTION_SHORT_NAMES.get(action_name, action_name.upper())
-            value = self._format_action_value(float(self._fixed_action_values[action_name]))
-            tags.append(f"{short}_{value}")
-
-        return "_" + "_".join(tags) if tags else ""
+        return build_ablation_suffix(self._unavailable_actions, self._fixed_action_values)
 
     @staticmethod
     def _safe_name(value: str | None, default: str) -> str:

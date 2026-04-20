@@ -1267,6 +1267,35 @@ Notes:
 - Action-effect metadata is exposed through `action_effects` and `action_unavailability` in the step info dict.
 - When enabled, transition logs are written under `runs/<agent>_<scenario>_ha/episode*.csv`.
 
+#### Plotting episode traces and statistics
+
+After generating transition logs (via `--record_transitions` in benchmark runners), you can visualize per-step state, action, observation, and reward traces as aggregated statistics (mean ± 99% CI across episodes). Writes per-step episode CSV files under `runs/<algo>_<scenario>_<agent_type>/` (e.g., `episode0__HVAC_disabled_BESS_0.csv`).
+
+**Plot episode statistics**:
+
+```bash
+# Basic usage (no ablation)
+uv run evaluation/plot_episode_traces.py --algoname bang_bang --scenario default --agent-type hardware
+
+# With ablation filters (plots only episodes matching specific disabled/fixed actions)
+uv run evaluation/plot_episode_traces.py \
+  --algoname bang_bang \
+  --disable-actions bess_dispatch \
+  --fixed-action pump_speed_A=0.25 \
+  --scenario default \
+  --agent-type macro
+```
+
+**Outputs:**
+
+- **JPEG**: `figures/<algo>_<scenario>_<agent_type>[__ABLATION_SUFFIX].jpeg`
+- **PDF**: `figures/<algo>_<scenario>_<agent_type>[__ABLATION_SUFFIX].pdf`
+
+Each figure contains one subplot per state/reward column, shows the **mean** line (solid) with a **99% confidence band** (shaded area) computed across all matching episodes.
+- State variables (blue), with 0–1 reference bounds shown as dashed lines
+- Cumulative reward components (red)
+
+
 ### Download real-world data (optional — CSVs are bundled)
 
 ```bash
