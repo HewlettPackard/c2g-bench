@@ -361,7 +361,7 @@ class C2GTransitionLoggerCallback(BaseCallback):
         self._global_step = 0
 
         # Transition logs are only written under <project_root>/runs.
-        project_root_runs = Path(__file__).resolve().parent.parent / "runs"
+        project_root_runs = Path(__file__).resolve().parent.parent / output_dir
         if not project_root_runs.exists() or not project_root_runs.is_dir():
             self._output_dir = project_root_runs
             self._active = False
@@ -417,9 +417,9 @@ class C2GTransitionLoggerCallback(BaseCallback):
         scenario_tag = self._safe_name(self._scenario_name, "scenario")
         ablation_suffix = self._build_ablation_suffix()
         if self._episode_number is not None:
-            csv_name = f"episode{self._episode_number}_{algo_tag}_{scenario_tag}{ablation_suffix}.csv"
+            csv_name = f"episode{self._episode_number}_{ablation_suffix}.csv"
         else:
-            csv_name = f"episode_{algo_tag}_{scenario_tag}{ablation_suffix}.csv"
+            csv_name = f"episode_{ablation_suffix}.csv"
         csv_path = self._output_dir / csv_name
         if csv_path.exists():
             csv_path.unlink()
