@@ -127,10 +127,10 @@ M_{\text{macro}} = (\mathcal{S}_M,\, \mathcal{A}_M,\, P_M,\, R_M,\, \gamma_M,\, 
 
 | Symbol | Definition |
 |--------|-----------|
-| $\mathcal{S}_M \subset \mathbb{R}^{17}$ | Aggregated sub-step states: component-wise means + SOC endpoint + extrema |
-| $\mathcal{A}_M = [0,1] \times [-1,1]$ | 2-D: `commit_norm` (regulation MW fraction), `bess_target` (average BESS dispatch) |
+| $\mathcal{S}_M \subset \mathbb{R}^{19}$ | Aggregated sub-step states: component-wise means + SOC endpoint + extrema + market context |
+| $\mathcal{A}_M = [0,1]^2$ | 2-D: `bid_mw_norm` (MW capacity to offer), `bid_price_norm` (asking price) |
 | $P_M$ | $K$ applications of the lower-level transition $P$ |
-| $R_M$ | $\bar{r}_K + \text{LMP bonus} - \text{churn penalty}$ |
+| $R_M$ | $\lambda_{\text{rev}} \times \text{regulation revenue} + \bar{r}_K - \lambda_{\text{elec}} \times \text{electricity cost} - \lambda_{\text{churn}} \times |\Delta\text{bid\_mw}|$ |
 | $\gamma_M = \gamma^K$ | $0.99^{180} \approx 0.163$ effective discount per macro step |
 | $T_M = 96$ | Macro steps per episode (24 h $\div$ 15 min) |
 
@@ -141,19 +141,41 @@ where
 
 and $r_i$ is the 5-second reward at sub-step i. Thus, $\bar{r}_K$ is the mean of the 180 fast-step rewards in macro step $k$.
 
-The macro agent never directly observes the 5-second physics — it sees only the aggregated $\mathcal{S}_M$. This induces **partial observability** at the macro level that the agent must compensate for through robust commitment policies.
+The macro agent never directly observes the 5-second physics — it sees only the aggregated $\mathcal{S}_M$. This induces **partial observability** at the macro level that the agent must compensate for through robust bidding policies.
 
 ### 5.1. Upper-Level Agent: The Market Orchestrator (15-min ticks)
 
 Manages the "Business Handshake." Observes regional market prices, weather forecasts, and the Alibaba batch job queue.
 
-> **Decision:** *"How much flexible MW capacity should I commit to the grid operator for the next 15 minutes?"*
+> **Decision:** *"How much MW capacity should I bid to the grid operator, and at what price, for the next 15 minutes?"*
 
-Grid operators (PJM, ERCOT, etc.) clear ancillary-service markets in **15-minute settlement intervals**. The data center must declare its regulation capacity *before* the interval starts and cannot renegotiate mid-interval. This is the macro agent's fundamental challenge: it must commit to a MW level under uncertainty about the next 180 RegD ticks, the next GenAI spike, and how much thermal headroom will remain at the end of the interval. The correct strategy is context-dependent — commit aggressively when the BESS is full and LMP is high; commit conservatively when ambient temperature is near the thermal limit or SOC is low. The macro agent never sees individual 5-second ticks; it only receives an aggregated summary *after* the interval completes, making this a **partially observable** planning problem.
+Grid operators (PJM, ERCOT, etc.) clear ancillary-service markets in **15-minute settlement intervals**. The MacroEnv implements a **3-phase market handshake** each macro step: (1) the grid posts its RMCP and residual regulation need, (2) the DC agent bids MW capacity at an asking price, and (3) the grid probabilistically accepts the bid via a sigmoid function. If rejected, the DC falls back to a standing Demand Response (DR) baseline contract. The macro agent's challenge is to bid optimally under uncertainty about the next 180 RegD ticks, the next GenAI spike, and how much thermal headroom will remain at the end of the interval. The correct strategy is context-dependent — bid aggressively when the BESS is full and LMP is high; bid conservatively when ambient temperature is near the thermal limit or SOC is low. The macro agent never sees individual 5-second ticks; it only receives an aggregated summary *after* the interval completes, making this a **partially observable** planning problem.
 
-- **Action Space (2-D):** `[commit_norm ∈ [0,1], bess_target ∈ [-1,1]]` — MW commitment and average BESS dispatch.
-- **Observation Space (17-D):** Aggregated over 180 sub-steps — mean temps, SOC, tracking error, spike flag, thermal headroom, LMP, previous action, mean frequency deviation, mean PCC voltage, mean backlog norm.
-- **Reward:** mean of sub-step rewards + LMP dispatch revenue − commitment-churn penalty.
+- **Action Space (2-D):** `[bid_mw_norm ∈ [0,1], bid_price_norm ∈ [0,1]]` — MW capacity to offer (mapped to `[0, committed_max_mw]`) and asking price (mapped to `[0, 2 × rmcp_max]`).
+- **Observation Space (19-D):** Aggregated over 180 sub-steps:
+  | Index | Name | Range | Description |
+  |-------|------|-------|-------------|
+  | 0 | `temp_A_mean` | [0, 1] | Mean Zone A temperature / T_safe |
+  | 1 | `temp_B_mean` | [0, 1] | Mean Zone B temperature / T_safe |
+  | 2 | `bess_soc_end` | [0, 1] | SOC at end of the macro-step |
+  | 3 | `p_base_mean` | [0, 1] | Mean p_base_norm |
+  | 4 | `p_facility_mean` | [0, 2] | Mean p_facility_norm |
+  | 5 | `regd_mean` | [0, 1] | Mean |regd_signal| |
+  | 6 | `lmp_mean` | [0, 1] | Mean lmp_norm |
+  | 7 | `grid_load_mean` | [0, 1] | Mean load_norm |
+  | 8 | `tracking_err_mean` | [0, 2] | Mean |ΔP_demanded − ΔP_actual| / norm |
+  | 9 | `is_spike_any` | {0, 1} | 1.0 if any sub-step had a GenAI spike |
+  | 10 | `thermal_headroom_A` | [0, 1] | (T_safe − T_A_max) / T_safe |
+  | 11 | `thermal_headroom_B` | [0, 1] | (T_safe − T_B_max) / T_safe |
+  | 12 | `bid_mw_prev_norm` | [0, 1] | Previous macro-action bid MW |
+  | 13 | `bid_price_prev_norm` | [0, 1] | Previous macro-action bid price |
+  | 14 | `freq_dev_mean` | [-1, 1] | Mean normalised frequency deviation |
+  | 15 | `v_pcc_mean` | [0, 1.1] | Mean PCC voltage (per-unit) |
+  | 16 | `backlog_norm_mean` | [0, 2] | Mean batch queue depth / p_flex_max |
+  | 17 | `rmcp_norm` | [0, 5] | Grid's posted RMCP / rmcp_max |
+  | 18 | `reg_need_norm` | [0, 5] | Grid's residual regulation need / committed_max |
+- **Reward:** $R_{\text{macro}} = \lambda_{\text{rev}} \times \text{regulation\_revenue} / 1000 + \bar{r}_K - \lambda_{\text{elec}} \times \text{electricity\_cost} / 1000 - \lambda_{\text{churn}} \times |\text{bid\_mw\_now} - \text{bid\_mw\_prev}|$
+  - $\lambda_{\text{rev}} = 1.0$, $\lambda_{\text{elec}} = 0.5$, $\lambda_{\text{churn}} = 0.05$ (all in `c2g_env/config.yaml`)
 
 ### 5.2. Lower-Level Agent: The Hardware Controller (5 s ticks)
 
@@ -222,12 +244,12 @@ where:
 - $P_{\text{norm}} = C_{\text{MW}} \times 1000$ — normalisation constant (converts tracking error to a [0, ~2] range)
 - $T$ — temperature of the hotter of the two cooling zones (°C)
 - $T_{\text{warn}} = 33\,°\text{C}$ — soft warning threshold; thermal penalty begins here, 2 °C before the hard trip
-- $\mathbf{1}_{\text{soc}}$ — binary flag: 1 if BESS state-of-charge is outside $[10\%, 90\%]$, else 0
+- $\mathbf{1}_{\text{soc}}$ — binary flag: 1 if BESS state-of-charge is below $\text{SOC}_{\min} + 2\%$ (i.e. below 12%), else 0
 - $|\Delta f|$ — absolute grid frequency deviation (Hz) from the 60 Hz nominal
 - $\varepsilon_v = (0.95 - v_{\text{pcc}})^{+} + (v_{\text{pcc}} - 1.05)^{+}$ — PCC voltage exceedance (pu) outside the ANSI C84.1 Range A band $[0.95, 1.05]$
 - $Q_{\text{backlog}}$ — deferred batch work currently sitting in the FIFO queue (kW-equivalent)
 - $P_{\text{flex,max}} \approx 90{,}000\,\text{kW}$ — peak flexible IT capacity at full throttle (1,200 racks × 75 kW)
-- Coefficients (all in `config.yaml`): $\alpha{=}1.0$, $\beta{=}2.0$, $\gamma{=}5.0$, $\delta_{\text{soc}}{=}2.0$, $\delta_f{=}2.0$, $\delta_v{=}5.0$, $\delta_q{=}2.0$
+- Coefficients (all in `config.yaml`): $\alpha{=}1.0$, $\beta{=}2.0$, $\gamma{=}5.0$, $\delta_{\text{soc}}{=}0.5$, $\delta_f{=}2.0$, $\delta_v{=}5.0$, $\delta_q{=}2.0$
 
 #### Term-by-term breakdown
 
@@ -235,8 +257,8 @@ where:
 |---|------|-------------|-----------------|----------------|
 | 1 | Throughput | $\alpha = 1.0$ | Fraction of max IT capacity actually committed ($u_{\text{thr}} \in [0,1]$) | Maximising revenue — the agent earns more for accepting more DFS workload |
 | 2 | RegD tracking | $\beta = 2.0$ | Normalised absolute error between the FERC-requested power change and what the DC actually delivered | The primary ancillary-service obligation — missing this is penalised twice as hard as raw throughput gains |
-| 3 | Thermal overrun | $\gamma = 5.0$ | Degrees above the warning threshold $T_{\text{warn}} = 30°$C for the hotter of the two air rows | Linear ramp long before the hard 35 °C trip; $\gamma$ is large enough to dominate at +1 °C overshoot |
-| 4 | BESS SoC | $\delta_{\text{soc}} = 2.0$ | Binary flag: 1 if the battery state-of-charge is outside $[10\%, 90\%]$ | Prevents the BESS from being stranded at 0% or 100% when a RegD ramp arrives |
+| 3 | Thermal overrun | $\gamma = 5.0$ | Degrees above the warning threshold $T_{\text{warn}} = 33°$C for the hotter of the two cooling zones | Linear ramp long before the hard 35 °C trip; $\gamma$ is large enough to dominate at +1 °C overshoot |
+| 4 | BESS SoC | $\delta_{\text{soc}} = 0.5$ | Binary flag: 1 if the battery state-of-charge falls below $\text{SOC}_{\min} + 2\%$ (12%) | Flat per-tick penalty prevents the BESS from being stranded near empty when a RegD ramp arrives |
 | 5 | Frequency deviation | $\delta_f = 2.0$ | Frequency excursion beyond the ±0.2 Hz NERC dead-band | Proportional penalty that steepens as the grid approaches the ±0.5 Hz trip threshold |
 | 6 | Voltage deviation | $\delta_v = 5.0$ | One-sided penalty for PCC voltage outside [0.95, 1.05] pu | Voltage violations are fast and dangerous; the large coefficient forces early corrective action |
 | 7 | SLA backlog | $\delta_q = 2.0$ | FIFO queue depth normalised by peak flexible capacity $P_{\text{flex,max}}$ | Deferred batch jobs accumulate in queue; this term penalises latency and incentivises draining the queue |
@@ -361,8 +383,8 @@ flowchart TD
     end
 
     subgraph MARKET["📈 Market Layer — C2GMacroEnv (15-min ticks)"]
-        MA["Upper-Level Agent\n(Market Orchestrator)\nobs: 17-D aggregated\nact: 2-D [commit_norm, bess_target]"]
-        MR["Macro Reward\nmean sub-step reward\n+ LMP dispatch revenue\n− commitment churn"]
+        MA["Upper-Level Agent\n(Market Orchestrator)\nobs: 19-D aggregated\nact: 2-D [bid_mw_norm, bid_price_norm]"]
+        MR["Macro Reward\nλ_rev × reg_revenue\n+ mean sub-step reward\n− λ_elec × elec_cost\n− λ_churn × Δbid_mw"]
     end
 
     subgraph FAST["⚡ Physics Layer — C2GFastEnv (5-s ticks)"]
@@ -391,13 +413,13 @@ flowchart TD
     G3 -->|"freq_dev_norm [14]"| FA
     G4 -->|"v_pcc_pu [15]"| FA
 
-    MA -->|"inner_action_fn\n(commit_norm, bess_target)"| FA
+    MA -->|"inner_action_fn\n(bid_mw_norm, bid_price_norm)"| FA
     FA -->|"raw action"| SH
     SH -->|"safe action"| SIM
     SIM -->|"next state"| FA
     SIM --> FR
     FR -->|"step reward"| FA
-    FA -->|"17-D obs (aggregated × 180)"| MA
+    FA -->|"19-D obs (aggregated × 180)"| MA
     MA --> MR
 ```
 
@@ -501,8 +523,8 @@ sequenceDiagram
 
     note over Grid,Shield: t = 0 min — MacroEnv tick k begins
 
-    Macro->>Fast: macro-action [2-D]<br/>commit_norm, bess_target
-    Fast->>Fast: set committed_mw = commit_norm × max_mw
+    Macro->>Fast: macro-action [2-D]<br/>bid_mw_norm, bid_price_norm
+    Fast->>Fast: set committed_mw = bid_mw_norm × max_mw
 
     loop 180 × 5-second sub-steps (i = 0 … 179)
         Grid->>Fast: regd_signal, lmp, f_grid, V_pcc
@@ -516,8 +538,8 @@ sequenceDiagram
 
     note over Grid,Shield: t = 15 min — MacroEnv tick k ends
 
-    Fast->>Macro: aggregated 17-D obs<br/>(means, maxima, SOC_end, freq/volt means, backlog_norm_mean)
-    Fast->>Macro: macro reward R_k<br/>= mean(r₀…r₁₇₉) + LMP_bonus − churn_pen
+    Fast->>Macro: aggregated 19-D obs<br/>(means, maxima, SOC_end, freq/volt means, backlog_norm_mean, rmcp, reg_need)
+    Fast->>Macro: macro reward R_k<br/>= λ_rev×reg_revenue + mean(r₀…r₁₇₉) − λ_elec×elec_cost − λ_churn×Δbid
     Macro->>Macro: update policy with R_k
 ```
 
@@ -632,13 +654,14 @@ flowchart LR
     subgraph MRT["Macro Reward  R_k  (15-min)"]
         direction TB
         MS["mean(r₀ … r₁₇₉)\naverage of 180 sub-step rewards"]
-        LB["+  lmp_bonus × mean_lmp/200 × |BESS_disch|/50 MW\n    BESS export revenue  |  default lmp_bonus = 0.1"]
-        CC["-  commit_vol × |Δcommit_norm|\n    commitment churn penalty  |  default = 0.05"]
+        LB["+  λ_rev × regulation_revenue / 1000\n    regulation market revenue  |  default λ_rev = 1.0"]
+        EC["-  λ_elec × electricity_cost / 1000\n    electricity cost penalty  |  default λ_elec = 0.5"]
+        CC["-  λ_churn × |Δbid_mw_norm|\n    bid MW churn penalty  |  default λ_churn = 0.05"]
     end
 
     TP & TK & TH & SC & FQ & VT & BL --> SUM["Σ → r_t"]
     SUM --> MS
-    MS & LB & CC --> MSUM["Σ → R_k"]
+    MS & LB & EC & CC --> MSUM["Σ → R_k"]
 ```
 
 ---
@@ -905,7 +928,7 @@ The entry-level scenario. Ambient temperature is comfortable (25 °C, NYISO NYC 
 |-----------|-------|
 | Market | NYISO NYC |
 | Ambient $T_{\text{amb}}$ | 25 °C (weather-driven) |
-| Committed MW | 15 MW |
+| Committed MW (max) | 30 MW |
 | BESS SOC₀ | 50 % |
 | GenAI spike scale | 1.0× (nominal) |
 | Grid stress scale | 1.0× (nominal) |
@@ -927,7 +950,7 @@ This scenario models a **Northern Virginia (PJM DOM)** summer day when a new GPT
 |-----------|-------|
 | Market | PJM DOM |
 | Ambient $T_{\text{amb}}$ | 30 °C (static) |
-| Committed MW | 20 MW |
+| Committed MW (max) | 40 MW |
 | BESS SOC₀ | 55 % |
 | GenAI spike scale | **1.8×** |
 | Grid stress scale | **1.5×** |
@@ -949,7 +972,7 @@ This scenario targets **ERCOT North (DFW)** during a peak-summer heat wave. The 
 |-----------|-------|
 | Market | ERCOT North |
 | Ambient $T_{\text{amb}}$ | **40 °C** (static) |
-| Committed MW | **30 MW** |
+| Committed MW (max) | **60 MW** |
 | BESS SOC₀ | 60 % |
 | GenAI spike scale | 1.0× (nominal) |
 | Grid stress scale | 1.3× |
@@ -971,7 +994,7 @@ This scenario represents a compounding failure in **AEMO NSW**. The BESS begins 
 |-----------|-------|
 | Market | AEMO NSW |
 | Ambient $T_{\text{amb}}$ | 32 °C (static) |
-| Committed MW | 20 MW |
+| Committed MW (max) | 40 MW |
 | BESS SOC₀ | **15 %** |
 | GenAI spike scale | 1.2× |
 | Grid stress scale | 1.2× |
@@ -1014,9 +1037,12 @@ C2G-Macro/
 ├── c2g_env/                             # The Core RL Environment
 │   ├── __init__.py                      # Exports C2GFastEnv, C2GMacroEnv
 │   ├── env_low_level.py                 # 5 s physics step — C2GFastEnv (17-D obs, 4-D act)
-│   ├── env_high_level.py                # 15-min market step — C2GMacroEnv (17-D obs, 2-D act)
+│   ├── env_high_level.py                # 15-min market step — C2GMacroEnv (19-D obs, 2-D act)
 │   ├── ENVIRONMENTS.md                  # 📖 Full environment & simulator reference (equations, params)
 │   ├── config.yaml                      # Centralised env configuration
+│   ├── experiments/
+│   │   ├── __init__.py                  # Exports ActionAblationFastEnv
+│   │   └── action_ablation_env.py       # C2GFastEnv subclass for action-level ablation studies
 │   └── physics/
 │       ├── workload.py                  # Alibaba trace fusion (batch/DLRM/GenAI)
 │       ├── thermal.py                   # Exact-exponential ODEs, dual-zone cooling
@@ -1027,39 +1053,83 @@ C2G-Macro/
 │       └── weather.py                   # NOAA ISD real data + synthetic climate, 6 presets
 │
 ├── data/
-│   ├── raw/                             # Original trace files
 │   └── processed/
 │       ├── workload_traces/             # batch_v2023, dlrm_v2025, genai_v2026, spot_v2026
 │       ├── energy/                      # 16 CSVs: 11 NYISO zones + PJM/CAISO/ERCOT/ENTSO-E/AEMO
-│       ├── weather/                     # 7 CSVs: NYC, DCA, SJC, DFW, FRA, BKT + merged
+│       ├── weather/                     # 7 station CSVs: NYC, DCA, SJC, DFW, FRA, BKT, LONGIL + merged
 │       └── renewable/                   # wind_5min, solar_5min, wind_hourly, solar_hourly
 │
 ├── conf/                                # Hydra configuration tree
-│   ├── config.yaml                      # Top-level defaults
-│   ├── algo/                            # ppo.yaml, sac.yaml, ppo_macro.yaml
+│   ├── config.yaml                      # Top-level defaults (scenario, algo, market, logging)
+│   ├── algo/                            # 19 algo configs: ppo, sac, ppo_macro, cpo, ppo_lagrangian,
+│   │                                    #   cbf_ppo, hj_ppo, mpcsf_ppo, ha_c2g, cbm_only, cbm_gate,
+│   │                                    #   cbm_shield, cmaes, pso, pid, mpc_fast, mpc_macro, milp,
+│   │                                    #   shield_reward_shaping
 │   ├── scenario/                        # default, scenario_a, scenario_b, scenario_c
 │   ├── market/                          # nyiso_nyc, pjm_dom, caiso_pgae, ercot_north, entso_de, aemo_nsw
 │   └── logging/                         # tensorboard.yaml
 │
 ├── baselines/                           # NeurIPS Evaluation Agents
+│   ├── _hydra_compat.py                 # Hydra 1.3.x compatibility patch for Python ≥ 3.14
+│   ├── metrics_callback.py              # C2GMetricsCallback — per-episode CSV + TensorBoard
+│   ├── safety_shield.py                 # Simplex safety filter (5 hard constraints, O(1))
+│   │
+│   │  # ── Classical Controllers ───────────────────────────────────────────
+│   ├── rule_based_mpc.py                # Threshold controller for C2GFastEnv (SB3-compatible)
+│   ├── rule_based_macro.py              # Macro-level rule-based controller for C2GMacroEnv
+│   ├── bang_bang.py                      # Bang-bang / hysteresis controller (floor baseline)
+│   ├── pid_controller.py                # Multi-loop PID controller with anti-windup
+│   ├── mpc_fast.py                      # Rolling-horizon nonlinear MPC for C2GFastEnv (SLSQP)
+│   ├── mpc_macro.py                     # Rolling-horizon MPC for C2GMacroEnv (15-min intervals)
+│   ├── milp_dispatch.py                 # MILP economic dispatch for C2GMacroEnv (HiGHS/cvxpy)
+│   │
+│   │  # ── RL Training Scripts ─────────────────────────────────────────────
 │   ├── train_ppo.py                     # SB3 PPO + Hydra + VecNormalize + callbacks
 │   ├── train_sac.py                     # SB3 SAC (off-policy, auto entropy)
 │   ├── train_ppo_macro.py               # PPO on C2GMacroEnv (optional inner policy)
 │   ├── train_hierarchical.py            # Two-phase sequential HRL pipeline
 │   ├── train_shielded_ppo.py            # PPO inside ShieldedEnv (safety-filtered)
-│   ├── rule_based_mpc.py                # Classical threshold controller (SB3-compatible API)
-│   ├── rule_based_macro.py              # Macro-level rule-based controller
-│   ├── safety_shield.py                 # Simplex safety filter (5 hard constraints)
-│   └── metrics_callback.py              # C2GMetricsCallback — per-episode CSV + TensorBoard
+│   │
+│   │  # ── Constrained & Safe RL ───────────────────────────────────────────
+│   ├── train_cpo.py                     # Constrained Policy Optimization (Achiam et al., 2017)
+│   ├── train_ppo_lagrangian.py          # PPO-Lagrangian with adaptive Lagrange multipliers
+│   ├── train_shield_reward_shaping.py   # Fixed shield-penalty reward shaping
+│   ├── train_cbf_ppo.py                 # PPO + CBF-safe action projection (QP solver)
+│   ├── train_hj_ppo.py                  # PPO + HJ reachability value function shield
+│   ├── train_mpcsf_ppo.py               # PPO + MPC safety filter (receding-horizon NLP)
+│   │
+│   │  # ── Neuro-Symbolic HA-C2G ───────────────────────────────────────────
+│   ├── train_ha_c2g.py                  # Full 3-layer HA-C2G architecture (CBM + gate + shield)
+│   ├── train_cbm_only.py                # Ablation: PPO + Concept Bottleneck only
+│   ├── train_cbm_gate.py                # Ablation: PPO + CBM + safe projection gate
+│   ├── train_cbm_shield.py              # Ablation: PPO + CBM + Simplex shield (no gate)
+│   │
+│   │  # ── Gradient-Free Search ────────────────────────────────────────────
+│   ├── train_cmaes.py                   # CMA-ES linear policy search
+│   ├── train_pso.py                     # PSO linear policy search
+│   │
+│   └── safety/                          # HA safety method implementations
+│       ├── README.md                    # 3-tier HA safety benchmark documentation
+│       ├── cbf_shield.py                # Control Barrier Function safety filter (QP)
+│       ├── hj_shield.py                 # Hamilton-Jacobi reachability shield (offline BRS)
+│       ├── mpc_safety_filter.py         # MPC safety filter (receding-horizon NLP)
+│       ├── concept_bottleneck.py        # Concept Bottleneck Model (Koh et al., 2020)
+│       ├── safe_projection.py           # Concept-conditioned differentiable gate (Layer 2)
+│       └── proof_tree.py                # Hierarchical audit proof trees per timestep
 │
-├── evaluation/                          # Benchmark auditing
-│   ├── run_benchmark.py                 # Runs agents on all 4 scenarios
-│   └── generate_plots.py                # Publication-ready PDF/PNG figures
+├── evaluation/                          # Benchmark auditing & analysis
+│   ├── run_benchmark.py                 # Standard benchmark: runs agents on all 4 scenarios
+│   ├── run_ha_benchmark.py              # HA safety benchmark: 11-metric evaluation set
+│   ├── generate_plots.py                # Publication-ready PDF/PNG figures
+│   ├── generate_ha_plots.py             # HA-specific: Pareto frontier, radar, violin plots
+│   ├── plot_episode_traces.py           # Per-episode trace analysis with ablation filtering
+│   ├── failure_analysis.py              # Failure-case categorisation for HA benchmark
+│   └── statistical_analysis.py          # Bootstrap CIs, Welch's t-test, Cohen's d, LaTeX tables
 │
 ├── scripts/                             # Data download & training utilities
 │   ├── download_weather.py              # Open-Meteo ERA5 → 6 weather CSVs
 │   ├── download_energy.py               # EIA + SMARD + AEMO → 5 energy CSVs
-│   └── run_sweep.sh                     # Full training sweep (4 scenarios × 2 algos × 3 seeds)
+│   └── run_sweep.sh                     # Full training sweep (25 phases, ~270 jobs)
 │
 ├── preprocessing/                       # Raw → processed data pipelines
 │   ├── workload_traces/                 # process_v2023.py, process_v2025.py, process_v2026_genai.py
@@ -1067,7 +1137,7 @@ C2G-Macro/
 │   ├── renewable/                       # process_renewable.py, download_renewable.py
 │   └── weather/                         # download_noaa_isd.py
 │
-├── notebooks/                           # 8 Jupyter notebooks for exploration & visualisation
+├── notebooks/                           # 12 Jupyter notebooks for exploration & visualisation
 │   ├── 01_workload.ipynb                # Alibaba trace analysis
 │   ├── 02_thermal.ipynb                 # Thermal model step response & steady-state
 │   ├── 03_electrical_bess.ipynb         # Electrical chain + BESS cycling
@@ -1077,29 +1147,37 @@ C2G-Macro/
 │   ├── 07_weather.ipynb                 # Weather data: 6 markets, real vs. synthetic
 │   ├── 08_energy_markets.ipynb          # Energy load: 6 markets, LDC, diurnal patterns
 │   ├── 09_frequency_voltage.ipynb       # Grid frequency & PCC voltage safety signals
-│   └── 10_evaluation_scenarios.ipynb    # Scenario deep dive: params, rollouts, risk, reward
+│   ├── 10_evaluation_scenarios.ipynb    # Scenario deep dive: params, rollouts, risk, reward
+│   ├── 11_baselines_visualization.ipynb # Baseline agent comparison & visualisation
+│   └── 12_workload_deep_dive.ipynb      # Workload queue dynamics & trace statistics
 │
 ├── paper/                               # NeurIPS 2026 manuscript
 │   ├── main.tex                         # 13-page paper (NeurIPS format)
+│   ├── main.pdf                         # Compiled manuscript
 │   ├── references.bib
 │   ├── neurips2026.sty
-│   └── figures/                         # fig1–fig4 (architecture, physics engines, curves, trajectory)
+│   └── figures/                         # fig1–fig4 (.py generators + .pdf + .png)
 │
-├── tests/                               # 426 tests (pytest)
-│   ├── test_workload.py                 # 26 tests
+├── tests/                               # 531 tests (pytest)
+│   ├── test_workload.py                 # 24 tests
 │   ├── test_thermal.py                  # 32 tests
-│   ├── test_electrical.py               # 25 tests
-│   ├── test_macro_grid.py               # 33 tests
-│   ├── test_renewable.py                # 26 tests
-│   ├── test_weather.py                  # 18 tests
-│   ├── test_gym_api.py                  # 73 tests (API compliance both envs)
-│   ├── test_baselines.py                # 26 tests
-│   ├── test_frequency_voltage.py        # 35 tests (freq/voltage safety signals)
-│   ├── test_hierarchical.py             # 17 tests (HRL, macro agents)
-│   └── test_safety_shield.py            # 27 tests (Simplex shield, wrappers)
+│   ├── test_electrical.py               # 27 tests
+│   ├── test_macro_grid.py               # 30 tests
+│   ├── test_renewable.py                # 25 tests
+│   ├── test_weather.py                  # 23 tests
+│   ├── test_gym_api.py                  # 72 tests (API compliance both envs)
+│   ├── test_baselines.py                # 18 tests
+│   ├── test_new_baselines.py            # 50 tests (classical + gradient-free baselines)
+│   ├── test_frequency_voltage.py        # 31 tests (freq/voltage safety signals)
+│   ├── test_hierarchical.py             # 22 tests (HRL, macro agents)
+│   ├── test_safety_shield.py            # 24 tests (Simplex shield, wrappers)
+│   ├── test_ha_safety.py                # 70 tests (3-tier HA safety methods)
+│   ├── test_critical_bug_fixes.py       # 50 tests (regression tests)
+│   ├── test_ablation.py                 # 18 tests (action ablation env)
+│   ├── test_readme_smoke.py             # 13 tests (README code snippet validation)
+│   └── test_datalogging.py              # 2 tests (transition logging)
 │
-└── trained_models/                      # Saved checkpoints from training runs
-    └── ppo_default_s42/                 # PPO on default scenario, seed=42
+└── figures/                             # Root-level figures (TensorBoard screenshot, etc.)
 ```
 
 ---
@@ -1108,7 +1186,7 @@ C2G-Macro/
 
 ### Prerequisites
 
-- **Python ≥ 3.11**
+- **Python 3.11** (exact; `==3.11.*` in `pyproject.toml`)
 - **[uv](https://docs.astral.sh/uv/)** — fast Python package manager
 
 ```bash
@@ -1128,7 +1206,7 @@ uv sync --extra dev   # pytest, ruff, mypy
 
 ```bash
 uv run pytest tests/ -q
-# 426 passed
+# 531 passed
 ```
 
 ### Train a single agent
@@ -1153,6 +1231,24 @@ uv run python baselines/train_hierarchical.py
 
 # Safety-shielded PPO (provable constraint satisfaction)
 uv run python baselines/train_shielded_ppo.py scenario=default
+
+# Constrained RL — PPO-Lagrangian
+uv run python baselines/train_ppo_lagrangian.py scenario=default
+
+# CPO — Constrained Policy Optimization
+uv run python baselines/train_cpo.py scenario=default
+
+# CBF-shielded PPO (QP-based action projection)
+uv run python baselines/train_cbf_ppo.py scenario=default
+
+# Full HA-C2G neuro-symbolic 3-layer architecture
+uv run python baselines/train_ha_c2g.py scenario=default
+
+# CMA-ES gradient-free policy search
+uv run python baselines/train_cmaes.py scenario=default
+
+# PSO gradient-free policy search
+uv run python baselines/train_pso.py scenario=default
 ```
 
 ### Run the full benchmark sweep
@@ -1168,17 +1264,35 @@ bash scripts/run_sweep.sh
 MAX_PARALLEL=16 bash scripts/run_sweep.sh
 ```
 
-The sweep runs in 4 phases:
+The sweep runs in 25 phases:
 
 | Phase | Jobs | What runs |
 |-------|------|-----------|
 | 1 | 24 | Rule-Based + Random evaluation only (no training, ~5 min) |
 | 2 | 12 | PPO training (300k steps) + evaluation |
 | 3 | 12 | SAC training (200k steps) + evaluation |
-| 4 | 4  | Macro-level Rule-Based evaluation (4 scenarios) |
-| 5 | 4  | PPO-Macro training (100k steps) + evaluation |
-| 6 | 4  | Hierarchical RL training (Phase 1 low-level → Phase 2 macro) |
-| 7 | 1  | Summary table + LaTeX rows for Table 5 |
+| 4 | 12 | Macro Rule-Based evaluation |
+| 5 | 12 | PPO-Macro training (100k steps) + evaluation |
+| 6 | 12 | HRL sequential training (300k + 100k) + evaluation |
+| 7 | 36 | Bang-Bang, PID, MPC evaluation (no training) |
+| 8 | 24 | MPC-Macro & MILP evaluation (no training) |
+| 9 | 12 | CMA-ES training (200 gens) + evaluation |
+| 10 | 12 | PSO training (200 gens) + evaluation |
+| 11 | 12 | PPO-Lagrangian training (300k) + evaluation |
+| 12 | 12 | CBF-PPO training (300k) + evaluation |
+| 13 | 12 | HJ-PPO training (300k) + evaluation |
+| 14 | 12 | MPC-SF-PPO training (300k) + evaluation |
+| 15 | 12 | CPO training (300k) + evaluation |
+| 16 | 12 | Shield-Reward-Shaping training (300k) + evaluation |
+| 17 | 12 | HA-C2G neuro-symbolic training (300k) + evaluation |
+| 18 | 12 | CBM-Only ablation training (300k) |
+| 19 | 12 | CBM+Gate ablation training (300k) |
+| 20 | 12 | CBM+Shield ablation training (300k) |
+| 21 | 1 | HA Benchmark evaluation (11 metrics, 5 episodes) |
+| 22 | 1 | Summary table + LaTeX rows |
+| 23 | 1 | Multi-seed HA benchmark (10 seeds × 5 episodes) |
+| 24 | 1 | Statistical analysis (CIs + significance tests) |
+| 25 | 1 | Failure-case analysis |
 
 Results are written to `results/sweep_results.csv` (one row per run, upserted on re-runs) and `results/sweep_summary.csv` (mean ± std across seeds).
 
@@ -1334,21 +1448,28 @@ uv run jupyter lab notebooks/
 
 ## 10.5. High-Assurance Safety Controllers
 
-C2G-Bench includes a **Simplex-architecture safety shield** [Sha 2001] that provides **provable hard-constraint satisfaction** for any RL agent, without retraining.
+C2G-Bench provides a comprehensive **3-tier high-assurance (HA) safety framework** for grid-interactive data center control. All tiers enforce the same **5 hard constraints (C1–C5)** and are evaluated with an **11-metric set** (6 standard + 5 HA-specific).
 
-### Safety Shield Design
+### Hard Constraints
 
-The shield intercepts every agent action and projects it into the safe subset of the action space in **O(1) time** using analytic worst-case bounds:
-
-| ID | Constraint | Threshold | Shield Response |
+| ID | Constraint | Threshold | Physical Meaning |
 |----|-----------|-----------|-----------------|
-| C1 | $T_A < T_{\text{safe}}$ | 35 °C (margin 1 °C) | Progressive throttle reduction + forced cooling |
-| C2 | $T_B < T_{\text{safe}}$ | 35 °C (margin 1 °C) | Progressive HVAC increase |
-| C3 | SOC ∈ [SOC_min, SOC_max] | [0.10, 0.95] (guard 0.03) | Block discharge at low SOC, block charge at high SOC |
-| C4 | $|\Delta f| < 0.5$ Hz | ±0.4 Hz trigger | Force discharge on under-frequency, charge on over-frequency |
-| C5 | $V_{\text{pcc}} > 0.90$ pu | 0.92 pu trigger | Proportional throttle reduction |
+| C1 | $T_A < T_{\text{safe}}$ | 35 °C (margin 1 °C) | Server room A thermal limit |
+| C2 | $T_B < T_{\text{safe}}$ | 35 °C (margin 1 °C) | Server room B thermal limit |
+| C3 | SOC ∈ [SOC_min, SOC_max] | [0.10, 0.95] (guard 0.03) | BESS operational envelope |
+| C4 | $|\Delta f| < 0.5$ Hz | ±0.4 Hz trigger | UFLS / over-frequency protection |
+| C5 | $V_{\text{pcc}} > 0.90$ pu | 0.92 pu trigger | Under-voltage relay threshold |
 
-### Three Usage Modes
+### Tier 1 — Hard-Guarantee Methods (provable safety via optimisation)
+
+| Method | Shield | Permissiveness | Cost | File |
+|--------|--------|---------------|------|------|
+| **Simplex** [Sha 2001] | O(1) analytic worst-case bounds | Conservative | Negligible | `baselines/safety_shield.py` |
+| **CBF** [Ames 2019] | QP projection into barrier-safe set | Moderate | Low | `baselines/safety/cbf_shield.py` |
+| **HJ Reachability** | Offline BRS + runtime override | Moderate | Offline high, runtime low | `baselines/safety/hj_shield.py` |
+| **MPC Safety Filter** | Receding-horizon constrained NLP | Most permissive | Highest online | `baselines/safety/mpc_safety_filter.py` |
+
+#### Simplex Shield — Three Usage Modes
 
 ```python
 # 1. Standalone filter — works with ANY agent
@@ -1365,24 +1486,80 @@ from baselines.safety_shield import ShieldedAgent
 safe_agent = ShieldedAgent(trained_agent, env)
 ```
 
-### Training with the Shield
+#### Training with Tier 1 Shields
 
 ```bash
-# PPO inside ShieldedEnv (agent learns within safe manifold)
+# Simplex-shielded PPO
 uv run python baselines/train_shielded_ppo.py scenario=default experiment.seed=42
+
+# CBF-shielded PPO (QP-based, more permissive than Simplex)
+uv run python baselines/train_cbf_ppo.py scenario=default
+
+# HJ reachability-shielded PPO (offline BRS computation)
+uv run python baselines/train_hj_ppo.py scenario=default
+
+# MPC safety filter PPO (receding-horizon, most permissive)
+uv run python baselines/train_mpcsf_ppo.py scenario=default
 ```
 
-### Research Challenges for the Community
+### Tier 2 — Constrained RL (soft constraint satisfaction during training)
 
-The built-in shield is deliberately conservative (O(1), no solver). Researchers are invited to develop more permissive shields using:
+| Method | Mechanism | File |
+|--------|-----------|------|
+| **PPO-Lagrangian** | Adaptive Lagrange multipliers for 3 cost types | `baselines/train_ppo_lagrangian.py` |
+| **CPO** [Achiam 2017] | Trust-region with conjugate gradient + line search | `baselines/train_cpo.py` |
+| **Shield Reward Shaping** | Fixed quadratic distance-to-boundary penalties | `baselines/train_shield_reward_shaping.py` |
 
-- **Control Barrier Functions (CBFs)** — continuous-time safety certificates [Ames 2019]
-- **Hamilton-Jacobi reachability** — compute maximal safe sets offline
-- **Model-Predictive Safety Filters (MPC-SF)** — receding-horizon constrained optimisation
-- **Neural Lyapunov / barrier networks** — learned certificates with formal verification
-- **Constrained RL** — PPO-Lagrangian, CPO, PCPO for soft-constraint satisfaction
+### Tier 3 — Neuro-Symbolic HA-C2G Architecture
 
-The benchmark tracks shield intervention rate (`ShieldStats.intervention_rate`) as a key metric: a lower rate indicates better alignment between agent policy and safety constraints.
+The full **HA-C2G** pipeline is a 3-layer neuro-symbolic architecture:
+
+1. **Layer 1 — Concept Bottleneck Model** (`baselines/safety/concept_bottleneck.py`): Maps raw 17-D obs → ~10 interpretable safety concepts (thermal margins, SOC health, etc.)
+2. **Layer 2 — Safe Projection Gate** (`baselines/safety/safe_projection.py`): Concept-conditioned differentiable gate that attenuates actions based on safety concepts
+3. **Layer 3 — Physics Rule Shield**: In-the-loop Simplex shield with shield-penalty reward
+
+**Ablation studies** isolate each layer's contribution:
+
+| Variant | CBM | Gate | Shield | File |
+|---------|:---:|:----:|:------:|------|
+| **HA-C2G (full)** | ✅ | ✅ | ✅ | `baselines/train_ha_c2g.py` |
+| CBM-Only | ✅ | ❌ | ❌ | `baselines/train_cbm_only.py` |
+| CBM+Gate | ✅ | ✅ | ❌ | `baselines/train_cbm_gate.py` |
+| CBM+Shield | ✅ | ❌ | ✅ | `baselines/train_cbm_shield.py` |
+
+**Proof trees** (`baselines/safety/proof_tree.py`) generate per-timestep hierarchical audit logs documenting which safety rules passed/failed and the sensor readings grounding each decision.
+
+### HA Evaluation Metrics (11-D)
+
+| Category | Metric | Description |
+|----------|--------|-------------|
+| Standard | `mean_reward` | Mean episode reward |
+| Standard | `tracking_rmse` | RegD tracking RMSE |
+| Standard | `thermal_viol_rate` | Fraction of ticks with thermal violation |
+| Standard | `throughput_ratio` | Fraction of max IT capacity served |
+| Standard | `bess_degradation` | Battery capacity fade over episode |
+| Standard | `survival_rate` | Fraction of episodes surviving to 24 h |
+| HA | `hard_violation_rate` | Rate of C1–C5 constraint violations |
+| HA | `shield_intervention_rate` | How often the shield overrides the agent |
+| HA | `constraint_margin` | Mean distance from nearest constraint boundary |
+| HA | `worst_case_margin` | Minimum margin across all constraints |
+| HA | `computational_overhead_ms` | Per-step shield compute time |
+
+### Evaluation & Analysis Tools
+
+```bash
+# HA benchmark evaluation (11 metrics across all HA agents)
+uv run evaluation/run_ha_benchmark.py --agents simplex_ppo cbf_ppo hj_ppo mpcsf_ppo ha_c2g
+
+# HA-specific plots (Pareto frontier, radar, violin, LaTeX table)
+uv run evaluation/generate_ha_plots.py
+
+# Failure-case analysis (where/why/how often agents fail)
+uv run evaluation/failure_analysis.py
+
+# Statistical analysis (bootstrap CIs, Welch's t-test, Cohen's d)
+uv run evaluation/statistical_analysis.py
+```
 
 ---
 
@@ -1516,7 +1693,7 @@ All figures are generated by the notebooks in `notebooks/` and can be reproduced
   <img src="notebooks/fig_obs_coverage.png"    width="49%" alt="Observation space coverage: 17-D normalised ranges"/>
 </p>
 <p align="center">
-  <img src="notebooks/fig_macro_rollout.png"   width="49%" alt="C2GMacroEnv 15-min rollout: commitment, BESS target, market interaction"/>
+  <img src="notebooks/fig_macro_rollout.png"   width="49%" alt="C2GMacroEnv 15-min rollout: bid MW, bid price, market interaction"/>
   <img src="notebooks/fig_scenario_rewards.png" width="49%" alt="Reward comparison across all 4 scenarios"/>
 </p>
 
