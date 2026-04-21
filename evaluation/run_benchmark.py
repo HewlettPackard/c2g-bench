@@ -80,7 +80,6 @@ from baselines.safety_shield import SafetyShield
 SCENARIOS    = ["default", "scenario_a", "scenario_b", "scenario_c"]
 T_WARN_NORM  = 33.0 / 35.0   # normalised warning threshold
 DT_S         = 300            # seconds per tick
-COMMIT_MW    = {"default": 15.0, "scenario_a": 20.0, "scenario_b": 30.0, "scenario_c": 15.0}
 _VALID_ACTIONS = ("throttle_batch", "pump_speed_A", "hvac_effort", "bess_dispatch")
 _ACTION_BOUNDS: dict[str, tuple[float, float]] = {
     "throttle_batch": (0.0, 1.0),
@@ -154,59 +153,6 @@ def _infer_agent_type(agent_name: str) -> str:
     """Classify benchmark agents as macro vs hardware controllers."""
     macro_agents = {"rule_macro", "random_macro", "mpc_macro", "milp", "ppo_macro"}
     return "macro" if agent_name in macro_agents else "hardware"
-
-
-def _reward_components(
-    env: C2GFastEnv,
-    action: np.ndarray,
-    info: dict[str, Any],
-    committed_mw: float,
-    agent_type: str,
-) -> dict[str, float]:
-    """Build reward decomposition dict for transition logging."""
-    rcfg = getattr(env, "_rcfg", {})
-
-    alpha = float(rcfg.get("alpha", 1.0))
-    beta = float(rcfg.get("beta", 2.0))
-    gamma = float(rcfg.get("gamma_thermal", 5.0))
-    t_warn_a = float(rcfg.get("T_warn_A", 33.0))
-    t_warn_b = float(rcfg.get("T_warn_B", 33.0))
-    soc_pen_c = float(rcfg.get("soc_penalty", 0.0))
-    backlog_pen_c = float(rcfg.get("sla_backlog_penalty", 2.0))
-
-    t_safe = float(getattr(env._thermal, "T_safe", 35.0))
-    temp_headroom = max(t_safe - t_warn_a, 1.0)
-    thermal_pen = (
-        max(0.0, float(info.get("temp_A", 0.0)) - t_warn_a) / temp_headroom
-        + max(0.0, float(info.get("temp_B", 0.0)) - t_warn_b) / temp_headroom
-    )
-
-    action_arr = np.asarray(action, dtype=np.float32).reshape(-1)
-    throttle = float(action_arr[0]) if action_arr.size > 0 else 0.0
-    tracking_err_kw = float(info.get("tracking_err_kw", 0.0))
-    norm_kw = max(committed_mw * 1_000.0, 100.0)
-    soc_pen = soc_pen_c if float(info.get("bess_soc", 0.0)) < 0.12 else 0.0
-
-    p_flex_max_kw = float(getattr(env._workload, "p_flex_max_kw", 1.0))
-    backlog_pen = backlog_pen_c * (float(info.get("backlog_kw", 0.0)) / max(p_flex_max_kw, 1e-9))
-
-    components: dict[str, float] = {
-        "throughput": alpha * throttle,
-        "tracking": -beta * (tracking_err_kw / norm_kw),
-        "thermal": -gamma * thermal_pen,
-        "soc": -soc_pen,
-        "freq": -float(info.get("freq_penalty", 0.0)),
-        "volt": -float(info.get("volt_penalty", 0.0)),
-        "backlog": -backlog_pen,
-    }
-
-    if agent_type == "macro":
-        components["regulation_revenue"] = float(info.get("regulation_revenue", 0.0))
-        components["electricity_cost"] = -float(info.get("electricity_cost", 0.0))
-        components["commit_churn"] = -float(info.get("commit_churn_pen", 0.0))
-        components["bid_accepted"] = float(info.get("bid_accepted", False))
-
-    return components
 
 
 # ---------------------------------------------------------------------------
@@ -328,7 +274,6 @@ def run_episode(
             verbose=0,
         )
 
-    committed_mw  = COMMIT_MW.get(scenario, 15.0)
     rewards       : list[float] = []
     tracking_errs : list[float] = []
     thermal_viols : int = 0
@@ -343,13 +288,12 @@ def run_episode(
         done = terminated or truncated
 
         if transition_logger is not None:
-            reward_components = _reward_components(
-                env=env,
-                action=action,
-                info=info,
-                committed_mw=committed_mw,
-                agent_type=agent_type,
-            )
+            reward_components = {
+                k: info[k] for k in (
+                    "reward_throughput", "reward_tracking", "reward_thermal",
+                    "reward_soc", "reward_freq", "reward_volt", "reward_backlog",
+                )
+            }
             transition_logger.record_transition(
                 state=state,
                 action=action,
