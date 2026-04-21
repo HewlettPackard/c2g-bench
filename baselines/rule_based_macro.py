@@ -8,29 +8,28 @@ classical baseline for the high-level decision problem.
 
 Policy logic
 ------------
-1. **Commitment sizing** — proportional to grid load stress:
-   - High load (grid_load > 0.7): commit 80% of capacity → earn high LMP
-   - Medium load (0.4–0.7):       commit 50% of capacity
-   - Low load (< 0.4):            commit 20% → conserve BESS
+1. **Bid sizing** — proportional to grid load stress:
+   - High load (grid_load > 0.7): bid 80% of capacity
+   - Medium load (0.4–0.7):       bid 50% of capacity
+   - Low load (< 0.4):            bid 20%
 
-2. **BESS target** — price-responsive:
-   - High LMP (> 0.5 norm):  discharge (+0.6) to earn revenue
-   - Low LMP (< 0.2 norm):   charge (-0.5) when cheap
-   - Otherwise:               idle (0.0)
+2. **Bid pricing** — undercut the grid's posted RMCP:
+   - Bid at 80% of RMCP (low price → high acceptance probability)
 
 3. **Safety overrides:**
-   - If SOC < 0.15: set BESS target = -0.3 (gentle charge)
-   - If SOC > 0.90: set BESS target = +0.3 (gentle discharge)
-   - If thermal headroom < 0.1: reduce commitment to 30%
+   - If thermal headroom < 0.1: reduce bid to 30%
+   - If under-frequency: increase bid by 20%
+   - If low voltage: cap bid at 40%
 
-Observation index map (C2GMacroEnv, 16-D)
+Observation index map (C2GMacroEnv, 19-D)
 -------------------------------------------
   [0]  temp_A_mean     [1]  temp_B_mean     [2]  bess_soc_end
   [3]  p_base_mean     [4]  p_facility_mean [5]  regd_mean
   [6]  lmp_mean        [7]  grid_load_mean  [8]  tracking_err_mean
   [9]  is_spike_any    [10] headroom_A      [11] headroom_B
-  [12] commit_prev     [13] bess_prev       [14] freq_dev_mean
-  [15] v_pcc_mean
+  [12] bid_mw_prev     [13] bess_prev       [14] freq_dev_mean
+  [15] v_pcc_mean      [16] backlog_norm    [17] rmcp_norm
+  [18] reg_need_norm
 """
 from __future__ import annotations
 
@@ -46,6 +45,7 @@ _I_HEADROOM_A = 10
 _I_HEADROOM_B = 11
 _I_FREQ_DEV  = 14
 _I_VPCC      = 15
+_I_RMCP      = 17
 
 
 class RuleBasedMacroController:
@@ -71,50 +71,39 @@ class RuleBasedMacroController:
         return (actions[0] if single else actions), None
 
     def _action_for(self, obs: NDArray[np.float32]) -> NDArray[np.float32]:
-        soc       = float(obs[_I_SOC])
-        lmp_norm  = float(obs[_I_LMP])
         load_norm = float(obs[_I_LOAD])
         hroom_A   = float(obs[_I_HEADROOM_A])
         hroom_B   = float(obs[_I_HEADROOM_B])
         freq_dev  = float(obs[_I_FREQ_DEV])
         v_pcc     = float(obs[_I_VPCC])
+        rmcp_norm = float(obs[_I_RMCP]) if len(obs) > _I_RMCP else 0.25
 
-        # ── Commitment sizing (proportional to grid load) ────────────
+        # ── Bid sizing (proportional to grid load) ────────────────
         if load_norm > 0.7:
-            commit_norm = 0.80
+            bid_mw_norm = 0.80
         elif load_norm > 0.4:
-            commit_norm = 0.50
+            bid_mw_norm = 0.50
         else:
-            commit_norm = 0.20
+            bid_mw_norm = 0.20
 
-        # ── BESS target (price-responsive) ───────────────────────────
-        if lmp_norm > 0.5:
-            bess_target = 0.6    # discharge when price is high
-        elif lmp_norm < 0.2:
-            bess_target = -0.5   # charge when price is low
-        else:
-            bess_target = 0.0
+        # ── Bid pricing (undercut RMCP for high acceptance) ───────
+        # rmcp_norm = RMCP / rmcp_max, bid_price_norm maps to [0, 2*rmcp_max]
+        # So bid_price_norm = 0.5 * rmcp_norm bids at RMCP;
+        # we bid at 80% of RMCP for high acceptance
+        bid_price_norm = float(np.clip(0.4 * rmcp_norm, 0.0, 1.0))
 
-        # ── Safety overrides ─────────────────────────────────────────
-        # SOC protection
-        if soc < 0.15:
-            bess_target = -0.3   # gentle charge
-        elif soc > 0.90:
-            bess_target = 0.3    # gentle discharge
-
-        # Thermal protection: reduce commitment
+        # ── Safety overrides ─────────────────────────────────────
+        # Thermal protection: reduce bid
         min_headroom = min(hroom_A, hroom_B)
         if min_headroom < 0.10:
-            commit_norm = min(commit_norm, 0.30)
-            bess_target = max(bess_target, 0.0)  # don't charge (adds heat)
+            bid_mw_norm = min(bid_mw_norm, 0.30)
 
-        # Frequency support: if under-frequency, increase commitment
-        # (committing more → more regulation capacity → helps frequency)
+        # Frequency support: if under-frequency, increase bid
         if freq_dev < -0.3:
-            commit_norm = min(1.0, commit_norm + 0.2)
+            bid_mw_norm = min(1.0, bid_mw_norm + 0.2)
 
-        # Voltage support: if low voltage, reduce facility load commitment
+        # Voltage support: if low voltage, reduce facility load bid
         if v_pcc < 0.96:
-            commit_norm = min(commit_norm, 0.40)
+            bid_mw_norm = min(bid_mw_norm, 0.40)
 
-        return np.array([commit_norm, bess_target], dtype=np.float32)
+        return np.array([bid_mw_norm, bid_price_norm], dtype=np.float32)

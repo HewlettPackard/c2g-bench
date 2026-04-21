@@ -414,16 +414,16 @@ class TestMacroEnvSpaces:
     def test_action_space_shape(self, macro_env):
         assert macro_env.action_space.shape == (2,)
 
-    def test_action_space_commit_bounds(self, macro_env):
+    def test_action_space_bid_mw_bounds(self, macro_env):
         assert macro_env.action_space.low[0]  == pytest.approx(0.0)
         assert macro_env.action_space.high[0] == pytest.approx(1.0)
 
-    def test_action_space_bess_bounds(self, macro_env):
-        assert macro_env.action_space.low[1]  == pytest.approx(-1.0)
+    def test_action_space_bid_price_bounds(self, macro_env):
+        assert macro_env.action_space.low[1]  == pytest.approx(0.0)
         assert macro_env.action_space.high[1] == pytest.approx(1.0)
 
     def test_obs_space_shape(self, macro_env):
-        assert macro_env.observation_space.shape == (17,)
+        assert macro_env.observation_space.shape == (19,)
 
     def test_obs_space_dtype(self, macro_env):
         assert macro_env.observation_space.dtype == np.float32
@@ -440,7 +440,7 @@ class TestMacroEnvReset:
 
     def test_reset_obs_shape(self, macro_env):
         obs, _ = macro_env.reset(seed=0)
-        assert obs.shape == (17,)
+        assert obs.shape == (19,)
 
     def test_reset_info_dict(self, macro_env):
         _, info = macro_env.reset(seed=0)
@@ -469,7 +469,7 @@ class TestMacroEnvStep:
     def test_step_obs_shape(self, macro_env):
         macro_env.reset(seed=0)
         obs, *_ = macro_env.step(macro_env.action_space.sample())
-        assert obs.shape == (17,)
+        assert obs.shape == (19,)
 
     def test_step_reward_finite(self, macro_env):
         macro_env.reset(seed=0)
@@ -551,23 +551,21 @@ class TestMacroEnvEpisode:
 
 class TestHierarchicalConsistency:
     def test_macro_inner_committed_updates(self):
-        """Macro action's commit_norm should update the inner env's committed_mw."""
+        """Macro action's bid_mw_norm should update the inner env's committed_mw
+        after the market handshake accepts the bid."""
         env = make_macro()
         env.reset(seed=0)
-        commit_norm = 0.8
-        env.step(np.array([commit_norm, 0.0], dtype=np.float32))
-        expected_mw = commit_norm * env._committed_max_mw
-        assert env._fast_env._committed_mw == pytest.approx(expected_mw, rel=1e-5)
-
-    def test_macro_bess_target_passed_to_inner(self):
-        """bess_target from macro action should be forwarded as inner BESS dispatch."""
-        env = make_macro()
-        env.reset(seed=0)
-        # With default inner_action_fn=None, the inner action uses bess_target directly
-        bess_target = 0.6
-        *_, info = env.step(np.array([0.5, bess_target], dtype=np.float32))
-        # inner info is available via last_inner_info
-        assert "last_inner_info" in info
+        bid_mw_norm = 0.8
+        # bid_price_norm=0.0 (cheapest) to maximise acceptance probability
+        *_, info = env.step(np.array([bid_mw_norm, 0.0], dtype=np.float32))
+        expected_mw = bid_mw_norm * env._committed_max_mw
+        if info.get("bid_accepted", True):
+            assert env._fast_env._committed_mw == pytest.approx(expected_mw, rel=1e-5)
+        else:
+            # If bid was rejected, committed_mw falls to DR baseline
+            assert env._fast_env._committed_mw == pytest.approx(
+                env._dr_baseline_mw, abs=0.01
+            )
 
     def test_macro_obs_temp_matches_inner(self):
         """Macro obs temperatures should derive from inner env's thermal model."""
@@ -589,7 +587,7 @@ class TestHierarchicalConsistency:
 
         def my_fn(inner_obs: np.ndarray, macro_action: np.ndarray):
             call_count.append(1)
-            return np.array([1.0, 0.7, 0.7, macro_action[1]], dtype=np.float32)
+            return np.array([1.0, 0.7, 0.7, 0.0], dtype=np.float32)
 
         env = C2GMacroEnv(inner_action_fn=my_fn)
         env.reset(seed=0)

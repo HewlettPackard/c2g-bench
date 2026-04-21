@@ -118,6 +118,14 @@ class MarketParams:
     data_url:           str
     zone_csv:           str | None = None   # energy CSV stem; None → synthetic
 
+    # --- Market handshake (RMCP + regulation need) ---
+    rmcp_base_usd:       float = 25.0    # base regulation market clearing price ($/MWh)
+    rmcp_lmp_beta:       float = 0.3     # RMCP-LMP correlation coefficient
+    rmcp_noise_std:      float = 5.0     # stochastic RMCP noise ($/MWh)
+    reg_need_base_mw:    float = 50.0    # baseline regulation requirement (MW)
+    reg_need_slope:      float = 0.5     # reg need increase with normalised load
+    competitor_fill_rate: float = 0.7    # fraction already filled by competitors
+
 
 #: Registry of supported markets.  Keys match the ``grid_market`` config field.
 MARKET_PRESETS: dict[str, MarketParams] = {
@@ -139,6 +147,9 @@ MARKET_PRESETS: dict[str, MarketParams] = {
         dc_hub             = "Manhattan / New Jersey financial data centres",
         data_url           = "https://www.nyiso.com/load-data",
         zone_csv           = "NYC",
+        rmcp_base_usd      = 25.0,
+        reg_need_base_mw   = 40.0,
+        competitor_fill_rate = 0.70,
     ),
     # ── 2. PJM Dominion (Northern Virginia) ───────────────────────────────
     # "Data Center Alley" — ~70 % of global internet traffic.
@@ -158,6 +169,9 @@ MARKET_PRESETS: dict[str, MarketParams] = {
         dc_hub             = "Ashburn / Loudoun County VA (largest DC cluster on Earth)",
         data_url           = "https://dataminer2.pjm.com/feed/hrl_load_metered",
         zone_csv           = "PJM_DOM",
+        rmcp_base_usd      = 30.0,
+        reg_need_base_mw   = 80.0,
+        competitor_fill_rate = 0.75,
     ),
     # ── 3. CAISO PG&E (Bay Area) ──────────────────────────────────────────
     # Duck curve: large midday solar ramp → rapid dispatchable ramp-up at dusk.
@@ -177,6 +191,9 @@ MARKET_PRESETS: dict[str, MarketParams] = {
         dc_hub             = "Santa Clara / San Jose (Silicon Valley AI cluster)",
         data_url           = "https://oasis.caiso.com/mrioasis/logon.do",
         zone_csv           = "CAISO_PGAE",
+        rmcp_base_usd      = 40.0,
+        reg_need_base_mw   = 60.0,
+        competitor_fill_rate = 0.65,
     ),
     # ── 4. ERCOT North (Dallas–Fort Worth) ────────────────────────────────
     # Isolated grid (no interstate interconnects) → extreme price spikes.
@@ -196,6 +213,9 @@ MARKET_PRESETS: dict[str, MarketParams] = {
         dc_hub             = "Dallas–Fort Worth / San Antonio (fastest-growing US DC market)",
         data_url           = "https://www.ercot.com/gridinfo/load/load_hist",
         zone_csv           = "ERCOT_NORTH",
+        rmcp_base_usd      = 20.0,
+        reg_need_base_mw   = 50.0,
+        competitor_fill_rate = 0.60,
     ),
     # ── 5. ENTSO-E Germany (Frankfurt hub) ────────────────────────────────
     # FCR-N: responds to frequency deviation, not AGC dispatch → smoother signal.
@@ -216,6 +236,9 @@ MARKET_PRESETS: dict[str, MarketParams] = {
         dc_hub             = "Frankfurt (DE-CIX — largest internet exchange by traffic)",
         data_url           = "https://transparency.entsoe.eu/load-domain/r2/totalLoadR2/show",
         zone_csv           = "ENTSOE_DE",
+        rmcp_base_usd      = 35.0,
+        reg_need_base_mw   = 100.0,
+        competitor_fill_rate = 0.80,
     ),
     # ── 6. AEMO New South Wales (Sydney) ──────────────────────────────────
     # 5-min dispatch intervals (NEM); South Australia has reached 100% renewable.
@@ -235,6 +258,9 @@ MARKET_PRESETS: dict[str, MarketParams] = {
         dc_hub             = "Western Sydney Aerotropolis (AUD $1B investment zone)",
         data_url           = "https://aemo.com.au/en/energy-systems/electricity/national-electricity-market-nem/data-nem/aggregated-data",
         zone_csv           = "AEMO_NSW",
+        rmcp_base_usd      = 30.0,
+        reg_need_base_mw   = 30.0,
+        competitor_fill_rate = 0.65,
     ),
 }
 
@@ -319,6 +345,13 @@ class MacroGridSignal:
 
         self._tick: int = 0
 
+        # ── Market handshake state (RMCP + regulation need) ──────────
+        self._rmcp: float = self._market.rmcp_base_usd
+        self._reg_need: float = self._market.reg_need_base_mw
+        self._residual: float = (
+            self._reg_need * (1.0 - self._market.competitor_fill_rate)
+        )
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -377,12 +410,93 @@ class MacroGridSignal:
         self._regd_state = 0.0
         self._regd_buffer = []
         self._f_grid = self._f_nom
+        self._rmcp = self._market.rmcp_base_usd
+        self._reg_need = self._market.reg_need_base_mw
+        self._residual = (
+            self._reg_need * (1.0 - self._market.competitor_fill_rate)
+        )
         if seed is not None:
             self._rng = np.random.default_rng(seed)
 
     def set_committed(self, committed_mw: float) -> None:
         """Update the committed regulation capacity [MW]."""
         self.committed_mw = float(np.clip(committed_mw, 0.0, 50.0))
+
+    # ------------------------------------------------------------------
+    # Market handshake: RMCP + bid clearing
+    # ------------------------------------------------------------------
+
+    def step_rmcp(self) -> dict[str, float]:
+        """
+        Compute the Regulation Market Clearing Price and residual need.
+
+        Called once per macro interval (15-min) *before* the agent bids.
+        The grid posts RMCP and regulation need; the agent observes these
+        and decides how much MW to offer and at what price.
+
+        Returns
+        -------
+        dict with keys:
+            rmcp_usd     : Regulation Market Clearing Price [$/MWh].
+            reg_need_mw  : Total regulation requirement [MW].
+            residual_mw  : Residual need after competitor fills [MW].
+            lmp_usd_mwh  : Current LMP [$/MWh] (for reference).
+            load_norm    : Current normalised grid load [0, 1].
+        """
+        m = self._market
+        idx = self._tick % self._n
+        load_mw = float(self._load_mw[idx])
+        lmp = self._load_to_lmp(load_mw)
+        load_norm = load_mw / float(self._load_mw.max())
+
+        noise = float(self._rng.normal(0.0, m.rmcp_noise_std))
+        self._rmcp = m.rmcp_base_usd + m.rmcp_lmp_beta * (lmp - m.lmp_base_usd) + noise
+        self._rmcp = float(np.clip(self._rmcp, 0.0, 500.0))
+
+        self._reg_need = m.reg_need_base_mw * (1.0 + m.reg_need_slope * load_norm)
+        self._residual = self._reg_need * (1.0 - m.competitor_fill_rate)
+
+        return {
+            "rmcp_usd":    self._rmcp,
+            "reg_need_mw": self._reg_need,
+            "residual_mw": self._residual,
+            "lmp_usd_mwh": lmp,
+            "load_norm":   load_norm,
+        }
+
+    def clear_bid(self, bid_price: float, bid_mw: float) -> dict[str, float]:
+        """
+        Probabilistic bid acceptance using sigmoid price curve × quantity factor.
+
+        Called once per macro interval *after* ``step_rmcp()`` and the agent's bid.
+
+        Parameters
+        ----------
+        bid_price : float
+            Agent's asking price [$/MWh].
+        bid_mw : float
+            Agent's offered regulation capacity [MW].
+
+        Returns
+        -------
+        dict with keys:
+            accepted       : bool — whether the bid was accepted.
+            accepted_mw    : float — MW accepted (bid_mw if accepted, else 0).
+            accept_prob    : float — computed acceptance probability.
+            clearing_price : float — the RMCP at which the bid clears.
+        """
+        k_p = 0.15  # sigmoid temperature
+        price_prob = 1.0 / (1.0 + np.exp(-k_p * (self._rmcp - bid_price)))
+        quantity_factor = min(1.0, self._residual / max(bid_mw, 0.01))
+        accept_prob = float(price_prob * quantity_factor)
+        accepted = bool(self._rng.random() < accept_prob)
+        accepted_mw = bid_mw if accepted else 0.0
+        return {
+            "accepted":       accepted,
+            "accepted_mw":    accepted_mw,
+            "accept_prob":    accept_prob,
+            "clearing_price": self._rmcp,
+        }
 
     @property
     def horizon_ticks(self) -> int:

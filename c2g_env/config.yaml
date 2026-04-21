@@ -54,6 +54,17 @@ reward:
   sla_backlog_penalty: 2.0  # SLA: penalty per unit of normalised batch backlog
 
 # ------------------------------------------------------------------------------
+# Market handshake parameters
+# Configures the 3-phase bid/accept protocol between grid and datacenter.
+# ------------------------------------------------------------------------------
+handshake:
+  rmcp_max: 100.0          # max RMCP for price normalisation ($/MWh)
+  sigmoid_k_p: 0.15        # bid acceptance sigmoid temperature
+  lambda_rev: 1.0           # regulation revenue reward weight
+  lambda_elec: 0.5          # electricity cost penalty weight
+  lambda_churn: 0.05        # bid MW churn penalty weight
+
+# ------------------------------------------------------------------------------
 # Market presets — grid signal + weather parameters per region
 # Each market key matches MARKET_PRESETS in macro_grid.py and
 # WEATHER_PRESETS in weather.py.
@@ -123,6 +134,8 @@ default:
   cooling_fault: false
   genai_spike_scale: 1.0     # Multiplier on GenAI spike magnitude
   grid_stress_scale: 1.0     # Multiplier on RegD signal amplitude
+  dr_baseline_mw: 5.0        # Standing DR contract capacity [MW]
+  dr_rate_usd_mw: 5.0        # DR compensation rate [$/MW·h]
 
 # ------------------------------------------------------------------------------
 # Scenario A — The GenAI Crisis
@@ -147,6 +160,8 @@ scenario_a:
   cooling_fault: false
   genai_spike_scale: 1.8     # 80% larger GenAI spikes
   grid_stress_scale: 1.5     # 50% stronger regulation signal
+  dr_baseline_mw: 5.0        # Standing DR contract capacity [MW]
+  dr_rate_usd_mw: 5.0        # DR compensation rate [$/MW·h]
 
 # ------------------------------------------------------------------------------
 # Scenario B — The Thermal Squeeze
@@ -169,6 +184,8 @@ scenario_b:
   cooling_fault: false
   genai_spike_scale: 1.0
   grid_stress_scale: 1.3
+  dr_baseline_mw: 5.0        # Standing DR contract capacity [MW]
+  dr_rate_usd_mw: 5.0        # DR compensation rate [$/MW·h]
 
 # ------------------------------------------------------------------------------
 # Scenario C — The Battery Drain
@@ -192,3 +209,5 @@ scenario_c:
   cooling_fault_factor: 0.6  # 40% pump efficiency loss
   genai_spike_scale: 1.2
   grid_stress_scale: 1.2
+  dr_baseline_mw: 5.0        # Standing DR contract capacity [MW]
+  dr_rate_usd_mw: 5.0        # DR compensation rate [$/MW·h]
