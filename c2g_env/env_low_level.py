@@ -219,7 +219,7 @@ class C2GFastEnv(gym.Env):
         self._prev_throttle  = 1.0
         self._prev_pump_speed = 1.0
         self._prev_regd_signal = 0.0
-        self._committed_mw   = float(self._scfg["committed_mw"])
+        self._committed_mw   = float(self._scfg["dr_baseline_mw"])
         self._episode_ticks  = int(self._gcfg["episode_ticks"])
         self._dt             = float(self._gcfg["dt_seconds"])
 
@@ -234,9 +234,8 @@ class C2GFastEnv(gym.Env):
 
     @committed_mw.setter
     def committed_mw(self, value: float) -> None:
-        """Set regulation capacity commitment, clamped to [0, facility capacity]."""
-        cap = float(self._gcfg.get("max_committed_mw",
-                                   float(self._scfg["committed_mw"]) * 4.0))
+        """Set regulation capacity commitment, clamped to [0, committed_mw_max]."""
+        cap = float(self._scfg["committed_mw_max"])
         self._committed_mw = float(np.clip(value, 0.0, cap))
 
     # ------------------------------------------------------------------
@@ -298,7 +297,7 @@ class C2GFastEnv(gym.Env):
             energy_dir=gcfg["energy_dir"],
             zone=gcfg["nyiso_zone"],
             dt_seconds=self._dt,
-            committed_mw=float(scfg["committed_mw"]),
+            committed_mw=float(scfg["dr_baseline_mw"]),
             seed=rng_seed,
             market=gcfg.get("grid_market", "nyiso_nyc"),
         )
@@ -329,7 +328,7 @@ class C2GFastEnv(gym.Env):
         bess_soc_init = float(scfg.get("bess_soc_init", 0.5))
         self._bess.set_initial_soc(bess_soc_init)
 
-        self._committed_mw   = float(scfg["committed_mw"])
+        self._committed_mw   = float(scfg["dr_baseline_mw"])
         self._tick           = 0
         self._prev_throttle  = 1.0
         self._prev_pump_speed = 1.0
@@ -452,11 +451,6 @@ class C2GFastEnv(gym.Env):
         T_warn_A   = float(self._rcfg["T_warn_A"])
         T_warn_B   = float(self._rcfg["T_warn_B"])
         soc_pen_c  = float(self._rcfg["soc_penalty"])
-        # Clamp norm_kw to at least 100 kW so that when committed_mw=0
-        # the tracking penalty is bounded (not 500× larger than intended).
-        # When committed_mw=0 there is nothing to track, so the penalty
-        # term collapses to ≈0 naturally (delta_p_demanded_kw = 0 too).
-        norm_kw    = max(self._committed_mw * 1_000.0, 100.0)
 
         # Normalize thermal excess to [0, 1] per zone:
         #   0 at T_warn, 1 at T_safe, so gamma is dimensionless like alpha/beta.
@@ -484,15 +478,14 @@ class C2GFastEnv(gym.Env):
             w.backlog_kw / self._workload.p_flex_max_kw
         )
 
-        reward = float(
-            alpha  * throttle_batch
-            - beta  * (tracking_err_kw / norm_kw)
-            - gamma * thermal_pen
-            - soc_pen
-            - freq_pen
-            - volt_pen
-            - backlog_pen
-        )
+        r_throughput =  alpha * throttle_batch
+        r_tracking   = -beta  * (tracking_err_kw / (self._committed_mw * 1_000.0))
+        r_thermal    = -gamma * thermal_pen
+        r_soc        = -soc_pen
+        r_freq       = -freq_pen
+        r_volt       = -volt_pen
+        r_backlog    = -backlog_pen
+        reward = float(r_throughput + r_tracking + r_thermal + r_soc + r_freq + r_volt + r_backlog)
 
         # -----------------------------------------------------------------
         # 8. Termination / truncation
@@ -558,6 +551,13 @@ class C2GFastEnv(gym.Env):
             "v_drop_pu":             v_drop_pu,
             "freq_penalty":          freq_pen,
             "volt_penalty":          volt_pen,
+            "reward_throughput":     r_throughput,
+            "reward_tracking":       r_tracking,
+            "reward_thermal":        r_thermal,
+            "reward_soc":            r_soc,
+            "reward_freq":           r_freq,
+            "reward_volt":           r_volt,
+            "reward_backlog":        r_backlog,
             "scenario":              self._scenario,
         }
         return obs, reward, terminated, truncated, info

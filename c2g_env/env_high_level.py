@@ -119,7 +119,6 @@ class C2GMacroEnv(gym.Env):
         self,
         scenario: str = "default",
         config_path: str | Path | None = None,
-        committed_max_mw: float | None = None,
         inner_action_fn: Callable | None = None,
         **kwargs: Any,
     ) -> None:
@@ -146,9 +145,7 @@ class C2GMacroEnv(gym.Env):
 
         self._inner_action_fn = inner_action_fn
 
-        # Default committed max = 2× scenario committed
-        if committed_max_mw is None:
-            committed_max_mw = float(self._scfg["committed_mw"]) * 2.0
+        committed_max_mw = float(self._scfg["committed_mw_max"])
         self._committed_max_mw = float(committed_max_mw)
 
         # --- Spaces ------------------------------------------------------
@@ -372,12 +369,11 @@ class C2GMacroEnv(gym.Env):
         mean_sub_reward  = float(np.mean(sub_rewards))
         commit_churn_pen = abs(bid_mw_norm - self._prev_bid_mw_norm)
 
-        reward = float(
-            self._lambda_rev * regulation_revenue / 1000.0
-            + mean_sub_reward
-            - self._lambda_elec * electricity_cost / 1000.0
-            - self._lambda_churn * commit_churn_pen
-        )
+        r_regulation = self._lambda_rev  *  regulation_revenue / 1000.0
+        r_sub        = mean_sub_reward
+        r_elec       = -self._lambda_elec * electricity_cost   / 1000.0
+        r_churn      = -self._lambda_churn * commit_churn_pen
+        reward = float(r_regulation + r_sub + r_elec + r_churn)
 
         self._prev_bid_mw_norm = bid_mw_norm
         self._prev_bid_price_norm = bid_price_norm
@@ -408,6 +404,10 @@ class C2GMacroEnv(gym.Env):
             "sub_steps_run":         len(sub_rewards),
             "scenario":              self._scenario,
             "last_inner_info":       last_info,
+            "reward_regulation":     r_regulation,
+            "reward_sub":            r_sub,
+            "reward_elec":           r_elec,
+            "reward_churn":          r_churn,
         }
         return obs, reward, terminated, truncated, info_out
 
