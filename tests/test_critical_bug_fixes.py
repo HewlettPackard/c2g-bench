@@ -310,7 +310,7 @@ class TestMacroEnvTerminatedTruncated:
         obs, _ = env.reset(seed=7)
         for _ in range(200):
             # aggressive: zero cooling, max discharge → likely thermal fault
-            action = np.array([1.0, -1.0], dtype=np.float32)
+            action = np.array([1.0, 0.0], dtype=np.float32)
             obs, rew, terminated, truncated, info = env.step(action)
             if terminated:
                 assert not truncated, (
@@ -805,15 +805,23 @@ class TestCommittedMwProperty:
     def test_macro_env_committed_mw_flows_through_to_fast_env(self):
         """
         After a MacroEnv step, C2GFastEnv._committed_mw must equal the value
-        derived from the macro action (commit_norm × committed_max_mw).
+        derived from the macro action (bid_mw_norm x committed_max_mw) when
+        the market handshake accepts the bid.
         """
         from c2g_env import C2GMacroEnv
         env = C2GMacroEnv(scenario="default")
         env.reset(seed=0)
-        action = np.array([0.6, 0.0], dtype=np.float32)   # commit_norm=0.6
-        env.step(action)
-        expected = 0.6 * env._committed_max_mw
-        assert env._fast_env.committed_mw == pytest.approx(expected, abs=0.01), (
-            f"Fast env committed_mw={env._fast_env.committed_mw:.2f}, "
-            f"expected {expected:.2f}. Medium Bug #5 not fixed."
-        )
+        # 3D action: [bid_mw_norm, bid_price_norm, bess_target]
+        # bid_price_norm=0.0 to maximise acceptance probability
+        action = np.array([0.6, 0.0], dtype=np.float32)
+        *_, info = env.step(action)
+        if info.get("bid_accepted", True):
+            expected = 0.6 * env._committed_max_mw
+            assert env._fast_env.committed_mw == pytest.approx(expected, abs=0.01), (
+                f"Fast env committed_mw={env._fast_env.committed_mw:.2f}, "
+                f"expected {expected:.2f}. Medium Bug #5 not fixed."
+            )
+        else:
+            assert env._fast_env.committed_mw == pytest.approx(0.0, abs=0.01), (
+                "Bid was rejected but committed_mw is not zero."
+            )

@@ -90,34 +90,7 @@ from c2g_env.physics.weather    import WeatherLoader
 # ---------------------------------------------------------------------------
 _FACILITY_CAP_KW = 250_000.0    # Nameplate IT capacity (kW)
 
-# Zone A: 2000 racks (800 GenAI base + 1200 batch flex)
-_ZA_N_RACKS  = 2_000
-_ZA_P_IDLE   = 8.0              # kW per rack idle
-_ZA_P_RANGE  = 75.0 - 8.0      # kW per rack: (p_max - p_idle)
-_ZA_ALPHA    = 1.4              # GPU super-linear exponent
-
-# Zone B: 2500 racks (all DLRM / inference)
-_ZB_N_RACKS  = 2_500
-_ZB_P_IDLE   = 4.0
-_ZB_P_RANGE  = 40.0 - 4.0
-_ZB_ALPHA    = 1.2
-
 _CONFIG_PATH = Path(__file__).parent / "config.yaml"
-
-
-def _inverse_rack_util(p_zone_kw: float, n_racks: int,
-                       p_idle_kw: float, p_range_kw: float,
-                       alpha: float) -> float:
-    """
-    Invert  P(u) = N × [p_idle + p_range × u^alpha]  to recover u ∈ [0, 1].
-
-    Used to pass the workload-derived IT power back through the electrical
-    accounting model (which takes utilisation fractions as input).
-    """
-    per_rack = p_zone_kw / max(n_racks, 1)
-    frac = (per_rack - p_idle_kw) / max(p_range_kw, 1e-9)
-    frac = float(np.clip(frac, 0.0, 1.0))
-    return frac ** (1.0 / alpha)
 
 
 class C2GFastEnv(gym.Env):
@@ -219,7 +192,7 @@ class C2GFastEnv(gym.Env):
         self._prev_throttle  = 1.0
         self._prev_pump_speed = 1.0
         self._prev_regd_signal = 0.0
-        self._committed_mw   = float(self._scfg["committed_mw"])
+        self._committed_mw   = float(self._scfg["dr_baseline_mw"])
         self._episode_ticks  = int(self._gcfg["episode_ticks"])
         self._dt             = float(self._gcfg["dt_seconds"])
 
@@ -234,9 +207,8 @@ class C2GFastEnv(gym.Env):
 
     @committed_mw.setter
     def committed_mw(self, value: float) -> None:
-        """Set regulation capacity commitment, clamped to [0, facility capacity]."""
-        cap = float(self._gcfg.get("max_committed_mw",
-                                   float(self._scfg["committed_mw"]) * 4.0))
+        """Set regulation capacity commitment, clamped to [0, committed_mw_max]."""
+        cap = float(self._scfg["committed_mw_max"])
         self._committed_mw = float(np.clip(value, 0.0, cap))
 
     # ------------------------------------------------------------------
@@ -298,7 +270,7 @@ class C2GFastEnv(gym.Env):
             energy_dir=gcfg["energy_dir"],
             zone=gcfg["nyiso_zone"],
             dt_seconds=self._dt,
-            committed_mw=float(scfg["committed_mw"]),
+            committed_mw=float(scfg["dr_baseline_mw"]),
             seed=rng_seed,
             market=gcfg.get("grid_market", "nyiso_nyc"),
         )
@@ -329,7 +301,7 @@ class C2GFastEnv(gym.Env):
         bess_soc_init = float(scfg.get("bess_soc_init", 0.5))
         self._bess.set_initial_soc(bess_soc_init)
 
-        self._committed_mw   = float(scfg["committed_mw"])
+        self._committed_mw   = float(scfg["dr_baseline_mw"])
         self._tick           = 0
         self._prev_throttle  = 1.0
         self._prev_pump_speed = 1.0
@@ -395,11 +367,17 @@ class C2GFastEnv(gym.Env):
         # -----------------------------------------------------------------
         # 4. Electrical  (full facility accounting: UPS/PDU/XFMR + PUE)
         # -----------------------------------------------------------------
-        util_A = _inverse_rack_util(
-            w.p_base_a_kw + w.p_flex_kw, _ZA_N_RACKS, _ZA_P_IDLE, _ZA_P_RANGE, _ZA_ALPHA
+        util_A = DatacenterElectrical._inverse_rack_util(
+            w.p_base_a_kw + w.p_flex_kw,
+            self._elec.n_racks_A, self._elec.p_idle_rack_A_kw,
+            self._elec.p_max_rack_A_kw - self._elec.p_idle_rack_A_kw,
+            self._elec.alpha_A,
         )
-        util_B = _inverse_rack_util(
-            w.p_base_b_kw, _ZB_N_RACKS, _ZB_P_IDLE, _ZB_P_RANGE, _ZB_ALPHA
+        util_B = DatacenterElectrical._inverse_rack_util(
+            w.p_base_b_kw,
+            self._elec.n_racks_B, self._elec.p_idle_rack_B_kw,
+            self._elec.p_max_rack_B_kw - self._elec.p_idle_rack_B_kw,
+            self._elec.alpha_B,
         )
         # p_pump_mw is a separate facility electrical load (CDU circulating pump)
         elec = self._elec.step(util_A, util_B, p_cool_A_mw, p_hvac_mw + p_pump_mw)
@@ -411,11 +389,19 @@ class C2GFastEnv(gym.Env):
         # The DC can deliver this by:
         #   (a) Reducing batch load (flex shedding)    → flex_reduction_kw
         #   (b) Discharging BESS (inject energy back)  → bess_actual_kw
+        #   (c) Modulating cooling loads (HVAC + pump) → cool_delta_kw
         bess_actual_kw     = bess_out["actual_power_mw"] * 1_000.0
         flex_reduction_kw  = (1.0 - throttle_batch) * w.p_flex_nom_kw
 
-        # ΔP_actual = how much the DC has actually reduced its net draw
-        delta_p_actual_kw  = flex_reduction_kw + bess_actual_kw
+        # Cooling load deviation from nominal operating point.
+        # Positive cool_delta_kw = cooling draw increased above nominal
+        # (i.e. facility is consuming MORE from grid → less net reduction).
+        cool_delta_kw = (p_hvac_mw + p_pump_mw
+                         - self._thermal.p_cool_nominal_mw) * 1_000.0
+
+        # ΔP_actual = how much the DC has actually reduced its net draw.
+        # Subtracting cool_delta_kw: increased cooling = more draw = less reduction.
+        delta_p_actual_kw  = flex_reduction_kw + bess_actual_kw - cool_delta_kw
 
         # ΔP_demanded uses the RegD signal from the *previous* observation,
         # i.e. the signal the agent actually saw and responded to.
@@ -452,11 +438,6 @@ class C2GFastEnv(gym.Env):
         T_warn_A   = float(self._rcfg["T_warn_A"])
         T_warn_B   = float(self._rcfg["T_warn_B"])
         soc_pen_c  = float(self._rcfg["soc_penalty"])
-        # Clamp norm_kw to at least 100 kW so that when committed_mw=0
-        # the tracking penalty is bounded (not 500× larger than intended).
-        # When committed_mw=0 there is nothing to track, so the penalty
-        # term collapses to ≈0 naturally (delta_p_demanded_kw = 0 too).
-        norm_kw    = max(self._committed_mw * 1_000.0, 100.0)
 
         # Normalize thermal excess to [0, 1] per zone:
         #   0 at T_warn, 1 at T_safe, so gamma is dimensionless like alpha/beta.
@@ -484,15 +465,14 @@ class C2GFastEnv(gym.Env):
             w.backlog_kw / self._workload.p_flex_max_kw
         )
 
-        reward = float(
-            alpha  * throttle_batch
-            - beta  * (tracking_err_kw / norm_kw)
-            - gamma * thermal_pen
-            - soc_pen
-            - freq_pen
-            - volt_pen
-            - backlog_pen
-        )
+        r_throughput =  alpha * throttle_batch
+        r_tracking   = -beta  * (tracking_err_kw / (self._committed_mw * 1_000.0))
+        r_thermal    = -gamma * thermal_pen
+        r_soc        = -soc_pen
+        r_freq       = -freq_pen
+        r_volt       = -volt_pen
+        r_backlog    = -backlog_pen
+        reward = float(r_throughput + r_tracking + r_thermal + r_soc + r_freq + r_volt + r_backlog)
 
         # -----------------------------------------------------------------
         # 8. Termination / truncation
@@ -536,6 +516,7 @@ class C2GFastEnv(gym.Env):
             "delta_p_demanded_kw":   delta_p_demanded_kw,
             "flex_reduction_kw":     flex_reduction_kw,
             "bess_actual_kw":        bess_actual_kw,
+            "cool_delta_kw":         cool_delta_kw,
             "lmp":                   gs["lmp_usd_mwh"],
             "regd_signal":           gs["regd_signal"],
             "reward":                reward,
@@ -558,6 +539,13 @@ class C2GFastEnv(gym.Env):
             "v_drop_pu":             v_drop_pu,
             "freq_penalty":          freq_pen,
             "volt_penalty":          volt_pen,
+            "reward_throughput":     r_throughput,
+            "reward_tracking":       r_tracking,
+            "reward_thermal":        r_thermal,
+            "reward_soc":            r_soc,
+            "reward_freq":           r_freq,
+            "reward_volt":           r_volt,
+            "reward_backlog":        r_backlog,
             "scenario":              self._scenario,
         }
         return obs, reward, terminated, truncated, info
@@ -632,17 +620,24 @@ class C2GFastEnv(gym.Env):
         temp_A_saved, temp_B_saved = self._thermal.temp_A, self._thermal.temp_B
         (_, _), (p_cool_A, p_hvac, p_pump) = self._thermal.step(
             p_it_A_mw=p_it_A_mw, p_it_B_mw=p_it_B_mw,
-            hvac_effort=0.7, pump_speed=1.0,
+            hvac_effort=ThermalTwin.HVAC_NOM_EFFORT,
+            pump_speed=ThermalTwin.PUMP_NOM_SPEED,
         )
         # Rewind thermal to its post-reset temperatures
         self._thermal.temp_A = temp_A_saved
         self._thermal.temp_B = temp_B_saved
 
-        util_A = _inverse_rack_util(
-            w.p_base_a_kw + w.p_flex_kw, _ZA_N_RACKS, _ZA_P_IDLE, _ZA_P_RANGE, _ZA_ALPHA
+        util_A = DatacenterElectrical._inverse_rack_util(
+            w.p_base_a_kw + w.p_flex_kw,
+            self._elec.n_racks_A, self._elec.p_idle_rack_A_kw,
+            self._elec.p_max_rack_A_kw - self._elec.p_idle_rack_A_kw,
+            self._elec.alpha_A,
         )
-        util_B = _inverse_rack_util(
-            w.p_base_b_kw, _ZB_N_RACKS, _ZB_P_IDLE, _ZB_P_RANGE, _ZB_ALPHA
+        util_B = DatacenterElectrical._inverse_rack_util(
+            w.p_base_b_kw,
+            self._elec.n_racks_B, self._elec.p_idle_rack_B_kw,
+            self._elec.p_max_rack_B_kw - self._elec.p_idle_rack_B_kw,
+            self._elec.alpha_B,
         )
         elec = self._elec.step(util_A, util_B, p_cool_A, p_hvac + p_pump)
         self._elec.reset()               # clear cached _last_state

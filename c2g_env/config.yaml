@@ -54,6 +54,17 @@ reward:
   sla_backlog_penalty: 2.0  # SLA: penalty per unit of normalised batch backlog
 
 # ------------------------------------------------------------------------------
+# Market handshake parameters
+# Configures the 3-phase bid/accept protocol between grid and datacenter.
+# ------------------------------------------------------------------------------
+handshake:
+  rmcp_max: 100.0          # max RMCP for price normalisation ($/MWh)
+  sigmoid_k_p: 0.15        # bid acceptance sigmoid temperature
+  lambda_rev: 1.0           # regulation revenue reward weight
+  lambda_elec: 0.5          # electricity cost penalty weight
+  lambda_churn: 0.05        # bid MW churn penalty weight
+
+# ------------------------------------------------------------------------------
 # Market presets — grid signal + weather parameters per region
 # Each market key matches MARKET_PRESETS in macro_grid.py and
 # WEATHER_PRESETS in weather.py.
@@ -118,11 +129,13 @@ default:
   weather_driven: true       # true → WeatherLoader updates T_amb each tick
                              # false → static T_amb (reproducible stress tests)
   T_amb: 25.0                # Initial / fallback ambient temperature [°C]
-  committed_mw: 15.0         # Regulation capacity committed to grid [MW]
+  committed_mw_max: 30.0     # Maximum regulation capacity the macro agent may bid [MW]
   bess_soc_init: 0.50        # BESS initial state of charge
   cooling_fault: false
   genai_spike_scale: 1.0     # Multiplier on GenAI spike magnitude
   grid_stress_scale: 1.0     # Multiplier on RegD signal amplitude
+  dr_baseline_mw: 5.0        # Standing DR contract capacity [MW]
+  dr_rate_usd_mw: 5.0        # DR compensation rate [$/MW·h]
 
 # ------------------------------------------------------------------------------
 # Scenario A — The GenAI Crisis
@@ -142,11 +155,13 @@ scenario_a:
   weather_market: pjm_dom
   weather_driven: false      # static T_amb for reproducibility
   T_amb: 30.0                # Hot summer day in Northern VA
-  committed_mw: 20.0
+  committed_mw_max: 40.0
   bess_soc_init: 0.55
   cooling_fault: false
   genai_spike_scale: 1.8     # 80% larger GenAI spikes
   grid_stress_scale: 1.5     # 50% stronger regulation signal
+  dr_baseline_mw: 5.0        # Standing DR contract capacity [MW]
+  dr_rate_usd_mw: 5.0        # DR compensation rate [$/MW·h]
 
 # ------------------------------------------------------------------------------
 # Scenario B — The Thermal Squeeze
@@ -164,11 +179,13 @@ scenario_b:
   weather_market: ercot_north
   weather_driven: false      # deterministic heat wave
   T_amb: 40.0                # DFW peak summer; COP degrades ~30%
-  committed_mw: 30.0
+  committed_mw_max: 60.0
   bess_soc_init: 0.60
   cooling_fault: false
   genai_spike_scale: 1.0
   grid_stress_scale: 1.3
+  dr_baseline_mw: 5.0        # Standing DR contract capacity [MW]
+  dr_rate_usd_mw: 5.0        # DR compensation rate [$/MW·h]
 
 # ------------------------------------------------------------------------------
 # Scenario C — The Battery Drain
@@ -186,9 +203,11 @@ scenario_c:
   weather_market: aemo_nsw
   weather_driven: false      # deterministic low-battery + fault scenario
   T_amb: 32.0                # Western Sydney summer afternoon
-  committed_mw: 20.0
+  committed_mw_max: 40.0
   bess_soc_init: 0.15        # Start near empty
   cooling_fault: true
   cooling_fault_factor: 0.6  # 40% pump efficiency loss
   genai_spike_scale: 1.2
   grid_stress_scale: 1.2
+  dr_baseline_mw: 5.0        # Standing DR contract capacity [MW]
+  dr_rate_usd_mw: 5.0        # DR compensation rate [$/MW·h]

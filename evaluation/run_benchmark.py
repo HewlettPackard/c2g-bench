@@ -1,5 +1,5 @@
 """
-evaluation/run_benchmark.py  —  Benchmark Evaluation Runner
+evaluation/run_benchmark.py  --  Benchmark Evaluation Runner
 ============================================================
 Runs all registered agents on all 4 evaluation scenarios, collects
 per-episode metrics, and writes results to evaluation/results.csv.
@@ -37,6 +37,7 @@ Agents
   cmaes        — loads CMA-ES trained linear policy
   pso          — loads PSO trained linear policy
   random       — np.random uniform (lower bound)
+  random_macro — np.random uniform over macro action space (bid MW + price)
 
 High-Assurance Agents
   simplex_ppo  — PPO + Simplex safety shield (runtime filter)
@@ -61,7 +62,7 @@ import numpy as np
 import yaml
 from tqdm import tqdm
 
-from c2g_env import C2GFastEnv
+from c2g_env import C2GFastEnv, C2GMacroEnv
 from baselines.rule_based_mpc import RuleBasedController
 from baselines.rule_based_macro import RuleBasedMacroController
 from baselines.bang_bang import BangBangController
@@ -85,7 +86,6 @@ from baselines.safety_shield import SafetyShield
 SCENARIOS    = ["default", "scenario_a", "scenario_b", "scenario_c"]
 T_WARN_NORM  = 33.0 / 35.0   # normalised warning threshold
 DT_S         = 300            # seconds per tick
-COMMIT_MW    = {"default": 15.0, "scenario_a": 20.0, "scenario_b": 30.0, "scenario_c": 15.0}
 _VALID_ACTIONS = ("throttle_batch", "pump_speed_A", "hvac_effort", "bess_dispatch")
 _ACTION_BOUNDS: dict[str, tuple[float, float]] = {
     "throttle_batch": (0.0, 1.0),
@@ -111,6 +111,11 @@ def _make_env(
             **kwargs,
         )
     return C2GFastEnv(scenario=scenario, **kwargs)
+
+
+def _make_macro_env(scenario: str, **kwargs) -> C2GMacroEnv:
+    """Return a C2GMacroEnv for macro-level agent evaluation."""
+    return C2GMacroEnv(scenario=scenario, **kwargs)
 
 
 def _parse_fixed_action_args(values: list[str] | None) -> dict[str, float]:
@@ -152,59 +157,8 @@ def _parse_fixed_action_args(values: list[str] | None) -> dict[str, float]:
 
 def _infer_agent_type(agent_name: str) -> str:
     """Classify benchmark agents as macro vs hardware controllers."""
-    macro_agents = {"rule_macro", "mpc_macro", "milp", "ppo_macro"}
+    macro_agents = {"rule_macro", "random_macro", "mpc_macro", "milp", "ppo_macro"}
     return "macro" if agent_name in macro_agents else "hardware"
-
-
-def _reward_components(
-    env: C2GFastEnv,
-    action: np.ndarray,
-    info: dict[str, Any],
-    committed_mw: float,
-    agent_type: str,
-) -> dict[str, float]:
-    """Build reward decomposition dict for transition logging."""
-    rcfg = getattr(env, "_rcfg", {})
-
-    alpha = float(rcfg.get("alpha", 1.0))
-    beta = float(rcfg.get("beta", 2.0))
-    gamma = float(rcfg.get("gamma_thermal", 5.0))
-    t_warn_a = float(rcfg.get("T_warn_A", 33.0))
-    t_warn_b = float(rcfg.get("T_warn_B", 33.0))
-    soc_pen_c = float(rcfg.get("soc_penalty", 0.0))
-    backlog_pen_c = float(rcfg.get("sla_backlog_penalty", 2.0))
-
-    t_safe = float(getattr(env._thermal, "T_safe", 35.0))
-    temp_headroom = max(t_safe - t_warn_a, 1.0)
-    thermal_pen = (
-        max(0.0, float(info.get("temp_A", 0.0)) - t_warn_a) / temp_headroom
-        + max(0.0, float(info.get("temp_B", 0.0)) - t_warn_b) / temp_headroom
-    )
-
-    action_arr = np.asarray(action, dtype=np.float32).reshape(-1)
-    throttle = float(action_arr[0]) if action_arr.size > 0 else 0.0
-    tracking_err_kw = float(info.get("tracking_err_kw", 0.0))
-    norm_kw = max(committed_mw * 1_000.0, 100.0)
-    soc_pen = soc_pen_c if float(info.get("bess_soc", 0.0)) < 0.12 else 0.0
-
-    p_flex_max_kw = float(getattr(env._workload, "p_flex_max_kw", 1.0))
-    backlog_pen = backlog_pen_c * (float(info.get("backlog_kw", 0.0)) / max(p_flex_max_kw, 1e-9))
-
-    components: dict[str, float] = {
-        "throughput": alpha * throttle,
-        "tracking": -beta * (tracking_err_kw / norm_kw),
-        "thermal": -gamma * thermal_pen,
-        "soc": -soc_pen,
-        "freq": -float(info.get("freq_penalty", 0.0)),
-        "volt": -float(info.get("volt_penalty", 0.0)),
-        "backlog": -backlog_pen,
-    }
-
-    if agent_type == "macro":
-        components["lmp_bonus"] = float(info.get("lmp_bonus", 0.0))
-        components["commit_churn"] = -float(info.get("commit_churn_pen", 0.0))
-
-    return components
 
 
 # ---------------------------------------------------------------------------
@@ -214,6 +168,16 @@ def _reward_components(
 class RandomAgent:
     """Samples uniformly from the action space."""
     def __init__(self, env: C2GFastEnv, algo_name: str = "random"):
+        self._space = env.action_space
+        self.algo_name = algo_name
+
+    def predict(self, obs: np.ndarray, deterministic: bool = True):
+        return self._space.sample(), None
+
+
+class MacroRandomAgent:
+    """Samples uniformly from the macro (2-D) action space."""
+    def __init__(self, env: C2GMacroEnv, algo_name: str = "random_macro"):
         self._space = env.action_space
         self.algo_name = algo_name
 
@@ -316,7 +280,6 @@ def run_episode(
             verbose=0,
         )
 
-    committed_mw  = COMMIT_MW.get(scenario, 15.0)
     rewards       : list[float] = []
     tracking_errs : list[float] = []
     thermal_viols : int = 0
@@ -334,13 +297,12 @@ def run_episode(
         done = terminated or truncated
 
         if transition_logger is not None:
-            reward_components = _reward_components(
-                env=env,
-                action=action,
-                info=info,
-                committed_mw=committed_mw,
-                agent_type=agent_type,
-            )
+            reward_components = {
+                k: info[k] for k in (
+                    "reward_throughput", "reward_tracking", "reward_thermal",
+                    "reward_soc", "reward_freq", "reward_volt", "reward_backlog",
+                )
+            }
             transition_logger.record_transition(
                 state=state,
                 action=action,
@@ -389,6 +351,63 @@ def run_episode(
     }
 
 
+def run_macro_episode(
+    agent,
+    scenario: str,
+    seed: int,
+    algo_name: str | None = None,
+    episode_number: int = 0,
+) -> dict[str, float]:
+    """Run one macro-level episode and return metrics dict."""
+    env = _make_macro_env(scenario=scenario)
+    obs, _ = env.reset(seed=seed)
+
+    rewards: list[float] = []
+    bids_accepted: list[float] = []
+    reg_revenues: list[float] = []
+    elec_costs: list[float] = []
+    perf_scores: list[float] = []
+    committed_mws: list[float] = []
+    tracking_errs: list[float] = []
+    temp_a_maxes: list[float] = []
+    temp_b_maxes: list[float] = []
+
+    done = False
+    while not done:
+        action, _ = agent.predict(obs, deterministic=True)
+        obs, reward, terminated, truncated, info = env.step(action)
+        done = terminated or truncated
+
+        rewards.append(float(reward))
+        bids_accepted.append(float(info.get("bid_accepted", False)))
+        reg_revenues.append(float(info.get("regulation_revenue", 0.0)))
+        elec_costs.append(float(info.get("electricity_cost", 0.0)))
+        perf_scores.append(float(info.get("perf_score", 0.0)))
+        committed_mws.append(float(info.get("committed_mw", 0.0)))
+        tracking_errs.append(float(info.get("mean_tracking_err", 0.0)) ** 2)
+        temp_a_maxes.append(float(info.get("temp_A_max", 0.0)))
+        temp_b_maxes.append(float(info.get("temp_B_max", 0.0)))
+
+    n_steps = len(rewards)
+    macro_ticks_full = env._episode_macro_ticks
+    survived = 1.0 if n_steps >= macro_ticks_full else 0.0
+
+    return {
+        "mean_reward":          float(np.mean(rewards)),
+        "total_reward":         float(np.sum(rewards)),
+        "bid_acceptance_rate":  float(np.mean(bids_accepted)),
+        "total_reg_revenue":    float(np.sum(reg_revenues)),
+        "total_elec_cost":      float(np.sum(elec_costs)),
+        "mean_perf_score":      float(np.mean(perf_scores)),
+        "mean_committed_mw":    float(np.mean(committed_mws)),
+        "tracking_rmse":        float(np.sqrt(np.mean(tracking_errs))) if tracking_errs else 0.0,
+        "temp_A_max":           float(np.max(temp_a_maxes)) if temp_a_maxes else 0.0,
+        "temp_B_max":           float(np.max(temp_b_maxes)) if temp_b_maxes else 0.0,
+        "episode_length":       n_steps,
+        "survived":             survived,
+    }
+
+
 def benchmark(
     agents      : list[str],
     scenarios   : list[str],
@@ -425,17 +444,22 @@ def benchmark(
             agent_type = _infer_agent_type(agent_name)
 
             # Instantiate agent once per (agent, scenario) to share weights
-            env_for_space = _make_env(
-                scenario=scenario,
-                unavailable_actions=unavailable_actions,
-                fixed_action_values=fixed_action_values,
-            )
+            if agent_type == "macro":
+                env_for_space = _make_macro_env(scenario=scenario)
+            else:
+                env_for_space = _make_env(
+                    scenario=scenario,
+                    unavailable_actions=unavailable_actions,
+                    fixed_action_values=fixed_action_values,
+                )
             env_for_space.reset(seed=0)
 
             if agent_name == "rule_based":
                 agent = RuleBasedController()
             elif agent_name == "rule_macro":
                 agent = RuleBasedMacroController()
+            elif agent_name == "random_macro":
+                agent = MacroRandomAgent(env_for_space, algo_name=agent_name)
             elif agent_name == "bang_bang":
                 agent = BangBangController()
             elif agent_name == "pid":
@@ -519,16 +543,24 @@ def benchmark(
             ep_metrics: list[dict[str, float]] = []
             t0 = time.perf_counter()
             for ep in tqdm(range(n_episodes), desc="Episodes", position=2, leave=False):
-                m = run_episode(
-                    agent=agent,
-                    scenario=scenario,
-                    seed=seed_start + ep,
-                    agent_type=agent_type,
-                    episode_number=ep,
-                    record_transitions=record_transitions,
-                    unavailable_actions=unavailable_actions,
-                    fixed_action_values=fixed_action_values,
-                )
+                if agent_type == "macro":
+                    m = run_macro_episode(
+                        agent=agent,
+                        scenario=scenario,
+                        seed=seed_start + ep,
+                        episode_number=ep,
+                    )
+                else:
+                    m = run_episode(
+                        agent=agent,
+                        scenario=scenario,
+                        seed=seed_start + ep,
+                        agent_type=agent_type,
+                        episode_number=ep,
+                        record_transitions=record_transitions,
+                        unavailable_actions=unavailable_actions,
+                        fixed_action_values=fixed_action_values,
+                    )
                 ep_metrics.append(m)
 
             elapsed = time.perf_counter() - t0
@@ -546,13 +578,22 @@ def benchmark(
                 **{k: round(v, 4) for k, v in agg.items() if k != "survived"},
             }
             rows.append(row)
-            tqdm.write(
-                f"  {agent_name}/{scenario}  "
-                f"reward={agg['mean_reward']:7.2f}  "
-                f"tracking_rmse={agg['tracking_rmse']:8.0f}kW  "
-                f"thermal_viol={agg['thermal_viol_rate']:.3f}  "
-                f"survive={agg['survival_rate']:.2f}"
-            )
+            if agent_type == "macro":
+                tqdm.write(
+                    f"  {agent_name}/{scenario}  "
+                    f"reward={agg['mean_reward']:7.2f}  "
+                    f"accept_rate={agg['bid_acceptance_rate']:.3f}  "
+                    f"reg_rev={agg['total_reg_revenue']:8.1f}  "
+                    f"survive={agg['survival_rate']:.2f}"
+                )
+            else:
+                tqdm.write(
+                    f"  {agent_name}/{scenario}  "
+                    f"reward={agg['mean_reward']:7.2f}  "
+                    f"tracking_rmse={agg['tracking_rmse']:8.0f}kW  "
+                    f"thermal_viol={agg['thermal_viol_rate']:.3f}  "
+                    f"survive={agg['survival_rate']:.2f}"
+                )
 
     return rows
 
@@ -603,7 +644,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--agents", nargs="+",
         default=["rule_based", "bang_bang", "pid", "random"],
-        help="Agents to evaluate: rule_based rule_macro bang_bang pid mpc_fast "
+        help="Agents to evaluate: rule_based rule_macro random_macro bang_bang pid mpc_fast "
              "mpc_macro milp ppo sac ppo_lag cmaes pso random "
                "simplex_ppo cbf_ppo hj_ppo mpcsf_ppo cpo reward_shaping ha_c2g "
                              "llm_policy "

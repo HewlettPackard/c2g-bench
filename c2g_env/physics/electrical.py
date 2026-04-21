@@ -171,6 +171,18 @@ class DatacenterElectrical:
         p_rack_kw = p_idle_kw + (p_max_kw - p_idle_kw) * (util ** alpha)
         return n_racks * p_rack_kw / 1000.0  # kW → MW
 
+    @staticmethod
+    def _inverse_rack_util(p_zone_kw: float, n_racks: int,
+                           p_idle_kw: float, p_range_kw: float,
+                           alpha: float) -> float:
+        """
+        Invert  P(u) = N × [p_idle + p_range × u^alpha]  to recover u ∈ [0, 1].
+        """
+        per_rack = p_zone_kw / max(n_racks, 1)
+        frac = (per_rack - p_idle_kw) / max(p_range_kw, 1e-9)
+        frac = float(np.clip(frac, 0.0, 1.0))
+        return frac ** (1.0 / alpha)
+
     # ── UPS efficiency model ─────────────────────────────────────────
     @staticmethod
     def _ups_efficiency(load_frac, eta_peak, k_loss, k_noload):
