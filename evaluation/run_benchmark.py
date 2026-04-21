@@ -72,6 +72,7 @@ from baselines.mpc_macro import MPCMacroController
 from baselines.milp_dispatch import MILPDispatchController
 from baselines.metrics_callback import C2GTransitionLoggerCallback, STATE_COLUMNS
 from baselines.train_llm_agents import (
+    COMMIT_MW,
     LLMPolicyAgent,
     load_prompt_templates,
     validate_llm_model_id,
@@ -355,12 +356,27 @@ def run_macro_episode(
     agent,
     scenario: str,
     seed: int,
-    algo_name: str | None = None,
+    agent_type: str = "macro",
     episode_number: int = 0,
+    record_transitions: bool = True,
 ) -> dict[str, float]:
     """Run one macro-level episode and return metrics dict."""
     env = _make_macro_env(scenario=scenario)
     obs, _ = env.reset(seed=seed)
+    algo_for_logging = getattr(agent, "algo_name", "unknown")
+
+    transition_logger = None
+    if record_transitions:
+        transition_logger = C2GTransitionLoggerCallback(
+            output_dir="runs",
+            algorithm_name=algo_for_logging,
+            scenario_name=scenario,
+            agent_type=agent_type,
+            episode_number=episode_number,
+            unavailable_actions=(),
+            fixed_action_values=None,
+            verbose=0,
+        )
 
     rewards: list[float] = []
     bids_accepted: list[float] = []
@@ -374,9 +390,29 @@ def run_macro_episode(
 
     done = False
     while not done:
-        action, _ = agent.predict(obs, deterministic=True)
+        state = obs.copy()
+        if getattr(agent, "uses_env_context", False):
+            action, _ = agent.predict(obs, deterministic=True, env=env, scenario=scenario)
+        else:
+            action, _ = agent.predict(obs, deterministic=True)
         obs, reward, terminated, truncated, info = env.step(action)
         done = terminated or truncated
+
+        if transition_logger is not None:
+            reward_components = {
+                k: info.get(k, 0.0) for k in (
+                    "regulation_revenue", "electricity_cost", "perf_score",
+                    "bid_accepted", "committed_mw", "mean_tracking_err",
+                )
+            }
+            transition_logger.record_transition(
+                state=state,
+                action=action,
+                observation=obs,
+                reward=float(reward),
+                done=done,
+                reward_components=reward_components,
+            )
 
         rewards.append(float(reward))
         bids_accepted.append(float(info.get("bid_accepted", False)))
@@ -387,6 +423,9 @@ def run_macro_episode(
         tracking_errs.append(float(info.get("mean_tracking_err", 0.0)) ** 2)
         temp_a_maxes.append(float(info.get("temp_A_max", 0.0)))
         temp_b_maxes.append(float(info.get("temp_B_max", 0.0)))
+
+    if transition_logger is not None:
+        transition_logger.close()
 
     n_steps = len(rewards)
     macro_ticks_full = env._episode_macro_ticks
@@ -441,7 +480,7 @@ def benchmark(
         agent_bar = tqdm(agents, desc="Agents", position=1, leave=False)
         for agent_name in agent_bar:
             agent_bar.set_description(f"Agent: {agent_name}")
-            agent_type = _infer_agent_type(agent_name)
+            agent_type = llm_mode if agent_name == "llm_policy" else _infer_agent_type(agent_name)
 
             # Instantiate agent once per (agent, scenario) to share weights
             if agent_type == "macro":
@@ -549,6 +588,8 @@ def benchmark(
                         scenario=scenario,
                         seed=seed_start + ep,
                         episode_number=ep,
+                        agent_type=agent_type,
+                        record_transitions=record_transitions,
                     )
                 else:
                     m = run_episode(
@@ -703,7 +744,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--llm-max-new-tokens",
         type=int,
-        default=96,
+        default=256,
         help="Max new tokens for llm_policy generation",
     )
     parser.add_argument(
