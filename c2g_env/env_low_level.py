@@ -90,34 +90,7 @@ from c2g_env.physics.weather    import WeatherLoader
 # ---------------------------------------------------------------------------
 _FACILITY_CAP_KW = 250_000.0    # Nameplate IT capacity (kW)
 
-# Zone A: 2000 racks (800 GenAI base + 1200 batch flex)
-_ZA_N_RACKS  = 2_000
-_ZA_P_IDLE   = 8.0              # kW per rack idle
-_ZA_P_RANGE  = 75.0 - 8.0      # kW per rack: (p_max - p_idle)
-_ZA_ALPHA    = 1.4              # GPU super-linear exponent
-
-# Zone B: 2500 racks (all DLRM / inference)
-_ZB_N_RACKS  = 2_500
-_ZB_P_IDLE   = 4.0
-_ZB_P_RANGE  = 40.0 - 4.0
-_ZB_ALPHA    = 1.2
-
 _CONFIG_PATH = Path(__file__).parent / "config.yaml"
-
-
-def _inverse_rack_util(p_zone_kw: float, n_racks: int,
-                       p_idle_kw: float, p_range_kw: float,
-                       alpha: float) -> float:
-    """
-    Invert  P(u) = N × [p_idle + p_range × u^alpha]  to recover u ∈ [0, 1].
-
-    Used to pass the workload-derived IT power back through the electrical
-    accounting model (which takes utilisation fractions as input).
-    """
-    per_rack = p_zone_kw / max(n_racks, 1)
-    frac = (per_rack - p_idle_kw) / max(p_range_kw, 1e-9)
-    frac = float(np.clip(frac, 0.0, 1.0))
-    return frac ** (1.0 / alpha)
 
 
 class C2GFastEnv(gym.Env):
@@ -394,11 +367,17 @@ class C2GFastEnv(gym.Env):
         # -----------------------------------------------------------------
         # 4. Electrical  (full facility accounting: UPS/PDU/XFMR + PUE)
         # -----------------------------------------------------------------
-        util_A = _inverse_rack_util(
-            w.p_base_a_kw + w.p_flex_kw, _ZA_N_RACKS, _ZA_P_IDLE, _ZA_P_RANGE, _ZA_ALPHA
+        util_A = DatacenterElectrical._inverse_rack_util(
+            w.p_base_a_kw + w.p_flex_kw,
+            self._elec.n_racks_A, self._elec.p_idle_rack_A_kw,
+            self._elec.p_max_rack_A_kw - self._elec.p_idle_rack_A_kw,
+            self._elec.alpha_A,
         )
-        util_B = _inverse_rack_util(
-            w.p_base_b_kw, _ZB_N_RACKS, _ZB_P_IDLE, _ZB_P_RANGE, _ZB_ALPHA
+        util_B = DatacenterElectrical._inverse_rack_util(
+            w.p_base_b_kw,
+            self._elec.n_racks_B, self._elec.p_idle_rack_B_kw,
+            self._elec.p_max_rack_B_kw - self._elec.p_idle_rack_B_kw,
+            self._elec.alpha_B,
         )
         # p_pump_mw is a separate facility electrical load (CDU circulating pump)
         elec = self._elec.step(util_A, util_B, p_cool_A_mw, p_hvac_mw + p_pump_mw)
@@ -638,11 +617,17 @@ class C2GFastEnv(gym.Env):
         self._thermal.temp_A = temp_A_saved
         self._thermal.temp_B = temp_B_saved
 
-        util_A = _inverse_rack_util(
-            w.p_base_a_kw + w.p_flex_kw, _ZA_N_RACKS, _ZA_P_IDLE, _ZA_P_RANGE, _ZA_ALPHA
+        util_A = DatacenterElectrical._inverse_rack_util(
+            w.p_base_a_kw + w.p_flex_kw,
+            self._elec.n_racks_A, self._elec.p_idle_rack_A_kw,
+            self._elec.p_max_rack_A_kw - self._elec.p_idle_rack_A_kw,
+            self._elec.alpha_A,
         )
-        util_B = _inverse_rack_util(
-            w.p_base_b_kw, _ZB_N_RACKS, _ZB_P_IDLE, _ZB_P_RANGE, _ZB_ALPHA
+        util_B = DatacenterElectrical._inverse_rack_util(
+            w.p_base_b_kw,
+            self._elec.n_racks_B, self._elec.p_idle_rack_B_kw,
+            self._elec.p_max_rack_B_kw - self._elec.p_idle_rack_B_kw,
+            self._elec.alpha_B,
         )
         elec = self._elec.step(util_A, util_B, p_cool_A, p_hvac + p_pump)
         self._elec.reset()               # clear cached _last_state
