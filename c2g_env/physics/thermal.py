@@ -68,6 +68,11 @@ class ThermalTwin:
     P_PUMP_MAX_MW = 1.5   # Max pump electrical draw (MW) — ~0.6% of 250 MW facility
     PUMP_MIN      = 0.15  # Minimum safe pump speed (maintains minimum server-blade flow)
 
+    # Nominal (baseline) operating point for cooling — used as the
+    # Customer Baseline Load (CBL) reference for RegD tracking.
+    HVAC_NOM_EFFORT = 0.7  # Zone-B HVAC effort at nominal operation
+    PUMP_NOM_SPEED  = 1.0  # Zone-A CDU pump speed at nominal operation
+
     def __init__(self, dt_seconds=300.0):
         self.dt = dt_seconds
 
@@ -136,6 +141,16 @@ class ThermalTwin:
         self.fault_factor = 1.0
         self.fault_active = False
         return self.temp_A, self.temp_B
+
+    @property
+    def p_cool_nominal_mw(self) -> float:
+        """Nominal cooling electrical draw [MW] at baseline operating point.
+
+        This is the cooling power the facility would draw absent any
+        active regulation — the CBL reference for ΔP tracking.
+        """
+        return (self.HVAC_NOM_EFFORT * self.max_hvac_mw
+                + self.P_PUMP_MAX_MW * max(self.PUMP_MIN, self.PUMP_NOM_SPEED))
 
     def set_cooling_fault(self, active: bool, fault_factor: float = 0.4) -> None:
         """Inject / clear a cooling fault.

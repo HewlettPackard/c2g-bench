@@ -389,11 +389,19 @@ class C2GFastEnv(gym.Env):
         # The DC can deliver this by:
         #   (a) Reducing batch load (flex shedding)    → flex_reduction_kw
         #   (b) Discharging BESS (inject energy back)  → bess_actual_kw
+        #   (c) Modulating cooling loads (HVAC + pump) → cool_delta_kw
         bess_actual_kw     = bess_out["actual_power_mw"] * 1_000.0
         flex_reduction_kw  = (1.0 - throttle_batch) * w.p_flex_nom_kw
 
-        # ΔP_actual = how much the DC has actually reduced its net draw
-        delta_p_actual_kw  = flex_reduction_kw + bess_actual_kw
+        # Cooling load deviation from nominal operating point.
+        # Positive cool_delta_kw = cooling draw increased above nominal
+        # (i.e. facility is consuming MORE from grid → less net reduction).
+        cool_delta_kw = (p_hvac_mw + p_pump_mw
+                         - self._thermal.p_cool_nominal_mw) * 1_000.0
+
+        # ΔP_actual = how much the DC has actually reduced its net draw.
+        # Subtracting cool_delta_kw: increased cooling = more draw = less reduction.
+        delta_p_actual_kw  = flex_reduction_kw + bess_actual_kw - cool_delta_kw
 
         # ΔP_demanded uses the RegD signal from the *previous* observation,
         # i.e. the signal the agent actually saw and responded to.
@@ -508,6 +516,7 @@ class C2GFastEnv(gym.Env):
             "delta_p_demanded_kw":   delta_p_demanded_kw,
             "flex_reduction_kw":     flex_reduction_kw,
             "bess_actual_kw":        bess_actual_kw,
+            "cool_delta_kw":         cool_delta_kw,
             "lmp":                   gs["lmp_usd_mwh"],
             "regd_signal":           gs["regd_signal"],
             "reward":                reward,
@@ -611,7 +620,8 @@ class C2GFastEnv(gym.Env):
         temp_A_saved, temp_B_saved = self._thermal.temp_A, self._thermal.temp_B
         (_, _), (p_cool_A, p_hvac, p_pump) = self._thermal.step(
             p_it_A_mw=p_it_A_mw, p_it_B_mw=p_it_B_mw,
-            hvac_effort=0.7, pump_speed=1.0,
+            hvac_effort=ThermalTwin.HVAC_NOM_EFFORT,
+            pump_speed=ThermalTwin.PUMP_NOM_SPEED,
         )
         # Rewind thermal to its post-reset temperatures
         self._thermal.temp_A = temp_A_saved
