@@ -53,11 +53,12 @@ Tier 3 Ablations
   cbm_shield   — PPO + concept bottleneck + physics shield (no gate)
 """
 from __future__ import annotations
-import argparse, csv, time
+import argparse, csv, json, re, time
 from pathlib import Path
 from typing import Any
 
 import numpy as np
+import yaml
 from tqdm import tqdm
 
 from c2g_env import C2GFastEnv
@@ -68,7 +69,12 @@ from baselines.pid_controller import PIDController
 from baselines.mpc_fast import MPCFastController
 from baselines.mpc_macro import MPCMacroController
 from baselines.milp_dispatch import MILPDispatchController
-from baselines.metrics_callback import C2GTransitionLoggerCallback
+from baselines.metrics_callback import C2GTransitionLoggerCallback, STATE_COLUMNS
+from baselines.train_llm_agents import (
+    LLMPolicyAgent,
+    load_prompt_templates,
+    validate_llm_model_id,
+)
 
 # ── High-Assurance agents ────────────────────────────────────────
 from baselines.safety.cbf_shield import CBFShield, CBFShieldedAgent
@@ -273,7 +279,7 @@ class ShieldedSB3Agent:
         return safe_action, state
 
 
-# ---------------------------------------------------------------------------
+# ── High-Assurance agents ────────────────────────────────────────
 # Metric collection
 # ---------------------------------------------------------------------------
 
@@ -320,7 +326,10 @@ def run_episode(
     done = False
     while not done:
         state = obs.copy()
-        action, _ = agent.predict(obs, deterministic=True)
+        if getattr(agent, "uses_env_context", False):
+            action, _ = agent.predict(obs, deterministic=True, env=env, scenario=scenario)
+        else:
+            action, _ = agent.predict(obs, deterministic=True)
         obs, reward, terminated, truncated, info = env.step(action)
         done = terminated or truncated
 
@@ -389,12 +398,22 @@ def benchmark(
     record_transitions: bool = True,
     unavailable_actions: tuple[str, ...] = (),
     fixed_action_values: dict[str, float] | None = None,
+    llm_model_id: str | None = None,
+    llm_mode: str = "hardware",
+    llm_template_path: str = "conf/chat_templates/run_benchmark.yaml",
+    llm_max_new_tokens: int = 96,
+    llm_temperature: float = 0.0,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
+
+    if "llm_policy" in set(agents):
+        llm_model_id = validate_llm_model_id(str(llm_model_id or ""))
 
     if record_transitions:
         project_root = Path(__file__).resolve().parent.parent
         (project_root / "runs").mkdir(parents=True, exist_ok=True)
+
+    prompt_templates = load_prompt_templates(llm_template_path)
 
     scenario_bar = tqdm(scenarios, desc="Scenarios", position=0)
     for scenario in scenario_bar:
@@ -437,6 +456,21 @@ def benchmark(
                     print(f"    SKIP: No trained policy at {npz_path}")
                     continue
                 agent = EvolutionaryAgent(npz_path, algo_name=agent_name)
+            elif agent_name == "llm_policy":
+                try:
+                    state_names = [name.removeprefix("s_") for name in STATE_COLUMNS]
+                    agent = LLMPolicyAgent(
+                        model_id=llm_model_id,
+                        mode=llm_mode,
+                        prompts=prompt_templates,
+                        state_names=state_names,
+                        max_new_tokens=llm_max_new_tokens,
+                        temperature=llm_temperature,
+                        committed_mw=COMMIT_MW,
+                    )
+                except Exception as exc:
+                    print(f"    SKIP: Failed to initialize llm_policy agent: {exc}")
+                    continue
             # ── High-Assurance shielded agents ─────────────────
             elif agent_name == "simplex_ppo":
                 try:
@@ -571,7 +605,8 @@ if __name__ == "__main__":
         default=["rule_based", "bang_bang", "pid", "random"],
         help="Agents to evaluate: rule_based rule_macro bang_bang pid mpc_fast "
              "mpc_macro milp ppo sac ppo_lag cmaes pso random "
-             "simplex_ppo cbf_ppo hj_ppo mpcsf_ppo cpo reward_shaping ha_c2g "
+               "simplex_ppo cbf_ppo hj_ppo mpcsf_ppo cpo reward_shaping ha_c2g "
+                             "llm_policy "
              "cbm_only cbm_gate cbm_shield",
     )
     parser.add_argument(
@@ -608,6 +643,34 @@ if __name__ == "__main__":
         default=[],
         help="Optional fixed value for a disabled action, e.g. --fixed-action hvac_effort=0.8",
     )
+    parser.add_argument(
+        "--llm-model-id",
+        default="HuggingFaceTB/SmolLM2-360M-Instruct",
+        help="Transformers model id for llm_policy agent",
+    )
+    parser.add_argument(
+        "--llm-mode",
+        choices=["hardware", "macro"],
+        default="hardware",
+        help="Control mode for llm_policy agent",
+    )
+    parser.add_argument(
+        "--llm-template-path",
+        default="conf/chat_templates/run_benchmark.yaml",
+        help="YAML path with hardware_prompt and macro_prompt templates",
+    )
+    parser.add_argument(
+        "--llm-max-new-tokens",
+        type=int,
+        default=96,
+        help="Max new tokens for llm_policy generation",
+    )
+    parser.add_argument(
+        "--llm-temperature",
+        type=float,
+        default=0.0,
+        help="Sampling temperature for llm_policy generation (0 = greedy)",
+    )
     args = parser.parse_args()
 
     if args.disable_actions is not None and len(args.disable_actions) == 0:
@@ -620,6 +683,13 @@ if __name__ == "__main__":
 
     unavailable_actions = tuple(args.disable_actions or ())
 
+    llm_model_id = args.llm_model_id
+    if "llm_policy" in set(args.agents):
+        try:
+            llm_model_id = validate_llm_model_id(args.llm_model_id)
+        except (ValueError, ImportError) as exc:
+            parser.error(str(exc))
+
     rows = benchmark(
         agents     = args.agents,
         scenarios  = args.scenarios,
@@ -629,6 +699,11 @@ if __name__ == "__main__":
         record_transitions = args.record_transitions,
         unavailable_actions = unavailable_actions,
         fixed_action_values = fixed_action_values,
+        llm_model_id = llm_model_id,
+        llm_mode = args.llm_mode,
+        llm_template_path = args.llm_template_path,
+        llm_max_new_tokens = args.llm_max_new_tokens,
+        llm_temperature = args.llm_temperature,
     )
     print_results_table(rows)
     save_csv(rows, Path(args.output))
