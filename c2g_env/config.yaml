@@ -129,7 +129,7 @@ default:
   weather_driven: true       # true → WeatherLoader updates T_amb each tick
                              # false → static T_amb (reproducible stress tests)
   T_amb: 25.0                # Initial / fallback ambient temperature [°C]
-  committed_mw: 15.0         # Regulation capacity committed to grid [MW]
+  committed_mw_max: 30.0     # Maximum regulation capacity the macro agent may bid [MW]
   bess_soc_init: 0.50        # BESS initial state of charge
   cooling_fault: false
   genai_spike_scale: 1.0     # Multiplier on GenAI spike magnitude
@@ -155,7 +155,7 @@ scenario_a:
   weather_market: pjm_dom
   weather_driven: false      # static T_amb for reproducibility
   T_amb: 30.0                # Hot summer day in Northern VA
-  committed_mw: 20.0
+  committed_mw_max: 40.0
   bess_soc_init: 0.55
   cooling_fault: false
   genai_spike_scale: 1.8     # 80% larger GenAI spikes
@@ -179,7 +179,7 @@ scenario_b:
   weather_market: ercot_north
   weather_driven: false      # deterministic heat wave
   T_amb: 40.0                # DFW peak summer; COP degrades ~30%
-  committed_mw: 30.0
+  committed_mw_max: 60.0
   bess_soc_init: 0.60
   cooling_fault: false
   genai_spike_scale: 1.0
@@ -203,7 +203,7 @@ scenario_c:
   weather_market: aemo_nsw
   weather_driven: false      # deterministic low-battery + fault scenario
   T_amb: 32.0                # Western Sydney summer afternoon
-  committed_mw: 20.0
+  committed_mw_max: 40.0
   bess_soc_init: 0.15        # Start near empty
   cooling_fault: true
   cooling_fault_factor: 0.6  # 40% pump efficiency loss
