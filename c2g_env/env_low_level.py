@@ -465,8 +465,13 @@ class C2GFastEnv(gym.Env):
             w.backlog_kw / self._workload.p_flex_max_kw
         )
 
+        # Keep the tracking term bounded when committed_mw is zero.
+        # In that regime there is effectively nothing committed to track,
+        # so use a 100 kW floor to avoid divide-by-zero and pathological spikes.
+        norm_kw = max(self._committed_mw * 1_000.0, 100.0)
+
         r_throughput =  alpha * throttle_batch
-        r_tracking   = -beta  * (tracking_err_kw / (self._committed_mw * 1_000.0))
+        r_tracking   = -beta  * (tracking_err_kw / norm_kw)
         r_thermal    = -gamma * thermal_pen
         r_soc        = -soc_pen
         r_freq       = -freq_pen
