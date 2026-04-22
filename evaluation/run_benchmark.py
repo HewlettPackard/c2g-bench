@@ -401,8 +401,7 @@ def run_macro_episode(
         if transition_logger is not None:
             reward_components = {
                 k: info.get(k, 0.0) for k in (
-                    "regulation_revenue", "electricity_cost", "perf_score",
-                    "bid_accepted", "committed_mw", "mean_tracking_err",
+                    "reward_regulation","reward_sub", "reward_elec",  "reward_churn"
                 )
             }
             transition_logger.record_transition(
@@ -459,13 +458,16 @@ def benchmark(
     llm_model_id: str | None = None,
     llm_mode: str = "hardware",
     llm_template_path: str = "conf/chat_templates/run_benchmark.yaml",
-    llm_max_new_tokens: int = 96,
+    llm_max_new_tokens: int = 256,
     llm_temperature: float = 0.0,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
 
     if "llm_policy" in set(agents):
         llm_model_id = validate_llm_model_id(str(llm_model_id or ""))
+
+    if llm_mode not in ["hardware", "macro"]:
+        raise ValueError(f"Invalid agent mode '{llm_mode}'. Must be 'hardware' or 'macro'.")
 
     if record_transitions:
         project_root = Path(__file__).resolve().parent.parent
