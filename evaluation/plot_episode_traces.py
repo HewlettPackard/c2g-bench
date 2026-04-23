@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 import re
 from pathlib import Path
 
@@ -11,7 +12,9 @@ from scipy import stats
 from baselines.metrics_callback import (
     ACTION_SHORT_NAMES,
     REWARD_COLUMNS,
+    REWARD_COLUMNS_MACRO,
     STATE_COLUMNS,
+    STATE_COLUMNS_MACRO,
     VALID_ACTIONS,
 )
 from baselines.metrics_callback import build_ablation_suffix
@@ -24,11 +27,27 @@ except ImportError as exc:
         "matplotlib is required for visualization. Install with: pip install matplotlib"
     ) from exc
 
-_GRID_ROWS: list[list[str | None]] = [
-    STATE_COLUMNS[:9],
-    STATE_COLUMNS[9:] + [None],
-    REWARD_COLUMNS + [None],
-]
+def _columns_for_agent_type(agent_type: str) -> tuple[list[str], list[str]]:
+    if agent_type == "hardware":
+        return STATE_COLUMNS, REWARD_COLUMNS
+    if agent_type == "macro":
+        return STATE_COLUMNS_MACRO, REWARD_COLUMNS_MACRO
+    raise ValueError(
+        f"Invalid agent_type '{agent_type}'. Expected one of ['hardware', 'macro']."
+    )
+
+
+def _grid_rows(
+    state_columns: list[str],
+    reward_columns: list[str],
+) -> list[list[str]]:
+    # Top two rows are states (split in half); final row is rewards.
+    n_cols = int(math.ceil(len(state_columns) / 2))
+    row1 = state_columns[:n_cols]
+    row2 = state_columns[n_cols:]
+    row3 = reward_columns[:]
+
+    return [row1, row2, row3]
 
 
 def _project_root() -> Path:
@@ -115,7 +134,7 @@ def _compute_aggregated_stats(
     Compute mean and 99% confidence interval for each column across episodes.
     Returns: {column_name: {"x": array, "mean": array, "ci_lower": array, "ci_upper": array}}
     """
-    all_columns = STATE_COLUMNS + REWARD_COLUMNS
+    all_columns = columns
     
     # Align episodes to same length (pad with NaN if needed)
     max_len = max(len(ep) for ep in episodes)
@@ -163,43 +182,42 @@ def _compute_aggregated_stats(
     return aligned_data
 
 
-def _trace_positions() -> list[tuple[int, int, str]]:
+def _trace_positions(grid_rows: list[list[str]]) -> list[tuple[int, int, str]]:
     positions: list[tuple[int, int, str]] = []
-    for row_idx, row in enumerate(_GRID_ROWS, start=1):
+    for row_idx, row in enumerate(grid_rows, start=1):
         for col_idx, column in enumerate(row, start=1):
-            if column is not None:
-                positions.append((row_idx, col_idx, column))
+            positions.append((row_idx, col_idx, column))
     return positions
 
 
 def _build_figure_with_stats(
     run_name: str,
     aggregated_stats: dict[str, dict[str, np.ndarray]],
+    state_columns: list[str],
+    reward_columns: list[str],
 ) -> plt.Figure:
     """
     Build figure with mean lines, 99% CI shaded bands, and state reference lines.
     Returns matplotlib figure object.
     """
-    # Calculate dynamic grid size based on number of columns
-    total_columns = len(STATE_COLUMNS) + len(REWARD_COLUMNS) + 1
-    n_cols = round(total_columns / 3)
-    n_rows = 3
-    figsize_width = n_cols * 2.67  # ~2.67 inches per column
-    
-    fig, axes = plt.subplots(
-        n_rows, n_cols,
-        figsize=(figsize_width, 10.5),
-        tight_layout=True,
-    )
+    grid_rows = _grid_rows(state_columns, reward_columns)
+    max_cols = max(len(row) for row in grid_rows)
+    n_rows = len(grid_rows)
+    figsize_width = max_cols * 2.67  # ~2.67 inches per column
+
+    # Use GridSpec and create axes only where traces exist.
+    fig = plt.figure(figsize=(figsize_width, 10.5), constrained_layout=True)
+    gs = fig.add_gridspec(n_rows, max_cols)
     fig.suptitle(f"{run_name} — Mean ± 99% CI across all episodes", fontsize=16, y=0.995)
     
-    positions = _trace_positions()
+    positions = _trace_positions(grid_rows)
+    state_columns_set = set(state_columns)
     
-    for trace_idx, (row_idx, col_idx, column) in enumerate(positions):
+    for _, (row_idx, col_idx, column) in enumerate(positions):
         # Convert to 0-indexed for subplot access
-        ax = axes[row_idx - 1, col_idx - 1]
+        ax = fig.add_subplot(gs[row_idx - 1, col_idx - 1])
         
-        is_state = trace_idx < len(STATE_COLUMNS)
+        is_state = column in state_columns_set
         color = "#1f77b4" if is_state else "#d62728"
         
         if column not in aggregated_stats:
@@ -236,12 +254,15 @@ def _build_figure_with_stats(
 def generate_episode_plots(
     algoname: str,
     scenario: str,
-    agent_type: str,
+    agent_type: str = "hardware",
     unavailable_actions: tuple[str, ...] = (),
     fixed_action_values: dict[str, float] | None = None,
     runs_dir: Path | str = "runs",
 ) -> None:
     """Generate aggregated episode statistics plot for a specific algorithm and scenario."""
+    agent_type = agent_type.lower()
+    state_columns, reward_columns = _columns_for_agent_type(agent_type)
+
     fixed_action_values = fixed_action_values or {}
     ablation_suffix = _build_ablation_suffix(unavailable_actions, fixed_action_values)
     
@@ -264,11 +285,16 @@ def generate_episode_plots(
         print(f"Using ablation suffix filter: {ablation_suffix}")
     
     print("Computing statistics (mean ± 99% CI)...")
-    aggregated_stats = _compute_aggregated_stats(episodes, STATE_COLUMNS + REWARD_COLUMNS)
+    aggregated_stats = _compute_aggregated_stats(episodes, state_columns + reward_columns)
     
     print("Building figure...")
     run_name_display = run_name + ablation_suffix if ablation_suffix else run_name
-    fig = _build_figure_with_stats(run_name_display, aggregated_stats)
+    fig = _build_figure_with_stats(
+        run_name_display,
+        aggregated_stats,
+        state_columns,
+        reward_columns,
+    )
     
     # save images in project/figures
     output_dir = Path(__file__).resolve().parent.parent / "figures"
@@ -312,6 +338,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--agent-type",
         default="hardware",
+        choices=["hardware", "macro"],
         help="Agent type suffix used in runs/<algo>_<scenario>_<agent_type>/ (default: hardware)",
     )
     parser.add_argument(

@@ -347,12 +347,27 @@ def run_macro_episode(
     scenario: str,
     seed: int,
     algo_name: str | None = None,
+    agent_type: str = "macro",
     episode_number: int = 0,
+    record_transitions: bool = True,
 ) -> dict[str, float]:
     """Run one macro-level episode and return metrics dict."""
     env = _make_macro_env(scenario=scenario)
     obs, _ = env.reset(seed=seed)
+    algo_for_logging = getattr(agent, "algo_name", (algo_name or "unknown"))
 
+    transition_logger = None
+    if record_transitions:
+        transition_logger = C2GTransitionLoggerCallback(
+            output_dir="runs",
+            algorithm_name=algo_for_logging,
+            scenario_name=scenario,
+            agent_type=agent_type,
+            episode_number=episode_number,
+            unavailable_actions=(),
+            fixed_action_values=None,
+            verbose=0,
+        )
     rewards: list[float] = []
     bids_accepted: list[float] = []
     reg_revenues: list[float] = []
@@ -365,9 +380,25 @@ def run_macro_episode(
 
     done = False
     while not done:
+        state = obs.copy()
         action, _ = agent.predict(obs, deterministic=True)
         obs, reward, terminated, truncated, info = env.step(action)
         done = terminated or truncated
+
+        if transition_logger is not None:
+            reward_components = {
+                k: info.get(k, 0.0) for k in (
+                    "reward_regulation","reward_sub", "reward_elec",  "reward_churn"
+                )
+            }
+            transition_logger.record_transition(
+                state=state,
+                action=action,
+                observation=obs,
+                reward=float(reward),
+                done=done,
+                reward_components=reward_components,
+            )
 
         rewards.append(float(reward))
         bids_accepted.append(float(info.get("bid_accepted", False)))
@@ -378,6 +409,9 @@ def run_macro_episode(
         tracking_errs.append(float(info.get("mean_tracking_err", 0.0)) ** 2)
         temp_a_maxes.append(float(info.get("temp_A_max", 0.0)))
         temp_b_maxes.append(float(info.get("temp_B_max", 0.0)))
+
+    if transition_logger is not None:
+        transition_logger.close()
 
     n_steps = len(rewards)
     macro_ticks_full = env._episode_macro_ticks
@@ -514,7 +548,9 @@ def benchmark(
                         agent=agent,
                         scenario=scenario,
                         seed=seed_start + ep,
+                        agent_type=agent_type,
                         episode_number=ep,
+                        record_transitions=record_transitions,
                     )
                 else:
                     m = run_episode(
