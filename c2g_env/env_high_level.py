@@ -281,7 +281,7 @@ class C2GMacroEnv(gym.Env):
 
         for sub in range(_SUBSTEPS):
             if self._inner_action_fn is not None:
-                inner_obs = sub_obs_list[-1] if sub_obs_list else np.zeros(17)
+                inner_obs = sub_obs_list[-1] if sub_obs_list else np.zeros(18)
                 low_action = self._inner_action_fn(inner_obs, action)
             else:
                 low_action = np.array([

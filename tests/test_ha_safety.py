@@ -363,20 +363,20 @@ class TestConceptEncoder:
     def test_feature_extractor_output_dim(self):
         from baselines.safety.concept_bottleneck import C2GConceptFeatureExtractor
         import gymnasium as gym
-        obs_space = gym.spaces.Box(low=-10, high=10, shape=(17,))
+        obs_space = gym.spaces.Box(low=-10, high=10, shape=(18,))
         fe = C2GConceptFeatureExtractor(obs_space, n_concepts=10)
-        obs = torch.randn(4, 17)
+        obs = torch.randn(4, 18)
         features = fe(obs)
-        assert features.shape == (4, 27)  # 17 + 10
+        assert features.shape == (4, 28)  # 18 + 10
 
     def test_gated_feature_extractor_output_dim(self):
         from baselines.safety.concept_bottleneck import C2GGatedConceptFeatureExtractor
         import gymnasium as gym
-        obs_space = gym.spaces.Box(low=-10, high=10, shape=(17,))
+        obs_space = gym.spaces.Box(low=-10, high=10, shape=(18,))
         fe = C2GGatedConceptFeatureExtractor(obs_space, n_concepts=10, action_dim=4)
-        obs = torch.randn(4, 17)
+        obs = torch.randn(4, 18)
         features = fe(obs)
-        assert features.shape == (4, 31)  # 17 + 10 + 4
+        assert features.shape == (4, 32)  # 18 + 10 + 4
 
 
 # =========================================================================
@@ -490,27 +490,27 @@ class TestAblations:
         """CBM-Only uses C2GConceptFeatureExtractor → output dim = obs + concepts."""
         from baselines.safety.concept_bottleneck import C2GConceptFeatureExtractor
         import gymnasium as gym
-        obs_space = gym.spaces.Box(low=-10, high=10, shape=(17,))
+        obs_space = gym.spaces.Box(low=-10, high=10, shape=(18,))
         fe = C2GConceptFeatureExtractor(obs_space, n_concepts=10)
-        obs = torch.randn(4, 17)
+        obs = torch.randn(4, 18)
         features = fe(obs)
-        assert features.shape == (4, 27)  # 17 obs + 10 concepts
+        assert features.shape == (4, 28)  # 18 obs + 10 concepts
 
     def test_cbm_gate_feature_extractor(self):
         """CBM+Gate uses C2GGatedConceptFeatureExtractor → obs + concepts + gate."""
         from baselines.safety.concept_bottleneck import C2GGatedConceptFeatureExtractor
         import gymnasium as gym
-        obs_space = gym.spaces.Box(low=-10, high=10, shape=(17,))
+        obs_space = gym.spaces.Box(low=-10, high=10, shape=(18,))
         fe = C2GGatedConceptFeatureExtractor(obs_space, n_concepts=10, action_dim=4)
-        obs = torch.randn(4, 17)
+        obs = torch.randn(4, 18)
         features = fe(obs)
-        assert features.shape == (4, 31)  # 17 obs + 10 concepts + 4 gate
+        assert features.shape == (4, 32)  # 18 obs + 10 concepts + 4 gate
 
     def test_cbm_only_no_gate(self):
         """CBM-Only feature extractor should NOT have a safety_gate attribute."""
         from baselines.safety.concept_bottleneck import C2GConceptFeatureExtractor
         import gymnasium as gym
-        obs_space = gym.spaces.Box(low=-10, high=10, shape=(17,))
+        obs_space = gym.spaces.Box(low=-10, high=10, shape=(18,))
         fe = C2GConceptFeatureExtractor(obs_space, n_concepts=10)
         assert not hasattr(fe, 'safety_gate')
 
@@ -518,7 +518,7 @@ class TestAblations:
         """CBM+Gate feature extractor should have a safety_gate attribute."""
         from baselines.safety.concept_bottleneck import C2GGatedConceptFeatureExtractor
         import gymnasium as gym
-        obs_space = gym.spaces.Box(low=-10, high=10, shape=(17,))
+        obs_space = gym.spaces.Box(low=-10, high=10, shape=(18,))
         fe = C2GGatedConceptFeatureExtractor(obs_space, n_concepts=10, action_dim=4)
         assert hasattr(fe, 'safety_gate')
 
@@ -528,21 +528,21 @@ class TestAblations:
             C2GConceptFeatureExtractor, C2GGatedConceptFeatureExtractor,
         )
         import gymnasium as gym
-        obs_space = gym.spaces.Box(low=-10, high=10, shape=(17,))
+        obs_space = gym.spaces.Box(low=-10, high=10, shape=(18,))
         fe_cbm = C2GConceptFeatureExtractor(obs_space, n_concepts=10)
         fe_gate = C2GGatedConceptFeatureExtractor(obs_space, n_concepts=10, action_dim=4)
-        assert fe_cbm.features_dim == 27
-        assert fe_gate.features_dim == 31
+        assert fe_cbm.features_dim == 28
+        assert fe_gate.features_dim == 32
         assert fe_cbm.features_dim < fe_gate.features_dim
 
     def test_cbm_shield_uses_same_extractor_as_cbm_only(self):
-        """CBM+Shield uses the same non-gated extractor as CBM-Only (dim=27).
+        """CBM+Shield uses the same non-gated extractor as CBM-Only (dim=28).
         The safety comes from the shield wrapper, not the feature extractor."""
         from baselines.safety.concept_bottleneck import C2GConceptFeatureExtractor
         import gymnasium as gym
-        obs_space = gym.spaces.Box(low=-10, high=10, shape=(17,))
+        obs_space = gym.spaces.Box(low=-10, high=10, shape=(18,))
         fe = C2GConceptFeatureExtractor(obs_space, n_concepts=10)
-        assert fe.features_dim == 27
+        assert fe.features_dim == 28
         assert not hasattr(fe, 'safety_gate')
 
 
@@ -616,7 +616,7 @@ class TestGateBehavioral:
         base_env = gym.make("MountainCarContinuous-v0")
         # Monkey-patch obs/action spaces to match C2G dimensions
         base_env.observation_space = gym.spaces.Box(
-            low=-10, high=10, shape=(17,), dtype=np.float32)
+            low=-10, high=10, shape=(18,), dtype=np.float32)
         base_env.action_space = gym.spaces.Box(
             low=-1, high=1, shape=(4,), dtype=np.float32)
         # Monkey-patch step/reset to return correct shapes
@@ -624,18 +624,18 @@ class TestGateBehavioral:
         _original_step = base_env.step
         def _fake_reset(**kw):
             _original_reset(**kw)
-            obs = np.random.randn(17).astype(np.float32)
+            obs = np.random.randn(18).astype(np.float32)
             return obs, {}
         def _fake_step(action):
             # Record what action the env actually received
             _fake_step.last_action = action.copy()
-            obs = np.random.randn(17).astype(np.float32)
+            obs = np.random.randn(18).astype(np.float32)
             return obs, 1.0, False, False, {}
         base_env.reset = _fake_reset
         base_env.step = _fake_step
 
         # Create encoder + gate with init_bias=0 → gate ≈ 0.5
-        encoder = C2GConceptEncoder(obs_dim=17, n_concepts=10)
+        encoder = C2GConceptEncoder(obs_dim=18, n_concepts=10)
         gate = SafeProjectionGate(concept_dim=10, action_dim=4, init_bias=0.0)
 
         # Build a passthrough mock shield

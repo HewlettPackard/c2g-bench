@@ -49,6 +49,7 @@ _I_TEMP_A = 0
 _I_TEMP_B = 1
 _I_SOC    = 2
 _I_REGD   = 6
+_I_COMMITTED = 17
 
 # Hysteresis thresholds (normalised: T / T_safe where T_safe = 35°C)
 _PUMP_ON  = 31.0 / 35.0   # ≈ 0.886
@@ -91,43 +92,45 @@ class BangBangController:
         temp_B_n = float(obs[_I_TEMP_B])
         soc      = float(obs[_I_SOC])
         regd     = float(obs[_I_REGD])
+        committed = float(obs[_I_COMMITTED]) if len(obs) > _I_COMMITTED else 0.1
 
-        # ── Throttle: bang-bang based on regd direction ────────────────
-        # regd > 0 → grid wants reduced draw → shed some batch load
-        # regd < 0 → grid wants increased draw → max throughput
-        _THROTTLE_LOW = 0.5
-        if regd > 0.05:
-            throttle = _THROTTLE_LOW
-        else:
-            throttle = 1.0
+        # ── Throttle: always max for throughput reward ─────────────────
+        # flex_reduction = (1 - throttle) × p_flex_nom_kw feeds into
+        # delta_p_actual and causes massive tracking overshoot.  BESS
+        # alone handles the committed MW regulation.
+        throttle = 1.0
 
         # ── Pump: hysteresis on Zone A temperature ────────────────────
+        # Default at nominal 0.7 to keep cool_delta near zero.
+        # Only ramp UP for thermal protection.
         if temp_A_n >= _PUMP_ON:
             self._pump_on = True
         elif temp_A_n <= _PUMP_OFF:
             self._pump_on = False
-        pump_speed = 1.0 if self._pump_on else 0.3
+        pump_speed = 1.0 if self._pump_on else 0.7
 
-        # ── HVAC: hysteresis on Zone B temperature ────────────────────
+        # ── HVAC: hysteresis on Zone B temperature ────────────────
+        # Default at nominal 0.7 to keep cool_delta near zero.
         if temp_B_n >= _HVAC_ON:
             self._hvac_on = True
         elif temp_B_n <= _HVAC_OFF:
             self._hvac_on = False
-        hvac_effort = 1.0 if self._hvac_on else 0.0
+        hvac_effort = 1.0 if self._hvac_on else 0.7
 
-        # ── BESS: bang-bang with moderate magnitude ────────────────────
-        # Binary switching (true bang-bang) but at ±0.4 instead of ±1.0
-        # to avoid massive overshoot. 0.4 × 50 MW = 20 MW, closer to
-        # typical committed_mw (10-20 MW) than full 50 MW blast.
-        _BESS_MAG = 0.5
+        # ── BESS: bang-bang scaled by committed_mw_norm ────────────────
+        # committed (obs[17]) = committed_mw / committed_mw_max.
+        # Ideal dispatch = committed_mw / P_MAX_MW × regd.
+        # Scale by committed_mw_max / P_MAX_MW = 30/50 = 0.6 to
+        # convert from obs normalisation to BESS action normalisation.
+        bess_mag = max(committed * 0.6, 0.05)  # floor to always respond
         if abs(regd) < 0.05:
             bess_dispatch = 0.0
         elif regd > 0:
             # Grid wants DC to reduce draw → discharge
-            bess_dispatch = _BESS_MAG if soc > _SOC_DISCHARGE_MIN else 0.0
+            bess_dispatch = bess_mag if soc > _SOC_DISCHARGE_MIN else 0.0
         else:
             # Grid wants DC to increase draw → charge
-            bess_dispatch = -_BESS_MAG if soc < _SOC_CHARGE_MAX else 0.0
+            bess_dispatch = -bess_mag if soc < _SOC_CHARGE_MAX else 0.0
 
         return np.array([throttle, pump_speed, hvac_effort, bess_dispatch],
                         dtype=np.float32)
