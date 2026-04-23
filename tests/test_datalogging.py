@@ -4,9 +4,16 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from c2g_env import C2GFastEnv
+
 """
 tests/test_datalogging.py  —  Sanity checks for logged state-action-reward data from benchmark runs
 """
+
+# Derive expected dimensions from the environment itself
+_EXPECTED_OBS_DIM = C2GFastEnv(scenario="default").observation_space.shape[0]
+_EXPECTED_ACT_DIM = C2GFastEnv(scenario="default").action_space.shape[0]
+
 
 class TestDataLogging:
     def test_eval_log_schema_and_continuity(self):
@@ -46,9 +53,9 @@ class TestDataLogging:
     def test_datalogging_column_schema(self):
         """
         Verify that every CSV file in runs/ has the correct column schema:
-        - 17 o_* columns (observations)
-        - 17 s_* columns (states)
-        - 4 a_* columns (actions)
+        - {obs_dim} o_* columns (observations)
+        - {obs_dim} s_* columns (states)
+        - {act_dim} a_* columns (actions)
         - 7 r_* columns (reward components)
         - 1 r column (total reward)
         """
@@ -69,6 +76,8 @@ class TestDataLogging:
         if not all_csv_files:
             pytest.skip("No CSV files found in runs/")
         
+        obs_dim = _EXPECTED_OBS_DIM
+        act_dim = _EXPECTED_ACT_DIM
         errors = []
         
         for csv_path in all_csv_files:
@@ -85,12 +94,12 @@ class TestDataLogging:
             
             file_errors = []
             
-            if len(o_cols) != 17:
-                file_errors.append(f"o_* columns: expected 17, found {len(o_cols)}")
-            if len(s_cols) != 17:
-                file_errors.append(f"s_* columns: expected 17, found {len(s_cols)}")
-            if len(a_cols) != 4:
-                file_errors.append(f"a_* columns: expected 4, found {len(a_cols)}")
+            if len(o_cols) != obs_dim:
+                file_errors.append(f"o_* columns: expected {obs_dim}, found {len(o_cols)}")
+            if len(s_cols) != obs_dim:
+                file_errors.append(f"s_* columns: expected {obs_dim}, found {len(s_cols)}")
+            if len(a_cols) != act_dim:
+                file_errors.append(f"a_* columns: expected {act_dim}, found {len(a_cols)}")
             if len(r_component_cols) != 7:
                 file_errors.append(f"r_* columns: expected 7, found {len(r_component_cols)}")
             if len(r_total_cols) != 1:

@@ -24,7 +24,7 @@ def _fresh_env(scenario: str = "default", seed: int = 0):
 
 
 def _obs_17d(**overrides) -> np.ndarray:
-    """Build a synthetic 17-D observation vector with sensible defaults."""
+    """Build a synthetic 18-D observation vector with sensible defaults."""
     obs = np.array([
         0.86,  # [0]  temp_A_norm  (30°C / 35°C)
         0.57,  # [1]  temp_B_norm  (20°C / 35°C)
@@ -43,6 +43,7 @@ def _obs_17d(**overrides) -> np.ndarray:
         0.00,  # [14] freq_dev_norm
         1.00,  # [15] v_pcc_pu
         0.10,  # [16] backlog_norm
+        0.50,  # [17] committed_mw_norm
     ], dtype=np.float32)
     for k, v in overrides.items():
         idx = {
@@ -435,7 +436,7 @@ class TestCMAESLinearPolicy:
     def test_policy_predict(self):
         from baselines.train_cmaes import LinearPolicy
         policy = LinearPolicy(
-            obs_dim=17, act_dim=4,
+            obs_dim=18, act_dim=4,
             act_low=np.array([0, 0, 0, -1], dtype=np.float32),
             act_high=np.array([1, 1, 1, 1], dtype=np.float32),
         )
@@ -446,9 +447,9 @@ class TestCMAESLinearPolicy:
 
     def test_set_get_params(self):
         from baselines.train_cmaes import LinearPolicy
-        policy = LinearPolicy(17, 4, np.zeros(4), np.ones(4))
+        policy = LinearPolicy(18, 4, np.zeros(4), np.ones(4))
         n = policy.n_params
-        assert n == 17 * 4 + 4  # 72
+        assert n == 18 * 4 + 4  # 76
         params = np.random.randn(n)
         policy.set_params(params)
         recovered = policy.get_params()
@@ -458,7 +459,7 @@ class TestCMAESLinearPolicy:
         from baselines.train_cmaes import LinearPolicy
         act_low = np.array([0, 0, 0, -1], dtype=np.float32)
         act_high = np.array([1, 1, 1, 1], dtype=np.float32)
-        policy = LinearPolicy(17, 4, act_low, act_high)
+        policy = LinearPolicy(18, 4, act_low, act_high)
         # Set extreme weights to produce out-of-range raw outputs
         policy.set_params(np.ones(policy.n_params) * 10.0)
         obs = _obs_17d()
@@ -468,7 +469,7 @@ class TestCMAESLinearPolicy:
 
     def test_batched_predict(self):
         from baselines.train_cmaes import LinearPolicy
-        policy = LinearPolicy(17, 4, np.zeros(4), np.ones(4))
+        policy = LinearPolicy(18, 4, np.zeros(4), np.ones(4))
         obs_batch = np.stack([_obs_17d() for _ in range(5)])
         actions, _ = policy.predict(obs_batch)
         assert actions.shape == (5, 4)
@@ -478,7 +479,7 @@ class TestCMAESLinearPolicy:
         from baselines.train_cmaes import LinearPolicy, evaluate_policy
         act_low = np.array([0, 0, 0, -1], dtype=np.float32)
         act_high = np.array([1, 1, 1, 1], dtype=np.float32)
-        policy = LinearPolicy(17, 4, act_low, act_high)
+        policy = LinearPolicy(18, 4, act_low, act_high)
         reward = evaluate_policy(policy, C2GFastEnv, {"scenario": "default"},
                                  n_rollouts=1, seed_base=0)
         assert np.isfinite(reward)
@@ -492,14 +493,14 @@ class TestPSOLinearPolicy:
 
     def test_policy_predict(self):
         from baselines.train_pso import LinearPolicy
-        policy = LinearPolicy(17, 4, np.zeros(4), np.ones(4))
+        policy = LinearPolicy(18, 4, np.zeros(4), np.ones(4))
         obs = _obs_17d()
         action, _ = policy.predict(obs)
         assert action.shape == (4,)
 
     def test_set_params(self):
         from baselines.train_pso import LinearPolicy
-        policy = LinearPolicy(17, 4, np.zeros(4), np.ones(4))
+        policy = LinearPolicy(18, 4, np.zeros(4), np.ones(4))
         policy.set_params(np.random.randn(policy.n_params))
         action, _ = policy.predict(_obs_17d())
         assert action.shape == (4,)

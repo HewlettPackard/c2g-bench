@@ -132,6 +132,7 @@ class C2GFastEnv(gym.Env):
        -1.0,  # freq_dev_norm (normalised frequency deviation)
         0.0,  # v_pcc_pu (PCC voltage in per-unit)
         0.0,  # backlog_norm (batch queue depth / p_flex_max_kw)
+        0.0,  # committed_mw_norm (current DR commitment / committed_mw_max)
     ], dtype=np.float32)
 
     _OBS_HIGH = np.array([
@@ -152,6 +153,7 @@ class C2GFastEnv(gym.Env):
         1.0,  # freq_dev_norm
         1.1,  # v_pcc_pu (slight overvoltage possible)
         2.0,  # backlog_norm (capped at 2 × p_flex_max)
+        1.0,  # committed_mw_norm
     ], dtype=np.float32)
 
     def __init__(
@@ -593,6 +595,7 @@ class C2GFastEnv(gym.Env):
             float(np.clip((f_grid_hz - f_nom) / 0.5, -1.0, 1.0)),  # freq_dev_norm
             float(np.clip(v_pcc_pu, 0.0, 1.1)),                     # v_pcc_pu
             min(w.backlog_kw / self._workload.p_flex_max_kw, 2.0),  # backlog_norm
+            self._committed_mw / float(self._scfg["committed_mw_max"]),  # committed_mw_norm
         ], dtype=np.float32)
 
     def _build_obs_at_reset(self) -> np.ndarray:
@@ -665,4 +668,5 @@ class C2GFastEnv(gym.Env):
             0.0,   # freq_dev_norm (nominal frequency at reset)
             1.0,   # v_pcc_pu (nominal voltage at reset)
             0.0,   # backlog_norm (no deferred work at reset)
+            self._committed_mw / float(self._scfg["committed_mw_max"]),  # committed_mw_norm
         ], dtype=np.float32)

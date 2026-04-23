@@ -240,7 +240,7 @@ class TestShieldedEnv:
 
     def test_reset_returns_obs_info(self, senv):
         obs, info = senv.reset(seed=0)
-        assert obs.shape == (17,)
+        assert obs.shape == (18,)
 
     def test_step_returns_5_tuple(self, senv):
         senv.reset(seed=0)
@@ -255,7 +255,7 @@ class TestShieldedEnv:
         assert "shield_stats" in info
 
     def test_spaces_match_base(self, senv):
-        assert senv.observation_space.shape == (17,)
+        assert senv.observation_space.shape == (18,)
         assert senv.action_space.shape == (4,)
 
     def test_shield_stats_accessible(self, senv):

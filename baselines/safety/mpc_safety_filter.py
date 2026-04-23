@@ -371,7 +371,7 @@ class MPCSFShieldedEnv(gym.Wrapper):
         return obs, info
 
     def step(self, action):
-        obs_prev = getattr(self, "_last_obs", np.zeros(17, dtype=np.float32))
+        obs_prev = getattr(self, "_last_obs", np.zeros(18, dtype=np.float32))
         safe_action, was_modified, shield_info = self.shield.filter(
             action, obs_prev)
         obs, reward, terminated, truncated, info = self.env.step(safe_action)
