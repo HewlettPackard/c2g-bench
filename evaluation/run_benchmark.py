@@ -2,7 +2,7 @@
 evaluation/run_benchmark.py  --  Benchmark Evaluation Runner
 ============================================================
 Runs all registered agents on all 4 evaluation scenarios, collects
-per-episode metrics, and writes results to evaluation/results/results.csv.
+per-episode metrics, and writes under evaluation/results.
 
 Metrics (per episode)
 ---------------------
@@ -323,6 +323,11 @@ def run_episode(
     thermal_viols : int = 0
     throughputs   : list[float] = []
     bess_init_age : float | None = None
+    # Cumulative power metrics
+    cumul_p_pump_mw     : float = 0.0
+    cumul_p_hvac_mw     : float = 0.0
+    cumul_flex_reduction_kw : float = 0.0
+    cumul_bess_actual_kw : float = 0.0
 
     done = False
     while not done:
@@ -361,6 +366,12 @@ def run_episode(
         if tp is not None:
             throughputs.append(float(tp))
 
+        # Accumulate power metrics
+        cumul_p_pump_mw += float(info.get("p_pump_mw", 0.0))
+        cumul_p_hvac_mw += float(info.get("p_hvac_mw", 0.0))
+        cumul_flex_reduction_kw += float(info.get("flex_reduction_kw", 0.0))
+        cumul_bess_actual_kw += float(info.get("bess_actual_kw", 0.0))
+
         # BESS degradation
         if bess_init_age is None:
             bess_init_age = float(info.get("bess_age_frac", 0.0))
@@ -383,6 +394,10 @@ def run_episode(
         "bess_degradation"  : bess_degradation,
         "episode_length"    : n_ticks,
         "survived"          : survived,
+        "cumul_p_pump_mw"   : cumul_p_pump_mw,
+        "cumul_p_hvac_mw"   : cumul_p_hvac_mw,
+        "cumul_flex_reduction_kw" : cumul_flex_reduction_kw,
+        "cumul_bess_actual_kw" : cumul_bess_actual_kw,
     }
 
 
@@ -421,6 +436,11 @@ def run_macro_episode(
     tracking_errs: list[float] = []
     temp_a_maxes: list[float] = []
     temp_b_maxes: list[float] = []
+    # Cumulative power metrics
+    cumul_p_pump_mw     : float = 0.0
+    cumul_p_hvac_mw     : float = 0.0
+    cumul_flex_reduction_kw : float = 0.0
+    cumul_bess_actual_kw : float = 0.0
 
     done = False
     while not done:
@@ -453,6 +473,11 @@ def run_macro_episode(
         tracking_errs.append(float(info.get("mean_tracking_err", 0.0)) ** 2)
         temp_a_maxes.append(float(info.get("temp_A_max", 0.0)))
         temp_b_maxes.append(float(info.get("temp_B_max", 0.0)))
+        # Accumulate power metrics from macro env
+        cumul_p_pump_mw += float(info.get("p_pump_mw", 0.0))
+        cumul_p_hvac_mw += float(info.get("p_hvac_mw", 0.0))
+        cumul_flex_reduction_kw += float(info.get("flex_reduction_kw", 0.0))
+        cumul_bess_actual_kw += float(info.get("bess_actual_kw", 0.0))
 
     if transition_logger is not None:
         transition_logger.close()
@@ -474,6 +499,10 @@ def run_macro_episode(
         "temp_B_max":           float(np.max(temp_b_maxes)) if temp_b_maxes else 0.0,
         "episode_length":       n_steps,
         "survived":             survived,
+        "cumul_p_pump_mw"   : cumul_p_pump_mw,
+        "cumul_p_hvac_mw"   : cumul_p_hvac_mw,
+        "cumul_flex_reduction_kw" : cumul_flex_reduction_kw,
+        "cumul_bess_actual_kw" : cumul_bess_actual_kw,
     }
 
 

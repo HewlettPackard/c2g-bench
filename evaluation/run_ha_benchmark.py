@@ -302,7 +302,7 @@ def run_ha_episode(
             output_dir="runs",
             algorithm_name=agent_name,
             scenario_name=scenario,
-            agent_type="hardware_HA",
+            agent_type="hardware_ha",
             episode_number=episode_number,
             fixed_action_values=fixed_action_values,
             verbose=0,
@@ -317,6 +317,11 @@ def run_ha_episode(
     margins: list[float] = []
     worst_margin = float("inf")
     bess_init_age = None
+    # Cumulative power metrics
+    cumul_p_pump_mw     : float = 0.0
+    cumul_p_hvac_mw     : float = 0.0
+    cumul_flex_reduction_kw : float = 0.0
+    cumul_bess_actual_kw : float = 0.0
 
     done = False
     n_steps = 0
@@ -372,6 +377,12 @@ def run_ha_episode(
         if tp is not None:
             throughputs.append(float(tp))
 
+        # Accumulate power metrics
+        cumul_p_pump_mw += float(info.get("p_pump_mw", 0.0))
+        cumul_p_hvac_mw += float(info.get("p_hvac_mw", 0.0))
+        cumul_flex_reduction_kw += float(info.get("flex_reduction_kw", 0.0))
+        cumul_bess_actual_kw += float(info.get("bess_actual_kw", 0.0))
+
         # BESS
         if bess_init_age is None:
             bess_init_age = float(info.get("bess_age_frac", 0.0))
@@ -399,6 +410,11 @@ def run_ha_episode(
         "constraint_margin": float(np.mean(margins)) if margins else 0.0,
         "worst_case_margin": worst_margin if worst_margin != float("inf") else 0.0,
         "computational_overhead_ms": shield_eval.mean_filter_time_ms,
+        # Cumulative power metrics
+        "cumul_p_pump_mw": cumul_p_pump_mw,
+        "cumul_p_hvac_mw": cumul_p_hvac_mw,
+        "cumul_flex_reduction_kw": cumul_flex_reduction_kw,
+        "cumul_bess_actual_kw": cumul_bess_actual_kw,
     }
 
 
@@ -499,7 +515,7 @@ def _default_output_path(
     ablation_suffix = build_ablation_suffix(fixed_action_values)
     ablation_tag = ablation_suffix.lstrip("_") if ablation_suffix else "base"
 
-    return Path("evaluation") / "results" / f"{algo_tag}_{scenario_tag}_hardware_HA_{ablation_tag}.csv"
+    return Path("evaluation") / "results" / f"{algo_tag}_{scenario_tag}_hardware_ha_{ablation_tag}.csv"
 
 
 def print_results_table(rows: list[dict[str, Any]]) -> None:

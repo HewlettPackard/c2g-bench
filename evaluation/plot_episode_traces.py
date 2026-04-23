@@ -18,6 +18,8 @@ from baselines.metrics_callback import (
     VALID_ACTIONS,
 )
 from baselines.metrics_callback import build_ablation_suffix
+from c2g_env import C2GFastEnv
+from c2g_env import C2GMacroEnv
 
 try:
     import matplotlib.pyplot as plt
@@ -28,13 +30,62 @@ except ImportError as exc:
     ) from exc
 
 def _columns_for_agent_type(agent_type: str) -> tuple[list[str], list[str]]:
-    if agent_type == "hardware":
+    if "hardware" in agent_type:
         return STATE_COLUMNS, REWARD_COLUMNS
     if agent_type == "macro":
         return STATE_COLUMNS_MACRO, REWARD_COLUMNS_MACRO
     raise ValueError(
-        f"Invalid agent_type '{agent_type}'. Expected one of ['hardware', 'macro']."
+        f"Invalid agent_type '{agent_type}'. Expected one of ['hardware', 'macro', 'hardware_ha']."
     )
+
+
+def _ha_safety_bounds_for_agent_type(
+    agent_type: str,
+    env_bounds: dict[str, tuple[float, float]],
+) -> dict[str, tuple[float, float]]:
+    # Use HA thresholds from run_ha_benchmark.py and fill one-sided limits
+    # with finite environment bounds so both demarcation lines can be drawn.
+    if "hardware" in agent_type:
+        return {
+            "s_temp_A_norm": (env_bounds["s_temp_A_norm"][0], 1.0),
+            "s_temp_B_norm": (env_bounds["s_temp_B_norm"][0], 1.0),
+            "s_bess_soc": (0.10, 0.95),
+            "s_freq_dev_norm": (-1.0, 1.0),
+            "s_v_pcc_pu": (0.90, env_bounds["s_v_pcc_pu"][1]),
+        }
+    if agent_type == "macro":
+        return {}
+    raise ValueError(
+        f"Invalid agent_type '{agent_type}'. Expected one of ['hardware', 'macro', 'hardware_ha']."
+    )
+
+
+def _env_bounds_for_agent_type(agent_type: str, state_columns: list[str]) -> dict[str, tuple[float, float]]:
+    """
+    Derive observation-space bounds from the appropriate environment.
+    Returns a map from state column name to (low, high) tuple.
+    """
+    if "hardware" in agent_type:
+        env = C2GFastEnv()
+    elif agent_type == "macro":
+        env = C2GMacroEnv()
+    else:
+        raise ValueError(
+            f"Invalid agent_type '{agent_type}'. Expected one of ['hardware', 'macro', 'hardware_ha']."
+        )
+    
+    try:
+        obs_space = env.observation_space
+        low = np.array(obs_space.low)
+        high = np.array(obs_space.high)
+        
+        bounds = {}
+        for idx, col_name in enumerate(state_columns):
+            if 0 <= idx < len(low):
+                bounds[col_name] = (float(low[idx]), float(high[idx]))
+        return bounds
+    finally:
+        env.close()
 
 
 def _grid_rows(
@@ -189,11 +240,39 @@ def _trace_positions(grid_rows: list[list[str]]) -> list[tuple[int, int, str]]:
     return positions
 
 
+def _set_axis_padding(
+    ax,
+    ci_lower: np.ndarray,
+    ci_upper: np.ndarray,
+    env_bounds: tuple[float, float] | None = None,
+) -> None:
+    """Set y-axis limits using environment bounds if available, otherwise use data-driven padding."""
+    if env_bounds is not None:
+        # Use environment observation-space bounds directly.
+        ax.set_ylim(env_bounds[0], env_bounds[1])
+    else:
+        # Fall back to data-driven padding.
+        finite_lower = ci_lower[np.isfinite(ci_lower)]
+        finite_upper = ci_upper[np.isfinite(ci_upper)]
+        if finite_lower.size == 0 or finite_upper.size == 0:
+            return
+
+        y_min = float(np.min(finite_lower))
+        y_max = float(np.max(finite_upper))
+        y_span = max(y_max - y_min, 1e-6)
+
+        lower_pad = 0.04 * y_span
+        upper_pad = 0.10 * y_span
+        ax.set_ylim(y_min - lower_pad, y_max + upper_pad)
+
+
 def _build_figure_with_stats(
     run_name: str,
     aggregated_stats: dict[str, dict[str, np.ndarray]],
     state_columns: list[str],
     reward_columns: list[str],
+    state_safety_bounds: dict[str, tuple[float, float]],
+    env_bounds: dict[str, tuple[float, float]] | None = None,
 ) -> plt.Figure:
     """
     Build figure with mean lines, 99% CI shaded bands, and state reference lines.
@@ -205,9 +284,10 @@ def _build_figure_with_stats(
     figsize_width = max_cols * 2.67  # ~2.67 inches per column
 
     # Use GridSpec and create axes only where traces exist.
-    fig = plt.figure(figsize=(figsize_width, 10.5), constrained_layout=True)
+    fig = plt.figure(figsize=(figsize_width, 11.3), constrained_layout=False)
     gs = fig.add_gridspec(n_rows, max_cols)
-    fig.suptitle(f"{run_name} — Mean ± 99% CI across all episodes", fontsize=16, y=0.995)
+    fig.subplots_adjust(top=0.88, bottom=0.06, left=0.04, right=0.99, hspace=0.42, wspace=0.28)
+    fig.suptitle(f"{run_name} — Mean ± 99% CI across all episodes", fontsize=16, y=0.97)
     
     positions = _trace_positions(grid_rows)
     state_columns_set = set(state_columns)
@@ -236,11 +316,18 @@ def _build_figure_with_stats(
         
         # Plot mean line
         ax.plot(x, mean, color=color, linewidth=1.5, label="Mean")
+
+        # Use environment bounds for state variables, data-driven padding for rewards.
+        env_bound = None
+        if is_state and env_bounds and column in env_bounds:
+            env_bound = env_bounds[column]
+        _set_axis_padding(ax, ci_lower, ci_upper, env_bounds=env_bound)
         
-        # Add reference lines for state variables (0-1 bounds)
-        if is_state:
-            ax.axhline(y=0.0, color="black", linestyle="--", linewidth=0.5, alpha=0.3)
-            ax.axhline(y=1.0, color="black", linestyle="--", linewidth=0.5, alpha=0.3)
+        # Add HA safety bounds only for variables with explicit audit thresholds.
+        if is_state and column in state_safety_bounds:
+            lower_bound, upper_bound = state_safety_bounds[column]
+            ax.axhline(y=lower_bound, color="#444444", linestyle="--", linewidth=0.8, alpha=0.55)
+            ax.axhline(y=upper_bound, color="#444444", linestyle="--", linewidth=0.8, alpha=0.55)
         
         ax.set_title(column, fontsize=9)
         ax.set_xlabel("Step", fontsize=8)
@@ -260,6 +347,8 @@ def generate_episode_plots(
     """Generate aggregated episode statistics plot for a specific algorithm and scenario."""
     agent_type = agent_type.lower()
     state_columns, reward_columns = _columns_for_agent_type(agent_type)
+    env_bounds = _env_bounds_for_agent_type(agent_type, state_columns)
+    state_safety_bounds = _ha_safety_bounds_for_agent_type(agent_type, env_bounds)
 
     fixed_action_values = fixed_action_values or {}
     ablation_suffix = _build_ablation_suffix(fixed_action_values)
@@ -292,6 +381,8 @@ def generate_episode_plots(
         aggregated_stats,
         state_columns,
         reward_columns,
+        state_safety_bounds,
+        env_bounds=env_bounds,
     )
     
     # save images in project/figures
@@ -336,7 +427,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--agent-type",
         default="hardware",
-        choices=["hardware", "macro"],
+        choices=["hardware", "macro", "hardware_ha"],
         help="Agent type suffix used in runs/<algo>_<scenario>_<agent_type>/ (default: hardware)",
     )
     parser.add_argument(

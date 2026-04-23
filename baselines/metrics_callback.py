@@ -38,7 +38,7 @@ Metrics tracked per step (C2GTransitionLoggerCallback)
 State / Observation / Action Space
 -----------------------------------
 
-Observations (s_i / o_i, 17-D normalised):
+Observations (s_i / o_i, 18-D normalised):
   s_0 / o_0               temp_A_norm — Zone A (liquid-cooled GPU) temperature / T_safe
   s_1 / o_1               temp_B_norm — Zone B (air-cooled CPU) temperature / T_safe
   s_2 / o_2               bess_soc — Battery state of charge [0, 1]
@@ -56,6 +56,7 @@ Observations (s_i / o_i, 17-D normalised):
   s_14 / o_14             freq_dev_norm — Grid frequency deviation / 0.5 Hz
   s_15 / o_15             v_pcc_pu — PCC voltage in per-unit (Thévenin model)
   s_16 / o_16             backlog_norm — Deferred batch FIFO queue depth / p_flex_max
+    s_17 / o_17             committed_mw_norm — Current DR commitment / committed_mw_max
 
 Actions (a_i, 4-D continuous):
   a_0                     throttle_batch — DVFS throttle [0=full speed, 1=fully throttled]
@@ -92,10 +93,29 @@ STATE_COLUMNS = [
     "s_freq_dev_norm",
     "s_v_pcc_pu",
     "s_backlog_norm",
+    "s_committed_mw_norm",
 ]
 
-# Macro-level state: 19-D (indices 0-16 as above, plus 2 market signals)
-STATE_COLUMNS_MACRO = STATE_COLUMNS + [
+# Macro-level state remains 19-D: the original 17 aggregated fast-env features
+# plus the 2 market signals. It does not include committed_mw_norm.
+STATE_COLUMNS_MACRO = [
+    "s_temp_A_norm",
+    "s_temp_B_norm",
+    "s_bess_soc",
+    "s_p_base_norm",
+    "s_p_flex_nom_norm",
+    "s_p_facility_norm",
+    "s_regd_signal",
+    "s_lmp_norm",
+    "s_grid_load_norm",
+    "s_is_spike",
+    "s_prev_throttle",
+    "s_prev_pump_speed",
+    "s_pue_norm",
+    "s_T_amb_norm",
+    "s_freq_dev_norm",
+    "s_v_pcc_pu",
+    "s_backlog_norm",
     "s_rmcp_norm",      # obs[17]: RMCP ÷ rmcp_max
     "s_reg_need_norm",  # obs[18]: reg need ÷ cap_max
 ]
@@ -179,7 +199,7 @@ def build_ablation_suffix(
             value = _format_action_value(float(fixed[action_name]))
             tags.append(f"{short}_{value}")
 
-    return f"__{'_'.join(tags)}" if tags else ""
+    return f"_{'_'.join(tags)}" if tags else ""
 
 
 class C2GMetricsCallback(BaseCallback):
