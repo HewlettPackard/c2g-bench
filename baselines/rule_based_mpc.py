@@ -58,7 +58,7 @@ _T_CRITICAL    = 0.98           # 0.5°C below T_safe (obs normalised)
 _SOC_MIN_GUARD = 0.15           # SOC below which we protect BESS
 _SOC_CHARGE    = 0.80           # SOC above which we prefer not to charge further
 _REGD_THRESH   = 0.10           # minimum regd_signal magnitude to act on
-_BESS_GAIN     = 0.6            # committed_mw_max / P_MAX_MW = 30/50
+_BESS_GAIN     = 6.0            # committed_mw_max / P_MAX_MW = 30/5
 _DEFAULT_HVAC  = 0.7            # nominal HVAC (matches MacroEnv default)
 
 # Observation dimension indices
@@ -158,11 +158,9 @@ class RuleBasedController:
             throttle    = max(0.0, 1.0 - excess)
 
         # ── Rule 2: Grid regulation via BESS ──────────────────────────
-        # Scale BESS dispatch by committed_mw_norm so response matches
-        # the actual MW commitment.  bess_gain provides tuning headroom.
+        raw_demand = self.bess_gain * committed * regd
         if abs(regd) >= _REGD_THRESH:
-            raw_dispatch = self.bess_gain * committed * regd
-            bess_dispatch = float(np.clip(raw_dispatch, -1.0, 1.0))
+            bess_dispatch = float(np.clip(raw_demand, -1.0, 1.0))
 
             # Protect BESS near min SOC: reduce discharge command
             if soc < _SOC_MIN_GUARD and bess_dispatch > 0:
@@ -174,16 +172,19 @@ class RuleBasedController:
                 scale = max(0.0, (0.95 - soc) / (0.95 - _SOC_CHARGE))
                 bess_dispatch *= scale
 
-        # ── Rule 2b: Water-loop thermal inertia for regulation ───────
-        # When grid demands power reduction and BESS is healthy, slightly
-        # reduce pump speed to shed pump electrical load and store heat
-        # in the water loop (CDU thermal mass, τ≈12.7 min at full K).
-        if regd > 0.4 and soc > 0.25 and max_temp_n < self.t_warn_norm:
-            pump_speed = max(0.3, pump_speed - regd * 0.3)
-
-        # ── Rule 3: DVFS flex reduction when BESS is depleted ─────────
-        if regd > 0.3 and soc < 0.20 and not is_spike:
-            throttle = min(throttle, max(0.0, 1.0 - regd))
+        # ── Rule 2b: Multi-lever assist when BESS saturates ──────────
+        residual = raw_demand - bess_dispatch
+        if residual > 0.05 and not is_spike:
+            # Discharge deficit — shed throttle, reduce cooling
+            throttle = max(0.0, min(throttle, 1.0 - residual * 0.12))
+            cool_adj = min(0.3, residual * 0.10)
+            pump_speed = max(0.3, pump_speed - cool_adj)
+            hvac_effort = max(0.3, hvac_effort - cool_adj)
+        elif residual < -0.05:
+            # Charge deficit — increase cooling to absorb power
+            cool_adj = min(0.3, abs(residual) * 0.10)
+            pump_speed = min(1.0, pump_speed + cool_adj)
+            hvac_effort = min(1.0, hvac_effort + cool_adj)
 
         # ── Rule 4: Opportunistic BESS charge when price is cheap ─────
         # (grid_load_norm < 0.4 → off-peak, regd signal quiet)

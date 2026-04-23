@@ -94,43 +94,46 @@ class BangBangController:
         regd     = float(obs[_I_REGD])
         committed = float(obs[_I_COMMITTED]) if len(obs) > _I_COMMITTED else 0.1
 
-        # ── Throttle: always max for throughput reward ─────────────────
-        # flex_reduction = (1 - throttle) × p_flex_nom_kw feeds into
-        # delta_p_actual and causes massive tracking overshoot.  BESS
-        # alone handles the committed MW regulation.
-        throttle = 1.0
-
         # ── Pump: hysteresis on Zone A temperature ────────────────────
-        # Default at nominal 0.7 to keep cool_delta near zero.
-        # Only ramp UP for thermal protection.
         if temp_A_n >= _PUMP_ON:
             self._pump_on = True
         elif temp_A_n <= _PUMP_OFF:
             self._pump_on = False
         pump_speed = 1.0 if self._pump_on else 0.7
 
-        # ── HVAC: hysteresis on Zone B temperature ────────────────
-        # Default at nominal 0.7 to keep cool_delta near zero.
+        # ── HVAC: hysteresis on Zone B temperature ────────────────────
         if temp_B_n >= _HVAC_ON:
             self._hvac_on = True
         elif temp_B_n <= _HVAC_OFF:
             self._hvac_on = False
         hvac_effort = 1.0 if self._hvac_on else 0.7
 
-        # ── BESS: bang-bang scaled by committed_mw_norm ────────────────
-        # committed (obs[17]) = committed_mw / committed_mw_max.
-        # Ideal dispatch = committed_mw / P_MAX_MW × regd.
-        # Scale by committed_mw_max / P_MAX_MW = 30/50 = 0.6 to
-        # convert from obs normalisation to BESS action normalisation.
-        bess_mag = max(committed * 0.6, 0.05)  # floor to always respond
+        # ── BESS: bang-bang at full committed magnitude ────────────────
+        bess_mag = max(committed * 6.0, 0.05)
         if abs(regd) < 0.05:
             bess_dispatch = 0.0
         elif regd > 0:
-            # Grid wants DC to reduce draw → discharge
-            bess_dispatch = bess_mag if soc > _SOC_DISCHARGE_MIN else 0.0
+            bess_dispatch = min(bess_mag, 1.0) if soc > _SOC_DISCHARGE_MIN else 0.0
         else:
-            # Grid wants DC to increase draw → charge
-            bess_dispatch = -bess_mag if soc < _SOC_CHARGE_MAX else 0.0
+            bess_dispatch = -min(bess_mag, 1.0) if soc < _SOC_CHARGE_MAX else 0.0
+
+        # ── Residual: tracking demand minus BESS delivery ─────────────
+        demand = committed * 6.0 * regd
+        residual = demand - bess_dispatch
+
+        # ── Throttle + cooling assist when BESS saturates ─────────────
+        throttle = 1.0
+        if residual > 0.05:
+            # Discharge deficit — shed load, reduce cooling
+            throttle = max(0.0, 1.0 - residual * 0.12)
+            cool_adj = min(0.2, residual * 0.10)
+            pump_speed = max(0.3, pump_speed - cool_adj)
+            hvac_effort = max(0.3, hvac_effort - cool_adj)
+        elif residual < -0.05:
+            # Charge deficit — increase cooling to absorb power
+            cool_adj = min(0.2, abs(residual) * 0.10)
+            pump_speed = min(1.0, pump_speed + cool_adj)
+            hvac_effort = min(1.0, hvac_effort + cool_adj)
 
         return np.array([throttle, pump_speed, hvac_effort, bess_dispatch],
                         dtype=np.float32)
