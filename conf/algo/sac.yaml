@@ -1,6 +1,6 @@
 name: sac
 
-timesteps: 200_000
+timesteps: 500_000
 n_envs: 1
 eval_freq: 5_000
 n_eval_episodes: 5
