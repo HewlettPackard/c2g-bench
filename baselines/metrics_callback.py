@@ -156,12 +156,11 @@ def _format_action_value(value: float) -> str:
 
 
 def _sorted_ablation_actions(
-    unavailable_actions: tuple[str, ...],
     fixed_action_values: dict[str, float],
 ) -> list[str]:
     # Sort by short action tag so suffixes are stable and human-readable
     # (for example BESS before THROTTLE).
-    action_names = set(unavailable_actions) | set(fixed_action_values.keys())
+    action_names = set(fixed_action_values.keys())
     return sorted(
         action_names,
         key=lambda name: ACTION_SHORT_NAMES.get(name, name.upper()),
@@ -169,17 +168,13 @@ def _sorted_ablation_actions(
 
 
 def build_ablation_suffix(
-    unavailable_actions: tuple[str, ...] | None,
     fixed_action_values: dict[str, float] | None,
 ) -> str:
-    unavailable = tuple(unavailable_actions or ())
     fixed = dict(fixed_action_values or {})
 
     tags: list[str] = []
-    for action_name in _sorted_ablation_actions(unavailable, fixed):
+    for action_name in _sorted_ablation_actions(fixed):
         short = ACTION_SHORT_NAMES.get(action_name, action_name.upper())
-        if action_name in unavailable:
-            tags.append(f"{short}_disabled")
         if action_name in fixed:
             value = _format_action_value(float(fixed[action_name]))
             tags.append(f"{short}_{value}")
@@ -422,7 +417,6 @@ class C2GTransitionLoggerCallback(BaseCallback):
         scenario_name: str | None = None,
         agent_type: str = "hardware",
         episode_number: int | None = None,
-        unavailable_actions: tuple[str, ...] | None = None,
         fixed_action_values: dict[str, float] | None = None,
         verbose: int = 0,
     ):
@@ -431,7 +425,6 @@ class C2GTransitionLoggerCallback(BaseCallback):
         self._scenario_name = scenario_name
         self._agent_type = agent_type
         self._episode_number = episode_number
-        self._unavailable_actions = tuple(unavailable_actions or ())
         self._fixed_action_values = dict(fixed_action_values or {})
         self._active = True
 
@@ -447,7 +440,7 @@ class C2GTransitionLoggerCallback(BaseCallback):
         if agent_type is None:
             raise ValueError("agent_type must be either 'hardware' or 'macro'.")
         agent_type = agent_type.lower()
-        if agent_type not in ["macro", "hardware"]:
+        if agent_type not in ["macro", "hardware", "hardware_ha"]:
             raise ValueError(
                 f"Invalid agent_type '{agent_type}'. Expected one of ['macro', 'hardware']."
             )
@@ -472,7 +465,7 @@ class C2GTransitionLoggerCallback(BaseCallback):
         self._output_dir.mkdir(parents=True, exist_ok=True)
 
     def _build_ablation_suffix(self) -> str:
-        return build_ablation_suffix(self._unavailable_actions, self._fixed_action_values)
+        return build_ablation_suffix(self._fixed_action_values)
 
     @staticmethod
     def _safe_name(value: str | None, default: str) -> str:
@@ -498,7 +491,7 @@ class C2GTransitionLoggerCallback(BaseCallback):
         scenario_tag = self._safe_name(self._scenario_name, "scenario")
         ablation_suffix = self._build_ablation_suffix()
         if self._episode_number is not None:
-            csv_name = f"episode{self._episode_number}_{ablation_suffix}.csv"
+            csv_name = f"episode{self._episode_number}{ablation_suffix}.csv"
         else:
             csv_name = f"episode_{ablation_suffix}.csv"
         csv_path = self._output_dir / csv_name

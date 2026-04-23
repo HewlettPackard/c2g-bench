@@ -5,6 +5,7 @@ import numpy as np
 import pytest
 
 from c2g_env import C2GFastEnv
+from c2g_env.env_high_level import C2GMacroEnv
 
 """
 tests/test_datalogging.py  —  Sanity checks for logged state-action-reward data from benchmark runs
@@ -14,6 +15,8 @@ tests/test_datalogging.py  —  Sanity checks for logged state-action-reward dat
 _EXPECTED_OBS_DIM = C2GFastEnv(scenario="default").observation_space.shape[0]
 _EXPECTED_ACT_DIM = C2GFastEnv(scenario="default").action_space.shape[0]
 
+_EXPECTED_OBS_DIM_MACRO = C2GMacroEnv(scenario="default").observation_space.shape[0]
+_EXPECTED_ACT_DIM_MACRO = C2GMacroEnv(scenario="default").action_space.shape[0]
 
 class TestDataLogging:
     def test_eval_log_schema_and_continuity(self):
@@ -50,9 +53,9 @@ class TestDataLogging:
                             f"{s_col}={curr_row[s_col]} vs prev {o_col}={prev_row[o_col]}"
                         )
 
-    def test_datalogging_column_schema(self):
+    def test_datalogging_column_schema_hardware(self):
         """
-        Verify that every CSV file in runs/ has the correct column schema:
+        Verify that every non-macro CSV file in runs/ has the correct column schema:
         - {obs_dim} o_* columns (observations)
         - {obs_dim} s_* columns (states)
         - {act_dim} a_* columns (actions)
@@ -69,7 +72,7 @@ class TestDataLogging:
         all_csv_files = []
         for root, dirs, files in os.walk(runs_dir):
             for file in files:
-                if file.endswith(".csv"):
+                if file.endswith(".csv") and "macro" not in file.lower():
                     all_csv_files.append(os.path.join(root, file))
         
         # Exit if no CSV files found
@@ -113,3 +116,127 @@ class TestDataLogging:
         if errors:
             error_report = "\n".join(errors)
             raise AssertionError(f"Column schema violations found:\n{error_report}")
+
+    def test_datalogging_column_schema_macro(self):
+        """
+        Verify that every macro CSV file in runs/ has the correct column schema:
+        - {obs_dim} o_* columns (observations)
+        - {obs_dim} s_* columns (states)
+        - {act_dim} a_* columns (actions)
+        - 7 r_* columns (reward components)
+        - 1 r column (total reward)
+        """
+        runs_dir = "runs"
+
+        # Exit if runs/ doesn't exist
+        if not os.path.exists(runs_dir) or not os.path.isdir(runs_dir):
+            pytest.skip("runs/ directory does not exist")
+
+        # Recursively walk through runs/ and collect only macro CSV files
+        all_csv_files = []
+        for root, dirs, files in os.walk(runs_dir):
+            for file in files:
+                if file.endswith(".csv") and "macro" in file.lower():
+                    all_csv_files.append(os.path.join(root, file))
+
+        # Exit if no macro CSV files found
+        if not all_csv_files:
+            pytest.skip("No macro CSV files found in runs/")
+
+        obs_dim = _EXPECTED_OBS_DIM_MACRO
+        act_dim = _EXPECTED_ACT_DIM_MACRO
+        errors = []
+
+        for csv_path in all_csv_files:
+            with open(csv_path, newline="") as f:
+                reader = csv.DictReader(f)
+                fieldnames = reader.fieldnames or []
+
+            # Count columns by prefix
+            o_cols = [col for col in fieldnames if col.startswith("o_")]
+            s_cols = [col for col in fieldnames if col.startswith("s_")]
+            a_cols = [col for col in fieldnames if col.startswith("a_")]
+            r_component_cols = [col for col in fieldnames if col.startswith("r_")]
+            r_total_cols = [col for col in fieldnames if col == "r"]
+
+            file_errors = []
+
+            if len(o_cols) != obs_dim:
+                file_errors.append(f"o_* columns: expected {obs_dim}, found {len(o_cols)}")
+            if len(s_cols) != obs_dim:
+                file_errors.append(f"s_* columns: expected {obs_dim}, found {len(s_cols)}")
+            if len(a_cols) != act_dim:
+                file_errors.append(f"a_* columns: expected {act_dim}, found {len(a_cols)}")
+            if len(r_component_cols) != 4:
+                file_errors.append(f"r_* columns: expected 4, found {len(r_component_cols)}")
+            if len(r_total_cols) != 1:
+                file_errors.append(f"r column: expected 1, found {len(r_total_cols)}")
+
+            if file_errors:
+                rel_path = os.path.relpath(csv_path, runs_dir)
+                error_msg = f"{rel_path}: " + "; ".join(file_errors)
+                errors.append(error_msg)
+
+        if errors:
+            error_report = "\n".join(errors)
+            raise AssertionError(f"Column schema violations found:\n{error_report}")
+
+    def test_smoke_benchmark_rule_macro(self):
+        """Smoke test: run_benchmark.py with rule_macro agent."""
+        import subprocess
+        result = subprocess.run(
+            ["uv", "run", "python", "evaluation/run_benchmark.py",
+             "--record_transitions", "--agents", "rule_macro", "--n_episodes", "1"],
+            cwd=Path(__file__).resolve().parent.parent,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, f"Command failed with exit code {result.returncode}.\nStdout:\n{result.stdout}\nStderr:\n{result.stderr}"
+
+    def test_smoke_benchmark_rule_based(self):
+        """Smoke test: run_benchmark.py with rule_based agent."""
+        import subprocess
+        result = subprocess.run(
+            ["uv", "run", "python", "evaluation/run_benchmark.py",
+             "--record_transitions", "--agents", "rule_based", "--n_episodes", "1"],
+            cwd=Path(__file__).resolve().parent.parent,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, f"Command failed with exit code {result.returncode}.\nStdout:\n{result.stdout}\nStderr:\n{result.stderr}"
+
+    def test_smoke_benchmark_rule_based_with_bess_ablation(self):
+        """Smoke test: run_benchmark.py with rule_based agent and BESS fixed to 0.5."""
+        import subprocess
+        result = subprocess.run(
+            ["uv", "run", "python", "evaluation/run_benchmark.py",
+             "--record_transitions", "--agents", "rule_based", "--fixed-action", "bess_dispatch=0.5", "--n_episodes", "1"],
+            cwd=Path(__file__).resolve().parent.parent,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, f"Command failed with exit code {result.returncode}.\nStdout:\n{result.stdout}\nStderr:\n{result.stderr}"
+
+    def test_smoke_ha_benchmark_rule_based(self):
+        """Smoke test: run_ha_benchmark.py with rule_based agent."""
+        import subprocess
+        result = subprocess.run(
+            ["uv", "run", "python", "evaluation/run_ha_benchmark.py",
+             "--record_transitions", "--agents", "rule_based", "--n_episodes", "1"],
+            cwd=Path(__file__).resolve().parent.parent,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, f"Command failed with exit code {result.returncode}.\nStdout:\n{result.stdout}\nStderr:\n{result.stderr}"
+
+    def test_smoke_ha_benchmark_rule_based_with_bess_ablation(self):
+        """Smoke test: run_ha_benchmark.py with rule_based agent and BESS fixed to 0.5."""
+        import subprocess
+        result = subprocess.run(
+            ["uv", "run", "python", "evaluation/run_ha_benchmark.py",
+             "--record_transitions", "--agents", "rule_based", "--fixed-action", "bess_dispatch=0.5", "--n_episodes", "1"],
+            cwd=Path(__file__).resolve().parent.parent,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, f"Command failed with exit code {result.returncode}.\nStdout:\n{result.stdout}\nStderr:\n{result.stderr}"

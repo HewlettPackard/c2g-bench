@@ -94,10 +94,9 @@ def _parse_fixed_action_args(values: list[str] | None) -> dict[str, float]:
 
 
 def _build_ablation_suffix(
-    unavailable_actions: tuple[str, ...],
     fixed_action_values: dict[str, float],
 ) -> str:
-    return build_ablation_suffix(unavailable_actions, fixed_action_values)
+    return build_ablation_suffix(fixed_action_values)
 
 
 def _find_episode_csvs(run_dir: Path, ablation_suffix: str = "") -> list[Path]:
@@ -255,7 +254,6 @@ def generate_episode_plots(
     algoname: str,
     scenario: str,
     agent_type: str = "hardware",
-    unavailable_actions: tuple[str, ...] = (),
     fixed_action_values: dict[str, float] | None = None,
     runs_dir: Path | str = "runs",
 ) -> None:
@@ -264,7 +262,7 @@ def generate_episode_plots(
     state_columns, reward_columns = _columns_for_agent_type(agent_type)
 
     fixed_action_values = fixed_action_values or {}
-    ablation_suffix = _build_ablation_suffix(unavailable_actions, fixed_action_values)
+    ablation_suffix = _build_ablation_suffix(fixed_action_values)
     
     runs_dir = Path(__file__).resolve().parent.parent / runs_dir
     # Construct the expected run directory
@@ -347,13 +345,6 @@ if __name__ == "__main__":
         help="Project Root directory containing algorithm_scenario subdirectories (default: runs)",
     )
     parser.add_argument(
-        "--disable-actions", "--disabled_actions",
-        nargs="*",
-        default=None,
-        choices=VALID_ACTIONS,
-        help="Low-level actions to mark unavailable when selecting ablation episodes.",
-    )
-    parser.add_argument(
         "--fixed-action",
         action="append",
         default=[],
@@ -362,15 +353,10 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    if args.disable_actions is not None and len(args.disable_actions) == 0:
-        parser.error("--disable-actions/--disabled_actions was provided but no actions were listed.")
-
     try:
         fixed_action_values = _parse_fixed_action_args(args.fixed_action)
     except ValueError as exc:
         parser.error(str(exc))
-
-    unavailable_actions = tuple(args.disable_actions or ())
     
     try:
         generate_episode_plots(
@@ -378,7 +364,6 @@ if __name__ == "__main__":
             scenario=args.scenario,
             agent_type=args.agent_type,
             runs_dir=args.runs_dir,
-            unavailable_actions=unavailable_actions,
             fixed_action_values=fixed_action_values,
         )
     except FileNotFoundError as exc:
