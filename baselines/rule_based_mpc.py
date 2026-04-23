@@ -58,8 +58,8 @@ _T_CRITICAL    = 0.98           # 0.5°C below T_safe (obs normalised)
 _SOC_MIN_GUARD = 0.15           # SOC below which we protect BESS
 _SOC_CHARGE    = 0.80           # SOC above which we prefer not to charge further
 _REGD_THRESH   = 0.10           # minimum regd_signal magnitude to act on
-_BESS_GAIN     = 2.0            # proportional gain: bess_dispatch = gain × regd
-_DEFAULT_HVAC  = 0.6            # baseline HVAC effort
+_BESS_GAIN     = 0.6            # committed_mw_max / P_MAX_MW = 30/50
+_DEFAULT_HVAC  = 0.7            # nominal HVAC (matches MacroEnv default)
 
 # Observation dimension indices
 _I_TEMP_A   = 0
@@ -67,6 +67,7 @@ _I_TEMP_B   = 1
 _I_SOC      = 2
 _I_REGD     = 6
 _I_IS_SPIKE = 9
+_I_COMMITTED = 17
 
 
 class RuleBasedController:
@@ -134,6 +135,7 @@ class RuleBasedController:
         soc      = float(obs[_I_SOC])
         regd     = float(obs[_I_REGD])
         is_spike = float(obs[_I_IS_SPIKE]) > 0.5
+        committed = float(obs[_I_COMMITTED]) if len(obs) > _I_COMMITTED else 0.1
 
         # ── Defaults ──────────────────────────────────────────────────
         throttle      = 1.0
@@ -156,9 +158,10 @@ class RuleBasedController:
             throttle    = max(0.0, 1.0 - excess)
 
         # ── Rule 2: Grid regulation via BESS ──────────────────────────
+        # Scale BESS dispatch by committed_mw_norm so response matches
+        # the actual MW commitment.  bess_gain provides tuning headroom.
         if abs(regd) >= _REGD_THRESH:
-            # Proportional: positive regd → DC should reduce draw → discharge BESS
-            raw_dispatch = self.bess_gain * regd
+            raw_dispatch = self.bess_gain * committed * regd
             bess_dispatch = float(np.clip(raw_dispatch, -1.0, 1.0))
 
             # Protect BESS near min SOC: reduce discharge command

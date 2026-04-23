@@ -49,6 +49,7 @@ def _obs_17d(**overrides) -> np.ndarray:
         idx = {
             "temp_A": 0, "temp_B": 1, "soc": 2, "regd": 6,
             "lmp": 7, "load": 8, "spike": 9, "freq": 14, "vpcc": 15,
+            "committed": 17,
         }[k]
         obs[idx] = v
     return obs
@@ -107,20 +108,20 @@ class TestBangBang:
         assert action[0] == pytest.approx(1.0), "Throttle should always be 1.0"
 
     def test_bess_bang_positive_regd(self):
-        """Positive regd → full discharge (if SOC healthy)."""
+        """Positive regd → discharge at bang magnitude (if SOC healthy)."""
         from baselines.bang_bang import BangBangController
         ctrl = BangBangController()
         obs = _obs_17d(regd=0.5, soc=0.5)
         action, _ = ctrl.predict(obs)
-        assert action[3] == pytest.approx(1.0), "BESS should fully discharge on positive regd"
+        assert action[3] == pytest.approx(0.5), "BESS should discharge at bang magnitude on positive regd"
 
     def test_bess_bang_negative_regd(self):
-        """Negative regd → full charge (if SOC healthy)."""
+        """Negative regd → charge at bang magnitude (if SOC healthy)."""
         from baselines.bang_bang import BangBangController
         ctrl = BangBangController()
         obs = _obs_17d(regd=-0.5, soc=0.5)
         action, _ = ctrl.predict(obs)
-        assert action[3] == pytest.approx(-1.0), "BESS should fully charge on negative regd"
+        assert action[3] == pytest.approx(-0.5), "BESS should charge at bang magnitude on negative regd"
 
     def test_bess_soc_guard_low(self):
         """SOC below floor → no discharge."""
