@@ -145,7 +145,7 @@ class HAC2GShieldWrapper(gym.Wrapper):
         return gated
 
     def step(self, action):
-        obs_prev = self._last_obs if self._last_obs is not None else np.zeros(17, dtype=np.float32)
+        obs_prev = self._last_obs if self._last_obs is not None else np.zeros(18, dtype=np.float32)
 
         # Layer 2: concept-conditioned gate
         raw_action = action.copy() if hasattr(action, 'copy') else np.array(action)
@@ -362,7 +362,7 @@ def train(cfg: DictConfig) -> None:
     # These are shared between the feature extractor and the env
     # wrapper, so the gate is both visible to the policy (as a feature)
     # AND applied to actions (in the wrapper).
-    obs_dim = 17  # C2GFastEnv obs dim
+    obs_dim = 18  # C2GFastEnv obs dim
     shared_concept_encoder = C2GConceptEncoder(
         obs_dim=obs_dim, n_concepts=n_concepts, hidden=64)
     shared_safety_gate = SafeProjectionGate(

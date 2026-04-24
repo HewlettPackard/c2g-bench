@@ -43,6 +43,7 @@ _I_TEMP_A = 0
 _I_TEMP_B = 1
 _I_SOC    = 2
 _I_REGD   = 6
+_I_COMMITTED = 17
 
 # Normalisation constant
 _T_SAFE = 35.0
@@ -116,27 +117,27 @@ class PIDController:
         T_setpoint_norm: float = 30.0 / _T_SAFE,
         soc_target: float = 0.50,
         dt: float = 5.0,
-        bess_gain: float = 1.0,
-        pump_gains: tuple[float, float, float] = (5.0, 0.1, 0.5),
-        hvac_gains: tuple[float, float, float] = (5.0, 0.1, 0.5),
-        throttle_gains: tuple[float, float, float] = (1.0, 0.02, 0.0),
+        bess_gain: float = 6.0,
+        pump_gains: tuple[float, float, float] = (1.5, 0.02, 0.2),
+        hvac_gains: tuple[float, float, float] = (1.5, 0.02, 0.2),
+        flex_gain: float = 0.12,
+        cool_gain: float = 0.10,
     ) -> None:
         self.T_sp = T_setpoint_norm
         self.soc_target = soc_target
         self.bess_gain = bess_gain
+        self.flex_gain = flex_gain
+        self.cool_gain = cool_gain
 
-        # Loop 1: thermal error → pump speed (range [0.15, 1])
-        self._pid_pump = _PIDLoop(*pump_gains, dt=dt, out_min=0.15, out_max=1.0)
-        # Loop 2: thermal error → HVAC effort (range [0, 1])
-        self._pid_hvac = _PIDLoop(*hvac_gains, dt=dt, out_min=0.0, out_max=1.0)
-        # Loop 3: SOC error → throttle bias (range [-1, 0])
-        self._pid_throttle = _PIDLoop(*throttle_gains, dt=dt, out_min=-1.0, out_max=0.0)
+        # Loop 1: thermal error → pump speed (range [0.7, 1])
+        self._pid_pump = _PIDLoop(*pump_gains, dt=dt, out_min=0.7, out_max=1.0)
+        # Loop 2: thermal error → HVAC effort (range [0.7, 1])
+        self._pid_hvac = _PIDLoop(*hvac_gains, dt=dt, out_min=0.7, out_max=1.0)
 
     def reset(self) -> None:
         """Reset all integrators (call between episodes)."""
         self._pid_pump.reset()
         self._pid_hvac.reset()
-        self._pid_throttle.reset()
 
     def predict(
         self,
@@ -157,11 +158,11 @@ class PIDController:
         temp_B_n = float(obs[_I_TEMP_B])
         soc      = float(obs[_I_SOC])
         regd     = float(obs[_I_REGD])
+        committed = float(obs[_I_COMMITTED]) if len(obs) > _I_COMMITTED else 0.1
 
-        # ── BESS: proportional response to regulation signal ─────────
-        # regd > 0 → grid wants DC to reduce draw → discharge (positive)
-        # regd < 0 → grid wants DC to increase draw → charge (negative)
-        bess_dispatch = float(np.clip(self.bess_gain * regd, -1.0, 1.0))
+        # ── BESS: proportional response scaled by commitment ─────────
+        ideal_bess = self.bess_gain * committed * regd
+        bess_dispatch = float(np.clip(ideal_bess, -1.0, 1.0))
 
         # SOC guards: disable dispatch near limits
         if soc < 0.12 and bess_dispatch > 0:
@@ -169,8 +170,10 @@ class PIDController:
         if soc > 0.93 and bess_dispatch < 0:
             bess_dispatch = 0.0
 
+        # ── Residual: unmet demand after BESS clipping ────────────────
+        residual = ideal_bess - bess_dispatch
+
         # ── Loop 1: Pump controls Zone A temperature ─────────────────
-        # Error = actual - setpoint (positive when too hot → increase pump)
         pump_error = temp_A_n - self.T_sp
         pump_speed = self._pid_pump.step(pump_error)
 
@@ -178,11 +181,22 @@ class PIDController:
         hvac_error = temp_B_n - self.T_sp
         hvac_effort = self._pid_hvac.step(hvac_error)
 
-        # ── Loop 3: Throttle bias from SOC recovery ──────────────────
-        # When SOC < target → error negative → bias negative → reduce throttle
-        soc_error = soc - self.soc_target  # negative when SOC low
-        throttle_bias = self._pid_throttle.step(soc_error)
-        throttle = float(np.clip(1.0 + throttle_bias, 0.0, 1.0))
+        # ── Throttle + cooling assist when BESS saturates ─────────────
+        if residual > 0.05:
+            # BESS discharge saturated — shed load via throttle
+            throttle = max(0.0, 1.0 - residual * self.flex_gain)
+            # Reduce cooling to free electrical headroom
+            cool_adj = min(0.3, residual * self.cool_gain)
+            pump_speed = max(0.3, pump_speed - cool_adj)
+            hvac_effort = max(0.3, hvac_effort - cool_adj)
+        elif residual < -0.05:
+            # BESS charge saturated — increase cooling to absorb power
+            throttle = 1.0
+            cool_adj = min(0.3, abs(residual) * self.cool_gain)
+            pump_speed = min(1.0, pump_speed + cool_adj)
+            hvac_effort = min(1.0, hvac_effort + cool_adj)
+        else:
+            throttle = 1.0
 
         return np.array([throttle, pump_speed, hvac_effort, bess_dispatch],
                         dtype=np.float32)

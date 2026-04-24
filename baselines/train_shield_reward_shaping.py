@@ -99,7 +99,7 @@ class ShieldRewardShapingWrapper(gym.Wrapper):
 
     def step(self, action):
         # Apply safety shield
-        obs_prev = self._last_obs if self._last_obs is not None else np.zeros(17, dtype=np.float32)
+        obs_prev = self._last_obs if self._last_obs is not None else np.zeros(18, dtype=np.float32)
         safe_action, was_modified, shield_info = self.shield.filter(action, obs_prev)
 
         obs, reward, terminated, truncated, info = self.env.step(safe_action)

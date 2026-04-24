@@ -212,11 +212,11 @@ class TestEnvFreqVoltageIntegration:
         return e
 
     def test_obs_shape_is_16(self, env):
-        assert env.observation_space.shape == (17,)
+        assert env.observation_space.shape == (18,)
 
     def test_reset_obs_shape(self, env):
         obs, _ = env.reset(seed=0)
-        assert obs.shape == (17,)
+        assert obs.shape == (18,)
 
     def test_reset_freq_nominal(self, env):
         obs, _ = env.reset(seed=0)
@@ -232,7 +232,7 @@ class TestEnvFreqVoltageIntegration:
 
     def test_step_obs_contains_freq_voltage(self, env):
         obs, _, _, _, _ = env.step(env.action_space.sample())
-        assert obs.shape == (17,)
+        assert obs.shape == (18,)
         assert math.isfinite(obs[14]), "freq_dev_norm not finite"
         assert math.isfinite(obs[15]), "v_pcc_pu not finite"
 

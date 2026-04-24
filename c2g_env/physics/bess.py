@@ -84,9 +84,9 @@ class _SimpleBESSModel:
         P_heat = R_int · I² ≈ R_int · (P / V_nom)²   (approximated at pack level)
     """
 
-    # Design specs (150 MWh / 50 MW — utility Megapack-class)
-    E_NOM_MWH    = 150.0
-    P_MAX_MW     = 50.0
+    # Design specs (15 MWh / 5 MW — constrained for multi-lever control)
+    E_NOM_MWH    = 15.0
+    P_MAX_MW     = 5.0
     SOC_INIT     = 0.50
     SOC_MIN      = 0.10
     SOC_MAX      = 0.95

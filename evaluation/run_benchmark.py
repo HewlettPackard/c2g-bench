@@ -22,6 +22,10 @@ Usage
   python evaluation/run_benchmark.py --agents rule_based ppo --n_episodes 10
   python evaluation/run_benchmark.py --model_dir trained_models/ppo_default_s42
 
+  # Hierarchical: macro agent + low-level controller
+  python evaluation/run_benchmark.py --agents rule_macro --inner-agents pid bang_bang rule_based
+  python evaluation/run_benchmark.py --agents rule_macro+pid rule_macro+bang_bang  # explicit combos
+
 Agents
 ------
   rule_based   — heuristic controller from baselines/rule_based_mpc.py
@@ -156,9 +160,28 @@ def _parse_fixed_action_args(values: list[str] | None) -> dict[str, float]:
     return fixed_action_values
 
 
+_INNER_CONTROLLERS = {"pid", "bang_bang", "rule_based", "mpc_fast"}
+
+
+def _make_inner_controller(name: str):
+    """Instantiate a low-level controller by name."""
+    if name == "pid":
+        return PIDController()
+    if name == "bang_bang":
+        return BangBangController()
+    if name == "rule_based":
+        return RuleBasedController()
+    if name == "mpc_fast":
+        return MPCFastController()
+    raise ValueError(f"Unknown inner controller '{name}'. Choose from: {_INNER_CONTROLLERS}")
+
+
 def _infer_agent_type(agent_name: str) -> str:
     """Classify benchmark agents as macro vs hardware controllers."""
     macro_agents = {"rule_macro", "random_macro", "mpc_macro", "milp", "ppo_macro"}
+    # Hierarchical combos like rule_macro+pid are also macro agents
+    if "+" in agent_name:
+        return "macro"
     return "macro" if agent_name in macro_agents else "hardware"
 
 
@@ -358,10 +381,11 @@ def run_macro_episode(
     seed: int,
     agent_type: str = "macro",
     episode_number: int = 0,
+    inner_action_fn: Any = None,
     record_transitions: bool = True,
 ) -> dict[str, float]:
     """Run one macro-level episode and return metrics dict."""
-    env = _make_macro_env(scenario=scenario)
+    env = _make_macro_env(scenario=scenario, inner_action_fn=inner_action_fn)
     obs, _ = env.reset(seed=seed)
     algo_for_logging = getattr(agent, "algo_name", "unknown")
 
@@ -495,11 +519,19 @@ def benchmark(
                 )
             env_for_space.reset(seed=0)
 
+            # ── Hierarchical combo agents (e.g. rule_macro+pid) ────
+            inner_action_fn = None
+            macro_part = agent_name
+            if "+" in agent_name:
+                macro_part, inner_part = agent_name.split("+", 1)
+                inner_ctrl = _make_inner_controller(inner_part)
+                inner_action_fn = lambda obs, _act, c=inner_ctrl: c.predict(obs)[0]
+
             if agent_name == "rule_based":
                 agent = RuleBasedController()
-            elif agent_name == "rule_macro":
+            elif macro_part == "rule_macro":
                 agent = RuleBasedMacroController()
-            elif agent_name == "random_macro":
+            elif macro_part == "random_macro":
                 agent = MacroRandomAgent(env_for_space, algo_name=agent_name)
             elif agent_name == "bang_bang":
                 agent = BangBangController()
@@ -507,9 +539,9 @@ def benchmark(
                 agent = PIDController()
             elif agent_name == "mpc_fast":
                 agent = MPCFastController()
-            elif agent_name == "mpc_macro":
+            elif macro_part == "mpc_macro":
                 agent = MPCMacroController()
-            elif agent_name == "milp":
+            elif macro_part == "milp":
                 agent = MILPDispatchController()
             elif agent_name == "random":
                 agent = RandomAgent(env_for_space, algo_name=agent_name)
@@ -590,6 +622,7 @@ def benchmark(
                         scenario=scenario,
                         seed=seed_start + ep,
                         episode_number=ep,
+                        inner_action_fn=inner_action_fn,
                         agent_type=agent_type,
                         record_transitions=record_transitions,
                     )
@@ -698,6 +731,13 @@ if __name__ == "__main__":
         default=SCENARIOS,
         choices=SCENARIOS,
     )
+    parser.add_argument(
+        "--inner-agents", nargs="+",
+        default=None,
+        help="Low-level controllers to pair with each macro agent "
+             "(e.g. --inner-agents pid bang_bang rule_based). "
+             "Creates hierarchical combos like rule_macro+pid.",
+    )
     parser.add_argument("--n_episodes", type=int, default=5)
     parser.add_argument("--seed",       type=int, default=100)
     parser.add_argument(
@@ -767,6 +807,16 @@ if __name__ == "__main__":
 
     unavailable_actions = tuple(args.disable_actions or ())
 
+    # Expand --inner-agents: for each macro agent × inner agent, add a combo
+    agents = list(args.agents)
+    if args.inner_agents:
+        macro_agents_in_list = [a for a in agents if _infer_agent_type(a) == "macro"]
+        for macro_name in macro_agents_in_list:
+            for inner_name in args.inner_agents:
+                combo = f"{macro_name}+{inner_name}"
+                if combo not in agents:
+                    agents.append(combo)
+
     llm_model_id = args.llm_model_id
     if "llm_policy" in set(args.agents):
         try:
@@ -775,7 +825,7 @@ if __name__ == "__main__":
             parser.error(str(exc))
 
     rows = benchmark(
-        agents     = args.agents,
+        agents     = agents,
         scenarios  = args.scenarios,
         n_episodes = args.n_episodes,
         seed_start = args.seed,
