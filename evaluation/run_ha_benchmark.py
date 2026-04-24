@@ -48,7 +48,7 @@ import numpy as np
 from tqdm import tqdm
 
 from c2g_env import C2GFastEnv
-from baselines.metrics_callback import C2GTransitionLoggerCallback
+from baselines.metrics_callback import C2GTransitionLoggerCallback, build_ablation_suffix
 from baselines.safety_shield import SafetyShield
 from baselines.safety.cbf_shield import CBFShield
 from baselines.safety.hj_shield import HJShield
@@ -70,16 +70,14 @@ _ACTION_BOUNDS: dict[str, tuple[float, float]] = {
 
 def _make_env(
     scenario: str,
-    unavailable_actions: tuple[str, ...] = (),
     fixed_action_values: dict[str, float] | None = None,
     **kwargs,
 ) -> C2GFastEnv:
-    """Return ActionAblationFastEnv when ablation flags are active, else C2GFastEnv."""
-    if unavailable_actions or fixed_action_values:
+    """Return ActionAblationFastEnv when fixed-action overrides are active."""
+    if fixed_action_values:
         from c2g_env.experiments.action_ablation_env import ActionAblationFastEnv
         return ActionAblationFastEnv(
             scenario=scenario,
-            unavailable_actions=unavailable_actions,
             fixed_action_values=fixed_action_values,
             **kwargs,
         )
@@ -288,13 +286,11 @@ def run_ha_episode(
     agent_name: str,
     episode_number: int,
     record_transitions: bool = False,
-    unavailable_actions: tuple[str, ...] = (),
     fixed_action_values: dict[str, float] | None = None,
 ) -> dict[str, float]:
     """Run one episode and return all 11 HA metrics."""
     env = _make_env(
         scenario=scenario,
-        unavailable_actions=unavailable_actions,
         fixed_action_values=fixed_action_values,
     )
     obs, _ = env.reset(seed=seed)
@@ -306,9 +302,8 @@ def run_ha_episode(
             output_dir="runs",
             algorithm_name=agent_name,
             scenario_name=scenario,
-            agent_type="ha",
+            agent_type="hardware_ha",
             episode_number=episode_number,
-            unavailable_actions=unavailable_actions,
             fixed_action_values=fixed_action_values,
             verbose=0,
         )
@@ -322,6 +317,11 @@ def run_ha_episode(
     margins: list[float] = []
     worst_margin = float("inf")
     bess_init_age = None
+    # Cumulative power metrics
+    cumul_p_pump_mw     : float = 0.0
+    cumul_p_hvac_mw     : float = 0.0
+    cumul_flex_reduction_kw : float = 0.0
+    cumul_bess_actual_kw : float = 0.0
 
     done = False
     n_steps = 0
@@ -377,6 +377,12 @@ def run_ha_episode(
         if tp is not None:
             throughputs.append(float(tp))
 
+        # Accumulate power metrics
+        cumul_p_pump_mw += float(info.get("p_pump_mw", 0.0))
+        cumul_p_hvac_mw += float(info.get("p_hvac_mw", 0.0))
+        cumul_flex_reduction_kw += float(info.get("flex_reduction_kw", 0.0))
+        cumul_bess_actual_kw += float(info.get("bess_actual_kw", 0.0))
+
         # BESS
         if bess_init_age is None:
             bess_init_age = float(info.get("bess_age_frac", 0.0))
@@ -404,6 +410,11 @@ def run_ha_episode(
         "constraint_margin": float(np.mean(margins)) if margins else 0.0,
         "worst_case_margin": worst_margin if worst_margin != float("inf") else 0.0,
         "computational_overhead_ms": shield_eval.mean_filter_time_ms,
+        # Cumulative power metrics
+        "cumul_p_pump_mw": cumul_p_pump_mw,
+        "cumul_p_hvac_mw": cumul_p_hvac_mw,
+        "cumul_flex_reduction_kw": cumul_flex_reduction_kw,
+        "cumul_bess_actual_kw": cumul_bess_actual_kw,
     }
 
 
@@ -432,7 +443,6 @@ def benchmark(
     seed_start: int,
     model_dir: str | None,
     record_transitions: bool = False,
-    unavailable_actions: tuple[str, ...] = (),
     fixed_action_values: dict[str, float] | None = None,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
@@ -458,7 +468,6 @@ def benchmark(
                     agent_name=agent_name,
                     episode_number=ep,
                     record_transitions=record_transitions,
-                    unavailable_actions=unavailable_actions,
                     fixed_action_values=fixed_action_values,
                 )
                 ep_metrics.append(m)
@@ -489,6 +498,24 @@ def benchmark(
             )
 
     return rows
+
+
+def _default_output_path(
+    agents: list[str],
+    scenarios: list[str],
+    fixed_action_values: dict[str, float] | None = None,
+) -> Path:
+    """Build a deterministic output path when --output is not provided."""
+    unique_agents = list(dict.fromkeys(agents))
+    unique_scenarios = list(dict.fromkeys(scenarios))
+
+    algo_tag = unique_agents[0] if len(unique_agents) == 1 else "multi"
+    scenario_tag = unique_scenarios[0] if len(unique_scenarios) == 1 else "multi"
+
+    ablation_suffix = build_ablation_suffix(fixed_action_values)
+    ablation_tag = ablation_suffix.lstrip("_") if ablation_suffix else "base"
+
+    return Path("evaluation") / "results" / f"{algo_tag}_{scenario_tag}_hardware_ha_{ablation_tag}.csv"
 
 
 def print_results_table(rows: list[dict[str, Any]]) -> None:
@@ -548,31 +575,25 @@ if __name__ == "__main__":
         help="Enable/disable per-step transition logging under runs/<algo>_<scenario>_ha/episode*.csv",
     )
     parser.add_argument(
-        "--disable-actions", "--disabled_actions",
-        nargs="*",
-        default=None,
-        choices=_VALID_ACTIONS,
-        help="Low-level actions to mark unavailable: throttle_batch pump_speed_A hvac_effort bess_dispatch",
-    )
-    parser.add_argument(
         "--fixed-action",
         action="append",
         default=[],
-        help="Optional fixed value for a disabled action, e.g. --fixed-action hvac_effort=0.8",
+        help="Optional fixed value for an action, e.g. --fixed-action hvac_effort=0.8",
     )
     parser.add_argument(
-        "--output", default="evaluation/ha_results.csv")
+        "--output",
+        default=None,
+        help=(
+            "Path to write the results CSV. If omitted, defaults to "
+            "evaluation/results/<algo>_<scenario>_HA_hardware_<ablation>.csv"
+        ),
+    )
     args = parser.parse_args()
-
-    if args.disable_actions is not None and len(args.disable_actions) == 0:
-        parser.error("--disable-actions/--disabled_actions was provided but no actions were listed.")
 
     try:
         fixed_action_values = _parse_fixed_action_args(args.fixed_action)
     except ValueError as exc:
         parser.error(str(exc))
-
-    unavailable_actions = tuple(args.disable_actions or ())
 
     if args.n_seeds > 1:
         # Multi-seed mode: run full benchmark per seed, tag each row
@@ -587,13 +608,21 @@ if __name__ == "__main__":
                 seed_start=seed,
                 model_dir=args.model_dir,
                 record_transitions=args.record_transitions,
-                unavailable_actions=unavailable_actions,
                 fixed_action_values=fixed_action_values)
             for r in rows:
                 r["seed"] = seed
             all_rows.extend(rows)
         print_results_table(all_rows)
-        save_csv(all_rows, Path(args.output))
+        output_path = (
+            Path(args.output)
+            if args.output
+            else _default_output_path(
+                agents=args.agents,
+                scenarios=args.scenarios,
+                fixed_action_values=fixed_action_values,
+            )
+        )
+        save_csv(all_rows, output_path)
     else:
         rows = benchmark(
             agents=args.agents,
@@ -602,7 +631,15 @@ if __name__ == "__main__":
             seed_start=args.seed,
             model_dir=args.model_dir,
             record_transitions=args.record_transitions,
-            unavailable_actions=unavailable_actions,
             fixed_action_values=fixed_action_values)
         print_results_table(rows)
-        save_csv(rows, Path(args.output))
+        output_path = (
+            Path(args.output)
+            if args.output
+            else _default_output_path(
+                agents=args.agents,
+                scenarios=args.scenarios,
+                fixed_action_values=fixed_action_values,
+            )
+        )
+        save_csv(rows, output_path)

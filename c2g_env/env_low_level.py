@@ -531,6 +531,7 @@ class C2GFastEnv(gym.Env):
             "avg_delay_steps":       w.avg_delay_steps,
             "is_spike":              w.is_spike_active,
             "pump_speed_A":          pump_speed_A,
+            "p_hvac_mw":             p_hvac_mw,
             "p_pump_mw":             p_pump_mw,
             "T_amb":                  self._thermal.T_amb,
             "weather_driven":          self._weather_driven,
