@@ -38,7 +38,7 @@ Metrics tracked per step (C2GTransitionLoggerCallback)
 State / Observation / Action Space
 -----------------------------------
 
-Observations (s_i / o_i, 17-D normalised):
+Observations (s_i / o_i, 18-D normalised):
   s_0 / o_0               temp_A_norm — Zone A (liquid-cooled GPU) temperature / T_safe
   s_1 / o_1               temp_B_norm — Zone B (air-cooled CPU) temperature / T_safe
   s_2 / o_2               bess_soc — Battery state of charge [0, 1]
@@ -56,6 +56,7 @@ Observations (s_i / o_i, 17-D normalised):
   s_14 / o_14             freq_dev_norm — Grid frequency deviation / 0.5 Hz
   s_15 / o_15             v_pcc_pu — PCC voltage in per-unit (Thévenin model)
   s_16 / o_16             backlog_norm — Deferred batch FIFO queue depth / p_flex_max
+    s_17 / o_17             committed_mw_norm — Current DR commitment / committed_mw_max
 
 Actions (a_i, 4-D continuous):
   a_0                     throttle_batch — DVFS throttle [0=full speed, 1=fully throttled]
@@ -92,6 +93,31 @@ STATE_COLUMNS = [
     "s_freq_dev_norm",
     "s_v_pcc_pu",
     "s_backlog_norm",
+    "s_committed_mw_norm",
+]
+
+# Macro-level state remains 19-D: the original 17 aggregated fast-env features
+# plus the 2 market signals. It does not include committed_mw_norm.
+STATE_COLUMNS_MACRO = [
+    "s_temp_A_norm",
+    "s_temp_B_norm",
+    "s_bess_soc",
+    "s_p_base_norm",
+    "s_p_flex_nom_norm",
+    "s_p_facility_norm",
+    "s_regd_signal",
+    "s_lmp_norm",
+    "s_grid_load_norm",
+    "s_is_spike",
+    "s_prev_throttle",
+    "s_prev_pump_speed",
+    "s_pue_norm",
+    "s_T_amb_norm",
+    "s_freq_dev_norm",
+    "s_v_pcc_pu",
+    "s_backlog_norm",
+    "s_rmcp_norm",      # obs[17]: RMCP ÷ rmcp_max
+    "s_reg_need_norm",  # obs[18]: reg need ÷ cap_max
 ]
 
 REWARD_COLUMNS = [
@@ -105,11 +131,26 @@ REWARD_COLUMNS = [
     "r_backlog",
 ]
 
+# Macro-level reward components
+REWARD_COLUMNS_MACRO = [
+    "total_reward",
+    "r_regulation",
+    "r_sub",
+    "r_elec",
+    "r_churn",
+]
+
 ACTION_NAMES = [
     "throttle_batch",
     "pump_speed_A",
     "hvac_effort",
     "bess_dispatch",
+]
+
+# Macro-level actions (2-D)
+ACTION_NAMES_MACRO = [
+    "commit_norm",
+    "bid_price",
 ]
 
 ACTION_SHORT_NAMES = {
@@ -119,8 +160,14 @@ ACTION_SHORT_NAMES = {
     "bess_dispatch": "BESS",
 }
 
+ACTION_SHORT_NAMES_MACRO = {
+    "commit_norm": "COMMIT",
+    "bid_price": "PRICE",
+}
+
 VALID_ACTIONS = tuple(ACTION_SHORT_NAMES.keys())
 STATE_NAMES = [col.removeprefix("s_") for col in STATE_COLUMNS]
+STATE_NAMES_MACRO = [col.removeprefix("s_") for col in STATE_COLUMNS_MACRO]
 
 
 def _format_action_value(value: float) -> str:
@@ -129,12 +176,11 @@ def _format_action_value(value: float) -> str:
 
 
 def _sorted_ablation_actions(
-    unavailable_actions: tuple[str, ...],
     fixed_action_values: dict[str, float],
 ) -> list[str]:
     # Sort by short action tag so suffixes are stable and human-readable
     # (for example BESS before THROTTLE).
-    action_names = set(unavailable_actions) | set(fixed_action_values.keys())
+    action_names = set(fixed_action_values.keys())
     return sorted(
         action_names,
         key=lambda name: ACTION_SHORT_NAMES.get(name, name.upper()),
@@ -142,22 +188,18 @@ def _sorted_ablation_actions(
 
 
 def build_ablation_suffix(
-    unavailable_actions: tuple[str, ...] | None,
     fixed_action_values: dict[str, float] | None,
 ) -> str:
-    unavailable = tuple(unavailable_actions or ())
     fixed = dict(fixed_action_values or {})
 
     tags: list[str] = []
-    for action_name in _sorted_ablation_actions(unavailable, fixed):
+    for action_name in _sorted_ablation_actions(fixed):
         short = ACTION_SHORT_NAMES.get(action_name, action_name.upper())
-        if action_name in unavailable:
-            tags.append(f"{short}_disabled")
         if action_name in fixed:
             value = _format_action_value(float(fixed[action_name]))
             tags.append(f"{short}_{value}")
 
-    return f"__{'_'.join(tags)}" if tags else ""
+    return f"_{'_'.join(tags)}" if tags else ""
 
 
 class C2GMetricsCallback(BaseCallback):
@@ -382,17 +424,19 @@ class C2GTransitionLoggerCallback(BaseCallback):
 
     # Semantic lookup tables for state, observation, and action indices
     STATE_NAMES = STATE_NAMES
+    STATE_NAMES_MACRO = STATE_NAMES_MACRO
     ACTION_NAMES = ACTION_NAMES
+    ACTION_NAMES_MACRO = ACTION_NAMES_MACRO
     ACTION_SHORT_NAMES = ACTION_SHORT_NAMES
+    ACTION_SHORT_NAMES_MACRO = ACTION_SHORT_NAMES_MACRO
 
     def __init__(
         self,
         output_dir: Path | str = "runs",
         algorithm_name: str | None = None,
         scenario_name: str | None = None,
-        agent_type: str | None = None,
+        agent_type: str = "hardware",
         episode_number: int | None = None,
-        unavailable_actions: tuple[str, ...] | None = None,
         fixed_action_values: dict[str, float] | None = None,
         verbose: int = 0,
     ):
@@ -401,7 +445,6 @@ class C2GTransitionLoggerCallback(BaseCallback):
         self._scenario_name = scenario_name
         self._agent_type = agent_type
         self._episode_number = episode_number
-        self._unavailable_actions = tuple(unavailable_actions or ())
         self._fixed_action_values = dict(fixed_action_values or {})
         self._active = True
 
@@ -412,6 +455,17 @@ class C2GTransitionLoggerCallback(BaseCallback):
         self._n_obs: int | None = None
         self._n_act: int | None = None
         self._reward_component_keys: list[str] = []
+
+        # Agent-aware schemas for transition logging.
+        if agent_type is None:
+            raise ValueError("agent_type must be either 'hardware' or 'macro'.")
+        agent_type = agent_type.lower()
+        if agent_type not in ["macro", "hardware", "hardware_ha"]:
+            raise ValueError(
+                f"Invalid agent_type '{agent_type}'. Expected one of ['macro', 'hardware']."
+            )
+        self._state_names = self.STATE_NAMES_MACRO if agent_type == "macro" else self.STATE_NAMES
+        self._action_names = self.ACTION_NAMES_MACRO if agent_type == "macro" else self.ACTION_NAMES
 
         self._global_step = 0
 
@@ -431,7 +485,7 @@ class C2GTransitionLoggerCallback(BaseCallback):
         self._output_dir.mkdir(parents=True, exist_ok=True)
 
     def _build_ablation_suffix(self) -> str:
-        return build_ablation_suffix(self._unavailable_actions, self._fixed_action_values)
+        return build_ablation_suffix(self._fixed_action_values)
 
     @staticmethod
     def _safe_name(value: str | None, default: str) -> str:
@@ -457,7 +511,7 @@ class C2GTransitionLoggerCallback(BaseCallback):
         scenario_tag = self._safe_name(self._scenario_name, "scenario")
         ablation_suffix = self._build_ablation_suffix()
         if self._episode_number is not None:
-            csv_name = f"episode{self._episode_number}_{ablation_suffix}.csv"
+            csv_name = f"episode{self._episode_number}{ablation_suffix}.csv"
         else:
             csv_name = f"episode_{ablation_suffix}.csv"
         csv_path = self._output_dir / csv_name
@@ -471,24 +525,24 @@ class C2GTransitionLoggerCallback(BaseCallback):
         cols = ["timestep"]
         
         # Map state indices to semantic names
-        for i in range(min(n_state, len(self.STATE_NAMES))):
-            cols.append(f"s_{self.STATE_NAMES[i]}")
+        for i in range(min(n_state, len(self._state_names))):
+            cols.append(f"s_{self._state_names[i]}")
         # Fall back to generic names if more states than documented
-        for i in range(len(self.STATE_NAMES), n_state):
+        for i in range(len(self._state_names), n_state):
             cols.append(f"s_{i}")
         
         # Map action indices to semantic names
-        for i in range(min(n_act, len(self.ACTION_NAMES))):
-            cols.append(f"a_{self.ACTION_NAMES[i]}")
+        for i in range(min(n_act, len(self._action_names))):
+            cols.append(f"a_{self._action_names[i]}")
         # Fall back to generic names if more actions than documented
-        for i in range(len(self.ACTION_NAMES), n_act):
+        for i in range(len(self._action_names), n_act):
             cols.append(f"a_{i}")
         
         # Map observation indices to semantic names
-        for i in range(min(n_obs, len(self.STATE_NAMES))):
-            cols.append(f"o_{self.STATE_NAMES[i]}")
+        for i in range(min(n_obs, len(self._state_names))):
+            cols.append(f"o_{self._state_names[i]}")
         # Fall back to generic names if more observations than documented
-        for i in range(len(self.STATE_NAMES), n_obs):
+        for i in range(len(self._state_names), n_obs):
             cols.append(f"o_{i}")
         
         cols += ["r"]
@@ -511,6 +565,11 @@ class C2GTransitionLoggerCallback(BaseCallback):
         if not self._active:
             return
 
+        if reward_components is not None:
+            reward_components = {
+                k.removeprefix("reward_"): v for k, v in reward_components.items()
+            }
+
         s = np.asarray(state, dtype=np.float32).reshape(-1)
         a = np.asarray(action, dtype=np.float32).reshape(-1)
         o = np.asarray(observation, dtype=np.float32).reshape(-1)
@@ -527,22 +586,22 @@ class C2GTransitionLoggerCallback(BaseCallback):
         
         # Map state values to semantic names
         for i, val in enumerate(s):
-            if i < len(self.STATE_NAMES):
-                row[f"s_{self.STATE_NAMES[i]}"] = float(val)
+            if i < len(self._state_names):
+                row[f"s_{self._state_names[i]}"] = float(val)
             else:
                 row[f"s_{i}"] = float(val)
         
         # Map action values to semantic names
         for i, val in enumerate(a):
-            if i < len(self.ACTION_NAMES):
-                row[f"a_{self.ACTION_NAMES[i]}"] = float(val)
+            if i < len(self._action_names):
+                row[f"a_{self._action_names[i]}"] = float(val)
             else:
                 row[f"a_{i}"] = float(val)
         
         # Map observation values to semantic names
         for i, val in enumerate(o):
-            if i < len(self.STATE_NAMES):
-                row[f"o_{self.STATE_NAMES[i]}"] = float(val)
+            if i < len(self._state_names):
+                row[f"o_{self._state_names[i]}"] = float(val)
             else:
                 row[f"o_{i}"] = float(val)
 

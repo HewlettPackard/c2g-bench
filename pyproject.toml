@@ -21,6 +21,7 @@ dependencies = [
     "pymoo>=0.6",
     "seaborn>=0.13.2",
     "matplotlib>=3.10.8",
+    "tqdm>=4.67.3",
 ]
 
 [project.optional-dependencies]

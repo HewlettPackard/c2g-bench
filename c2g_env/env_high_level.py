@@ -275,6 +275,10 @@ class C2GMacroEnv(gym.Env):
         bess_actuals  = []
         spike_any      = False
         backlog_norms  = []
+        flex_reductions = []
+        cool_deltas     = []
+        p_pumps         = []
+        p_hvacs         = []
         terminated     = False
         truncated      = False
         last_info: dict = {}
@@ -302,6 +306,10 @@ class C2GMacroEnv(gym.Env):
             load_norms.append(obs[8])   # grid_load_norm index
             track_errs.append(info["tracking_err_kw"])
             bess_actuals.append(info["bess_actual_kw"])
+            flex_reductions.append(info["flex_reduction_kw"])
+            cool_deltas.append(info["cool_delta_kw"])
+            p_pumps.append(info["p_pump_mw"])
+            p_hvacs.append(info["p_hvac_mw"])
             spike_any = spike_any or bool(info["is_spike"])
             backlog_norms.append(min(
                 info["backlog_kw"] / self._fast_env._workload.p_flex_max_kw, 2.0
@@ -404,6 +412,11 @@ class C2GMacroEnv(gym.Env):
             "sub_steps_run":         len(sub_rewards),
             "scenario":              self._scenario,
             "last_inner_info":       last_info,
+            "mean_flex_reduction_kw": float(np.mean(flex_reductions)),
+            "mean_bess_actual_kw":   float(np.mean(bess_actuals)),
+            "mean_cool_delta_kw":    float(np.mean(cool_deltas)),
+            "mean_p_pump_mw":        float(np.mean(p_pumps)),
+            "mean_p_hvac_mw":        float(np.mean(p_hvacs)),
             "reward_regulation":     r_regulation,
             "reward_sub":            r_sub,
             "reward_elec":           r_elec,
