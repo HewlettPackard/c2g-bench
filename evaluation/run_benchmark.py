@@ -23,7 +23,7 @@ Usage
   python evaluation/run_benchmark.py --model_dir trained_models/ppo_default_s42
 
   # Hierarchical: macro agent + low-level controller
-  python evaluation/run_benchmark.py --agents rule_macro --inner-agents pid bang_bang rule_based
+  python evaluation/run_benchmark.py --agents rule_macro --inner-agents random pid bang_bang rule_based
   python evaluation/run_benchmark.py --agents rule_macro+pid rule_macro+bang_bang  # explicit combos
 
 Agents
@@ -83,7 +83,6 @@ from baselines.safety_shield import SafetyShield
 
 SCENARIOS    = ["default", "scenario_a", "scenario_b", "scenario_c"]
 T_WARN_NORM  = 33.0 / 35.0   # normalised warning threshold
-DT_S         = 300            # seconds per tick
 _VALID_ACTIONS = ("throttle_batch", "pump_speed_A", "hvac_effort", "bess_dispatch")
 _ACTION_BOUNDS: dict[str, tuple[float, float]] = {
     "throttle_batch": (0.0, 1.0),
@@ -151,11 +150,15 @@ def _parse_fixed_action_args(values: list[str] | None) -> dict[str, float]:
     return fixed_action_values
 
 
-_INNER_CONTROLLERS = {"pid", "bang_bang", "rule_based", "mpc_fast"}
+_INNER_CONTROLLERS = {"random", "pid", "bang_bang", "rule_based", "mpc_fast"}
 
 
-def _make_inner_controller(name: str):
+def _make_inner_controller(name: str, env: "C2GFastEnv | None" = None):
     """Instantiate a low-level controller by name."""
+    if name == "random":
+        if env is None:
+            raise ValueError("env must be provided to build a random inner controller")
+        return RandomAgent(env)
     if name == "pid":
         return PIDController()
     if name == "bang_bang":
@@ -436,11 +439,12 @@ def run_macro_episode(
     tracking_errs: list[float] = []
     temp_a_maxes: list[float] = []
     temp_b_maxes: list[float] = []
-    # Cumulative power metrics
-    cumul_p_pump_mw     : float = 0.0
-    cumul_p_hvac_mw     : float = 0.0
-    cumul_flex_reduction_kw : float = 0.0
-    cumul_bess_actual_kw : float = 0.0
+    # Per-lever tracking contributions (mean across sub-steps, per macro tick)
+    flex_reductions: list[float] = []
+    bess_actuals: list[float] = []
+    cool_deltas: list[float] = []
+    p_pumps: list[float] = []
+    p_hvacs: list[float] = []
 
     done = False
     while not done:
@@ -473,11 +477,12 @@ def run_macro_episode(
         tracking_errs.append(float(info.get("mean_tracking_err", 0.0)) ** 2)
         temp_a_maxes.append(float(info.get("temp_A_max", 0.0)))
         temp_b_maxes.append(float(info.get("temp_B_max", 0.0)))
-        # Accumulate power metrics from macro env
-        cumul_p_pump_mw += float(info.get("p_pump_mw", 0.0))
-        cumul_p_hvac_mw += float(info.get("p_hvac_mw", 0.0))
-        cumul_flex_reduction_kw += float(info.get("flex_reduction_kw", 0.0))
-        cumul_bess_actual_kw += float(info.get("bess_actual_kw", 0.0))
+        # Per-lever tracking contributions (mean over 180 sub-steps)
+        flex_reductions.append(float(info.get("mean_flex_reduction_kw", 0.0)))
+        bess_actuals.append(float(info.get("mean_bess_actual_kw", 0.0)))
+        cool_deltas.append(float(info.get("mean_cool_delta_kw", 0.0)))
+        p_pumps.append(float(info.get("mean_p_pump_mw", 0.0)))
+        p_hvacs.append(float(info.get("mean_p_hvac_mw", 0.0)))
 
     if transition_logger is not None:
         transition_logger.close()
@@ -499,10 +504,11 @@ def run_macro_episode(
         "temp_B_max":           float(np.max(temp_b_maxes)) if temp_b_maxes else 0.0,
         "episode_length":       n_steps,
         "survived":             survived,
-        "cumul_p_pump_mw"   : cumul_p_pump_mw,
-        "cumul_p_hvac_mw"   : cumul_p_hvac_mw,
-        "cumul_flex_reduction_kw" : cumul_flex_reduction_kw,
-        "cumul_bess_actual_kw" : cumul_bess_actual_kw,
+        "mean_flex_kw":         float(np.mean(flex_reductions)) if flex_reductions else 0.0,
+        "mean_bess_kw":         float(np.mean(bess_actuals)) if bess_actuals else 0.0,
+        "mean_cool_delta_kw":   float(np.mean(cool_deltas)) if cool_deltas else 0.0,
+        "mean_p_pump_mw":       float(np.mean(p_pumps)) if p_pumps else 0.0,
+        "mean_p_hvac_mw":       float(np.mean(p_hvacs)) if p_hvacs else 0.0,
     }
 
 
@@ -545,7 +551,9 @@ def benchmark(
             macro_part = agent_name
             if "+" in agent_name:
                 macro_part, inner_part = agent_name.split("+", 1)
-                inner_ctrl = _make_inner_controller(inner_part)
+                inner_env = _make_env(scenario=scenario)
+                inner_env.reset(seed=0)
+                inner_ctrl = _make_inner_controller(inner_part, env=inner_env)
                 inner_action_fn = lambda obs, _act, c=inner_ctrl: c.predict(obs)[0]
 
             if agent_name == "rule_based":
@@ -665,7 +673,10 @@ def benchmark(
                     f"reward={agg['mean_reward']:7.2f}  "
                     f"accept_rate={agg['bid_acceptance_rate']:.3f}  "
                     f"reg_rev={agg['total_reg_revenue']:8.1f}  "
-                    f"survive={agg['survival_rate']:.2f}"
+                    f"survive={agg['survival_rate']:.2f}  "
+                    f"flex={agg['mean_flex_kw']:.0f}kW  "
+                    f"bess={agg['mean_bess_kw']:.0f}kW  "
+                    f"cool_d={agg['mean_cool_delta_kw']:.0f}kW"
                 )
             else:
                 tqdm.write(
