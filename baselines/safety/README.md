@@ -517,9 +517,9 @@ baselines/
 ├── train_mpcsf_ppo.py               # Tier 1: MPC-SF-PPO training
 ├── train_cpo.py                     # Tier 2: CPO training
 ├── train_shield_reward_shaping.py   # Tier 2: Shield reward shaping
-└── train_ha_c2g.py                  # Tier 3: HA-C2G full stack
-└── train_cbm_only.py                # Tier 3 Ablation: CBM only
-└── train_cbm_gate.py                # Tier 3 Ablation: CBM + gate (no shield)
+├── train_ha_c2g.py                  # Tier 3: HA-C2G full stack
+├── train_cbm_only.py                # Tier 3 Ablation: CBM only
+├── train_cbm_gate.py                # Tier 3 Ablation: CBM + gate (no shield)
 └── train_cbm_shield.py              # Tier 3 Ablation: CBM + shield (no gate)
 
 conf/algo/
@@ -528,19 +528,30 @@ conf/algo/
 ├── mpcsf_ppo.yaml
 ├── cpo.yaml
 ├── shield_reward_shaping.yaml
-└── ha_c2g.yaml
+├── ha_c2g.yaml
+├── cbm_only.yaml
+├── cbm_gate.yaml
+└── cbm_shield.yaml
 
 evaluation/
 ├── run_benchmark.py                 # Updated: +7 HA agent loaders
-├── run_ha_benchmark.py              # HA-specific benchmark (11 metrics)
+├── run_ha_benchmark.py              # HA-specific benchmark (11 metrics,
+│                                   #   multi-seed mode, transition logging,
+│                                   #   action ablations)
+├── statistical_analysis.py          # Bootstrap/t CIs, significance tests,
+│                                   #   effect sizes, LaTeX tables
+├── failure_analysis.py              # Constraint-level failures, worst-case
+│                                   #   traces, comparative ablations
 └── generate_ha_plots.py             # Pareto, radar, violin, bars, LaTeX
 
 scripts/
-└── run_sweep.sh                     # Updated: +Phases 12–18 for HA
+└── run_sweep.sh                     # Updated: HA phases through multi-seed
+                                     #   stats and failure analysis
 
 tests/
-└── test_ha_safety.py                # 61 tests (CBF, HJ, MPC, concepts,
-                                     #   gate, proof tree, cross-shield)
+└── test_ha_safety.py                # 82 tests (shields, concepts, gate,
+                                     #   proof tree, ablations, statistics,
+                                     #   failure analysis)
 ```
 
 ---
@@ -577,12 +588,54 @@ python3 -m pytest tests/test_ha_safety.py -v
 # Train a single HA method
 python3 baselines/train_cbf_ppo.py scenario=default experiment.seed=42
 
-# Run HA benchmark evaluation
-python3 evaluation/run_ha_benchmark.py --agents simplex cbf hj mpcsf --n_episodes 5
+# Train the flagship Tier-3 method
+python3 baselines/train_ha_c2g.py algo=ha_c2g scenario=default experiment.seed=42
 
-# Full sweep (all methods × all scenarios × 3 seeds)
+# Run HA benchmark evaluation for selected agents
+python3 evaluation/run_ha_benchmark.py \
+    --agents simplex_ppo cbf_ppo hj_ppo mpcsf_ppo ha_c2g cbm_only cbm_gate cbm_shield \
+    --scenarios default scenario_a scenario_b scenario_c \
+    --n_episodes 5
+
+# Multi-seed HA benchmark for confidence intervals / significance
+python3 evaluation/run_ha_benchmark.py \
+    --agents ha_c2g cbm_only cbm_gate cbm_shield \
+    --scenarios default scenario_b \
+    --n_episodes 5 \
+    --n_seeds 10 \
+    --output evaluation/ha_results_multiseed.csv
+
+# Optional transition logging during HA evaluation
+python3 evaluation/run_ha_benchmark.py \
+    --agents ha_c2g \
+    --scenarios default \
+    --n_episodes 1 \
+    --record_transitions
+
+# Optional action-ablation controls during HA evaluation
+python3 evaluation/run_ha_benchmark.py \
+    --agents ha_c2g \
+    --scenarios default \
+    --disable-actions hvac_effort bess_dispatch \
+    --fixed-action hvac_effort=0.8
+
+# Statistical analysis of multi-seed HA results
+python3 evaluation/statistical_analysis.py \
+    evaluation/ha_results_multiseed.csv \
+    --baseline ha_c2g \
+    --ci_method bootstrap \
+    --latex paper/tables/ha_benchmark_table.tex
+
+# Failure-case analysis (constraint-level and comparative ablations)
+python3 evaluation/failure_analysis.py \
+    --agents ha_c2g cbm_only cbm_gate cbm_shield \
+    --scenarios default scenario_b \
+    --n_seeds 10 \
+    --output evaluation/failure_analysis.json
+
+# Full sweep (training + HA benchmark + stats + failures)
 bash scripts/run_sweep.sh
 
 # Generate plots
-python3 evaluation/generate_ha_plots.py --csv results/ha_benchmark_results.csv
+python3 evaluation/generate_ha_plots.py --csv evaluation/ha_results_multiseed.csv
 ```
