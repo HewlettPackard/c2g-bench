@@ -83,6 +83,18 @@ from baselines.safety_shield import SafetyShield
 
 SCENARIOS    = ["default", "scenario_a", "scenario_b", "scenario_c"]
 T_WARN_NORM  = 33.0 / 35.0   # normalised warning threshold
+_PPO_LIKE_ALGOS = {
+    "ppo",
+    "ppo_lag",
+    "ppo_lagrangian",
+    "ppo_macro",
+    "cpo",
+    "reward_shaping",
+    "ha_c2g",
+    "cbm_only",
+    "cbm_gate",
+    "cbm_shield",
+}
 _VALID_ACTIONS = ("throttle_batch", "pump_speed_A", "hvac_effort", "bess_dispatch")
 _ACTION_BOUNDS: dict[str, tuple[float, float]] = {
     "throttle_batch": (0.0, 1.0),
@@ -231,30 +243,60 @@ class MacroRandomAgent:
 
 class SB3Agent:
     """Wraps a loaded SB3 model (PPO or SAC)."""
-    def __init__(self, model, algo_name: str):
+    def __init__(self, model, algo_name: str, obs_normalizer=None):
         self._model = model
         self.algo_name = algo_name
+        self._obs_normalizer = obs_normalizer
 
     def predict(self, obs: np.ndarray, deterministic: bool = True):
+        if self._obs_normalizer is not None:
+            obs = self._obs_normalizer.normalize_obs(np.asarray(obs, dtype=np.float32))
         return self._model.predict(obs, deterministic=deterministic)
 
 
-def load_sb3_agent(algo: str, scenario: str, seed: int, model_dir: str | None):
+def _resolve_sb3_spec(algo: str):
     from stable_baselines3 import PPO, SAC
-    algos = {"ppo": PPO, "sac": SAC}
-    cls = algos.get(algo.lower())
-    if cls is None:
-        raise ValueError(f"Unknown algo '{algo}'. Use ppo or sac.")
+
+    algo_key = algo.lower()
+    if algo_key == "sac":
+        return SAC, "sac", False
+    if algo_key in _PPO_LIKE_ALGOS:
+        train_key_map = {
+            "ppo_lag": "ppo_lagrangian",
+            "reward_shaping": "shield_reward_shaping",
+        }
+        return PPO, train_key_map.get(algo_key, algo_key), True
+    raise ValueError(f"Unknown algo '{algo}'. Use ppo, sac, ppo_lag, ppo_lagrangian, or a registered PPO-style benchmark agent.")
+
+
+def _maybe_load_obs_normalizer(stats_path: Path, scenario: str):
+    if not stats_path.exists():
+        return None
+
+    from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
+
+    vec_env = DummyVecEnv([lambda: C2GFastEnv(scenario=scenario)])
+    vec_norm = VecNormalize.load(str(stats_path), vec_env)
+    vec_norm.training = False
+    vec_norm.norm_reward = False
+    return vec_norm
+
+
+def load_sb3_agent(algo: str, scenario: str, seed: int, model_dir: str | None):
+    cls, train_key, should_restore_norm = _resolve_sb3_spec(algo)
     if model_dir:
         path = Path(model_dir) / "final_model"
     else:
-        path = Path("trained_models") / f"{algo}_{scenario}_s{seed}" / "final_model"
+        path = Path("trained_models") / f"{train_key}_{scenario}_s{seed}" / "final_model"
     if not path.with_suffix(".zip").exists():
         raise FileNotFoundError(
             f"No trained model at {path}.zip — run baselines/train_{algo}.py first."
         )
     model = cls.load(str(path))
-    return SB3Agent(model, algo_name=algo.lower())
+    obs_normalizer = None
+    if should_restore_norm:
+        obs_normalizer = _maybe_load_obs_normalizer(path.parent / "vec_normalize.pkl", scenario)
+    return SB3Agent(model, algo_name=algo.lower(), obs_normalizer=obs_normalizer)
 
 
 class EvolutionaryAgent:
@@ -277,12 +319,13 @@ class EvolutionaryAgent:
 
 class ShieldedSB3Agent:
     """Wraps an SB3 model with a runtime safety shield."""
-    def __init__(self, model, shield):
-        self._model = model
+    def __init__(self, base_agent, shield):
+        self._base_agent = base_agent
         self._shield = shield
+        self.algo_name = getattr(base_agent, "algo_name", "shielded_sb3")
 
     def predict(self, obs: np.ndarray, deterministic: bool = True):
-        action, state = self._model.predict(obs, deterministic=deterministic)
+        action, state = self._base_agent.predict(obs, deterministic=deterministic)
         safe_action, _, _ = self._shield.filter(action, obs)
         return safe_action, state
 
@@ -586,28 +629,28 @@ def benchmark(
             elif agent_name == "simplex_ppo":
                 try:
                     base = load_sb3_agent("ppo", scenario, seed_start, model_dir)
-                    agent = ShieldedSB3Agent(base._model, SafetyShield())
+                    agent = ShieldedSB3Agent(base, SafetyShield())
                 except FileNotFoundError as exc:
                     print(f"    SKIP: {exc}")
                     continue
             elif agent_name == "cbf_ppo":
                 try:
                     base = load_sb3_agent("ppo", scenario, seed_start, model_dir)
-                    agent = ShieldedSB3Agent(base._model, CBFShield())
+                    agent = ShieldedSB3Agent(base, CBFShield())
                 except FileNotFoundError as exc:
                     print(f"    SKIP: {exc}")
                     continue
             elif agent_name == "hj_ppo":
                 try:
                     base = load_sb3_agent("ppo", scenario, seed_start, model_dir)
-                    agent = ShieldedSB3Agent(base._model, HJShield(precompute=True))
+                    agent = ShieldedSB3Agent(base, HJShield(precompute=True))
                 except FileNotFoundError as exc:
                     print(f"    SKIP: {exc}")
                     continue
             elif agent_name == "mpcsf_ppo":
                 try:
                     base = load_sb3_agent("ppo", scenario, seed_start, model_dir)
-                    agent = ShieldedSB3Agent(base._model, MPCSafetyFilter())
+                    agent = ShieldedSB3Agent(base, MPCSafetyFilter())
                 except FileNotFoundError as exc:
                     print(f"    SKIP: {exc}")
                     continue
