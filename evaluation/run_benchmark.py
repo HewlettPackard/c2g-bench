@@ -654,9 +654,10 @@ def benchmark(
 
             elapsed = time.perf_counter() - t0
 
-            # Aggregate across episodes
+            # Aggregate across episodes (mean + std)
             keys = list(ep_metrics[0].keys())
             agg  = {k: float(np.mean([m[k] for m in ep_metrics])) for k in keys}
+            std  = {k: float(np.std([m[k] for m in ep_metrics], ddof=1)) if n_episodes > 1 else 0.0 for k in keys}
             agg["survival_rate"] = float(np.mean([m["survived"] for m in ep_metrics]))
 
             row = {
@@ -665,6 +666,7 @@ def benchmark(
                 "n_episodes"        : n_episodes,
                 "wall_time_s"       : round(elapsed, 2),
                 **{k: round(v, 4) for k, v in agg.items() if k != "survived"},
+                **{f"{k}_std": round(v, 4) for k, v in std.items() if k != "survived"},
             }
             rows.append(row)
             if agent_type == "macro":
