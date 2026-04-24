@@ -106,7 +106,7 @@ M_{\text{low}} = (\mathcal{S},\, \mathcal{A},\, P,\, R,\, \gamma,\, T)
 
 | Symbol | Definition |
 |--------|-----------|
-| $\mathcal{S} \subset \mathbb{R}^{17}$ | Normalised observation vector (see §5.2 for index definitions) |
+| $\mathcal{S} \subset \mathbb{R}^{18}$ | Normalised observation vector (see §5.2 for index definitions) |
 | $\mathcal{A} = [0,1]^3 \times [-1,1]$ | Continuous 4-D action: throttle, pump speed, HVAC effort, BESS dispatch |
 | $P(s_{t+1} \mid s_t, a_t)$ | Deterministic physics step + stochastic AR(1) RegD signal (see §2) |
 | $R(s_t, a_t)$ | 7-term scalar reward (see §5.3) |
@@ -198,7 +198,7 @@ The optimal policy learns this hierarchy: use BESS first (fast, free), borrow th
 | **BESS** | `action[3]` | [-1, 1] | Charge (−) / discharge (+) the 150 MWh battery |
 
 - **Action Space (4-D, continuous):** `[throttle_batch, pump_speed_A, hvac_effort, bess_dispatch]`
-- **Observation Space (17-D, normalised):**
+- **Observation Space (18-D, normalised):** 
   | Index | Name | Range | Description |
   |-------|------|-------|-------------|
   | 0 | `temp_A_norm` | [0, 2] | Zone A (liquid-cooled GPU) temperature / T_safe |
@@ -218,6 +218,7 @@ The optimal policy learns this hierarchy: use BESS first (fast, free), borrow th
   | 14 | `freq_dev_norm` | [-1, 1] | Normalised grid frequency deviation (swing equation) |
   | 15 | `v_pcc_pu` | [0, 1.1] | PCC voltage in per-unit (Thévenin model) |
   | 16 | `backlog_norm` | [0, 2] | Deferred batch queue depth / p_flex_max (Little's Law queue) |
+  | 17 | `committed_mw_norm` | [0, 1] | Current DR commitment / committed_mw_max|
 
 ### 5.3. The NeurIPS Evaluation Metric: The Tracking Reward
 
@@ -1119,7 +1120,10 @@ C2G-Macro/
 │
 ├── evaluation/                          # Benchmark auditing & analysis
 │   ├── run_benchmark.py                 # Standard benchmark: runs agents on all 4 scenarios
+│   │                                    # Outputs: CSV with cumulative power metrics at
+│   │                                    #   evaluation/results/{algo}_{scenario}_{agent_type}_{ablation}.csv
 │   ├── run_ha_benchmark.py              # HA safety benchmark: 11-metric evaluation set
+│   │                                    # Same cumulative power metrics as run_benchmark.py
 │   ├── generate_plots.py                # Publication-ready PDF/PNG figures
 │   ├── generate_ha_plots.py             # HA-specific: Pareto frontier, radar, violin plots
 │   ├── plot_episode_traces.py           # Per-episode trace analysis with ablation filtering
@@ -1175,7 +1179,10 @@ C2G-Macro/
 │   ├── test_critical_bug_fixes.py       # 50 tests (regression tests)
 │   ├── test_ablation.py                 # 18 tests (action ablation env)
 │   ├── test_readme_smoke.py             # 13 tests (README code snippet validation)
-│   └── test_datalogging.py              # 2 tests (transition logging)
+│   ├── test_datalogging.py              # 7 tests (transition logging schema + 5 smoke tests)
+│                                        #   Hardware vs macro column validation
+│                                        #   5 CLI smoke tests: rule_macro, rule_based,
+│                                        #   rule_based+BESS_ablation, ha_rule_based (variants)
 │
 └── figures/                             # Root-level figures (TensorBoard screenshot, etc.)
 ```
@@ -1299,53 +1306,60 @@ Results are written to `results/sweep_results.csv` (one row per run, upserted on
 ### Run benchmark evaluation directly
 
 Use the evaluation runners when you want targeted experiments instead of the full sweep.
-The `--disable-actions` and `--fixed-action` settings allow granular experimentation and control: you can remove individual physical levers, hold them at analyst-chosen setpoints, and run clean ablations to measure how much each actuator contributes to tracking, thermal safety, and robustness.
+The `--fixed-action` setting allows granular control experiments by pinning selected actuators to analyst-chosen setpoints.
+
+Unless --output path provided, results saved by default at:
+```
+evaluation/results/{algo}_{scenario}_{agent_type}_{ablation}.csv
+```
+e.g. `ppo_scenario_b_hardware_BESS_0.5.csv` stores evals for hardware PPO agent with fixed BESS ablation. Here `agent_type` denotes the transition-logging and output suffix for the evaluated controller, and can be `hardware`, `macro`, or `hardware_ha`.
+
+---
 
 #### Standard benchmark runner
 
+**Basic usage:**
 ```bash
 uv run evaluation/run_benchmark.py --agents rule_based bang_bang pid random
 uv run evaluation/run_benchmark.py --agents ppo sac --scenarios default scenario_b --n_episodes 10
-uv run evaluation/run_benchmark.py --agents ppo --record_transitions
-uv run evaluation/run_benchmark.py --agents ppo --no-record_transitions
-uv run evaluation/run_benchmark.py --disable-actions bess_dispatch hvac_effort
-uv run evaluation/run_benchmark.py --disable-actions hvac_effort --fixed-action hvac_effort=0.8
-uv run evaluation/run_benchmark.py --disable-actions bess_dispatch pump_speed_A \
-  --fixed-action bess_dispatch=-0.5 \
-  --fixed-action pump_speed_A=0.25
 ```
 
-Key options:
+**Transition Logging:**
+```bash
+uv run evaluation/run_benchmark.py --agents ppo --record_transitions
+```
 
+**Fixed-Action Ablations:**
+Pin physical actuators to fixed setpoints while the RL agent controls the remaining levers:
+```bash
+# Disable BESS, agent controls DVFS + cooling
+uv run evaluation/run_benchmark.py --fixed-action bess_dispatch=0.0
+
+# HVAC at 80%, BESS disabled, agent controls DVFS + pump
+uv run evaluation/run_benchmark.py \
+  --fixed-action hvac_effort=0.8 \
+  --fixed-action bess_dispatch=0.0
+```
+
+**Key Options:**
 - `--agents`: agents to evaluate
 - `--scenarios`: scenarios to run
 - `--n_episodes`: number of episodes per agent/scenario
-- `--seed`: starting seed
+- `--output`: output CSV path (auto-generated if omitted)
+- `--fixed-action action=value`: pin action to fixed setpoint for ablation studies
+- `--record_transitions` / `--no-record_transitions`: per-step transition logging (default: enabled)
+- `--seed`: starting seed (default: 42)
 - `--model_dir`: optional override for trained model directory
-- `--output`: output CSV path
-- `--record_transitions` / `--no-record_transitions`: enable or disable per-step transition logging
-- `--disable-actions`: mark low-level actions as unavailable
-- `--fixed-action action=value`: assign a fixed value to a disabled action
 
-When transition logging is enabled, per-step state, action, observation, and reward traces are written under `runs/<agent>_<scenario>_<agent_type>/episode*.csv`.
+When transition logging is enabled, per-step state, action, observation, and reward traces are written under `runs/<agent>_<scenario>_<agent_type>/episode*.csv`. The `agent_type` path component can be `hardware`, `macro`, or `hardware_ha`, depending on which evaluation runner produced the logs.
 
-Low-level action ranges in `C2GFastEnv` are continuous:
-
+**Action Bounds (continuous):**
 - `throttle_batch ∈ [0, 1]`
 - `pump_speed_A ∈ [0, 1]`
 - `hvac_effort ∈ [0, 1]`
 - `bess_dispatch ∈ [-1, 1]`
 
 Any `--fixed-action` value is interpreted as a continuous setpoint and clipped to the corresponding action bounds.
-
-If a disabled action has no explicit fixed value, the low-level environment uses:
-
-- `throttle_batch=1.0`: keep batch service fully available so the ablation removes the control authority of DVFS without artificially starving throughput.
-- `pump_speed_A=1.0`: keep the CDU pump at full speed so Zone A stays on its nominal cooling path when pump modulation is disabled.
-- `hvac_effort=1.0`: hold HVAC at maximum effort so disabling HVAC control does not confound the ablation with an avoidable under-cooling setting.
-- `bess_dispatch=0.0`: keep the battery idle so the BESS ablation removes both charging and discharging support from the control loop.
-
-These defaults are chosen to represent a stable, interpretable baseline in the C2G environments: nominal cooling remains available, IT service is not artificially restricted, and the removed actuator contributes no adaptive control signal.
 
 #### High-assurance benchmark runner
 
@@ -1354,8 +1368,8 @@ uv run evaluation/run_ha_benchmark.py --agents simplex_ppo cbf_ppo hj_ppo
 uv run evaluation/run_ha_benchmark.py --agents ha_c2g --scenarios default scenario_c --n_episodes 5
 uv run evaluation/run_ha_benchmark.py --agents cbf_ppo --record_transitions
 uv run evaluation/run_ha_benchmark.py --agents cbf_ppo --no-record_transitions
-uv run evaluation/run_ha_benchmark.py --disable-actions bess_dispatch
-uv run evaluation/run_ha_benchmark.py --disable-actions hvac_effort bess_dispatch \
+uv run evaluation/run_ha_benchmark.py --fixed-action bess_dispatch=0.0
+uv run evaluation/run_ha_benchmark.py \
   --fixed-action hvac_effort=0.9 \
   --fixed-action bess_dispatch=0.0
 ```
@@ -1369,16 +1383,13 @@ Key options:
 - `--model_dir`: optional override for trained model directory
 - `--output`: output CSV path
 - `--record_transitions` / `--no-record_transitions`: enable or disable per-step transition logging
-- `--disable-actions`: mark low-level actions as unavailable before shielded execution
-- `--fixed-action action=value`: assign a fixed value to a disabled action
+- `--fixed-action action=value`: assign a fixed value to an action
 
 Notes:
 
-- These settings allow granular experimentation and control for high-assurance studies as well: you can evaluate whether a safety method still works when specific actuators are removed or pinned to fixed operating points.
+- These settings allow granular experimentation and control for high-assurance studies as well: you can evaluate whether a safety method still works when specific actuators are pinned to fixed operating points.
 - The same continuous low-level action ranges apply here: `throttle_batch ∈ [0, 1]`, `pump_speed_A ∈ [0, 1]`, `hvac_effort ∈ [0, 1]`, and `bess_dispatch ∈ [-1, 1]`.
-- Disabled actions are overridden inside `C2GFastEnv` before dynamics are applied.
-- The environment logs both `requested_action` and `applied_action` in step info.
-- Action-effect metadata is exposed through `action_effects` and `action_unavailability` in the step info dict.
+- Fixed-action overrides are applied inside the low-level environment before dynamics are applied.
 - When enabled, transition logs are written under `runs/<agent>_<scenario>_ha/episode*.csv`.
 
 #### Plotting episode traces and statistics
@@ -1394,7 +1405,6 @@ uv run evaluation/plot_episode_traces.py --algoname bang_bang --scenario default
 # With ablation filters (plots only episodes matching specific disabled/fixed actions)
 uv run evaluation/plot_episode_traces.py \
   --algoname bang_bang \
-  --disable-actions bess_dispatch \
   --fixed-action pump_speed_A=0.25 \
   --scenario default \
   --agent-type macro

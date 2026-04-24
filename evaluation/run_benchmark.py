@@ -2,7 +2,7 @@
 evaluation/run_benchmark.py  --  Benchmark Evaluation Runner
 ============================================================
 Runs all registered agents on all 4 evaluation scenarios, collects
-per-episode metrics, and writes results to evaluation/results.csv.
+per-episode metrics, and writes under evaluation/results.
 
 Metrics (per episode)
 ---------------------
@@ -73,7 +73,7 @@ from baselines.pid_controller import PIDController
 from baselines.mpc_fast import MPCFastController
 from baselines.mpc_macro import MPCMacroController
 from baselines.milp_dispatch import MILPDispatchController
-from baselines.metrics_callback import C2GTransitionLoggerCallback
+from baselines.metrics_callback import C2GTransitionLoggerCallback, build_ablation_suffix
 
 # ── High-Assurance agents ────────────────────────────────────────
 from baselines.safety.cbf_shield import CBFShield, CBFShieldedAgent
@@ -95,16 +95,14 @@ _ACTION_BOUNDS: dict[str, tuple[float, float]] = {
 
 def _make_env(
     scenario: str,
-    unavailable_actions: tuple[str, ...] = (),
     fixed_action_values: dict[str, float] | None = None,
     **kwargs,
 ) -> C2GFastEnv:
-    """Return ActionAblationFastEnv when ablation flags are active, else C2GFastEnv."""
-    if unavailable_actions or fixed_action_values:
+    """Return ActionAblationFastEnv when fixed-action overrides are active."""
+    if fixed_action_values:
         from c2g_env.experiments.action_ablation_env import ActionAblationFastEnv
         return ActionAblationFastEnv(
             scenario=scenario,
-            unavailable_actions=unavailable_actions,
             fixed_action_values=fixed_action_values,
             **kwargs,
         )
@@ -176,6 +174,32 @@ def _infer_agent_type(agent_name: str) -> str:
     if "+" in agent_name:
         return "macro"
     return "macro" if agent_name in macro_agents else "hardware"
+
+
+def _default_output_path(
+    agents: list[str],
+    scenarios: list[str],
+    fixed_action_values: dict[str, float] | None = None,
+) -> Path:
+    """Build a deterministic output path when --output is not provided."""
+    unique_agents = list(dict.fromkeys(agents))
+    unique_scenarios = list(dict.fromkeys(scenarios))
+
+    algo_tag = unique_agents[0] if len(unique_agents) == 1 else "multi"
+    scenario_tag = unique_scenarios[0] if len(unique_scenarios) == 1 else "multi"
+
+    agent_types = {_infer_agent_type(name) for name in unique_agents}
+    if not agent_types:
+        agent_type_tag = "unknown"
+    elif len(agent_types) == 1:
+        agent_type_tag = next(iter(agent_types))
+    else:
+        agent_type_tag = "mixed"
+
+    ablation_suffix = build_ablation_suffix(fixed_action_values)
+    ablation_tag = ablation_suffix.lstrip("_") if ablation_suffix else "base"
+
+    return Path("evaluation") / "results" / f"{algo_tag}_{scenario_tag}_{agent_type_tag}_{ablation_tag}.csv"
 
 
 # ---------------------------------------------------------------------------
@@ -272,13 +296,11 @@ def run_episode(
     agent_type: str = "hardware",
     episode_number: int = 0,
     record_transitions: bool = True,
-    unavailable_actions: tuple[str, ...] = (),
     fixed_action_values: dict[str, float] | None = None,
 ) -> dict[str, float]:
     """Run one episode and return a metrics dict."""
     env = _make_env(
         scenario=scenario,
-        unavailable_actions=unavailable_actions,
         fixed_action_values=fixed_action_values,
     )
     obs, _ = env.reset(seed=seed)
@@ -292,7 +314,6 @@ def run_episode(
             scenario_name=scenario,
             agent_type=agent_type,
             episode_number=episode_number,
-            unavailable_actions=unavailable_actions,
             fixed_action_values=fixed_action_values,
             verbose=0,
         )
@@ -302,6 +323,11 @@ def run_episode(
     thermal_viols : int = 0
     throughputs   : list[float] = []
     bess_init_age : float | None = None
+    # Cumulative power metrics
+    cumul_p_pump_mw     : float = 0.0
+    cumul_p_hvac_mw     : float = 0.0
+    cumul_flex_reduction_kw : float = 0.0
+    cumul_bess_actual_kw : float = 0.0
 
     done = False
     while not done:
@@ -340,6 +366,12 @@ def run_episode(
         if tp is not None:
             throughputs.append(float(tp))
 
+        # Accumulate power metrics
+        cumul_p_pump_mw += float(info.get("p_pump_mw", 0.0))
+        cumul_p_hvac_mw += float(info.get("p_hvac_mw", 0.0))
+        cumul_flex_reduction_kw += float(info.get("flex_reduction_kw", 0.0))
+        cumul_bess_actual_kw += float(info.get("bess_actual_kw", 0.0))
+
         # BESS degradation
         if bess_init_age is None:
             bess_init_age = float(info.get("bess_age_frac", 0.0))
@@ -362,6 +394,10 @@ def run_episode(
         "bess_degradation"  : bess_degradation,
         "episode_length"    : n_ticks,
         "survived"          : survived,
+        "cumul_p_pump_mw"   : cumul_p_pump_mw,
+        "cumul_p_hvac_mw"   : cumul_p_hvac_mw,
+        "cumul_flex_reduction_kw" : cumul_flex_reduction_kw,
+        "cumul_bess_actual_kw" : cumul_bess_actual_kw,
     }
 
 
@@ -370,13 +406,27 @@ def run_macro_episode(
     scenario: str,
     seed: int,
     algo_name: str | None = None,
+    agent_type: str = "macro",
     episode_number: int = 0,
     inner_action_fn: Any = None,
+    record_transitions: bool = True,
 ) -> dict[str, float]:
     """Run one macro-level episode and return metrics dict."""
     env = _make_macro_env(scenario=scenario, inner_action_fn=inner_action_fn)
     obs, _ = env.reset(seed=seed)
+    algo_for_logging = getattr(agent, "algo_name", (algo_name or "unknown"))
 
+    transition_logger = None
+    if record_transitions:
+        transition_logger = C2GTransitionLoggerCallback(
+            output_dir="runs",
+            algorithm_name=algo_for_logging,
+            scenario_name=scenario,
+            agent_type=agent_type,
+            episode_number=episode_number,
+            fixed_action_values=None,
+            verbose=0,
+        )
     rewards: list[float] = []
     bids_accepted: list[float] = []
     reg_revenues: list[float] = []
@@ -386,12 +436,33 @@ def run_macro_episode(
     tracking_errs: list[float] = []
     temp_a_maxes: list[float] = []
     temp_b_maxes: list[float] = []
+    # Cumulative power metrics
+    cumul_p_pump_mw     : float = 0.0
+    cumul_p_hvac_mw     : float = 0.0
+    cumul_flex_reduction_kw : float = 0.0
+    cumul_bess_actual_kw : float = 0.0
 
     done = False
     while not done:
+        state = obs.copy()
         action, _ = agent.predict(obs, deterministic=True)
         obs, reward, terminated, truncated, info = env.step(action)
         done = terminated or truncated
+
+        if transition_logger is not None:
+            reward_components = {
+                k: info.get(k, 0.0) for k in (
+                    "reward_regulation","reward_sub", "reward_elec",  "reward_churn"
+                )
+            }
+            transition_logger.record_transition(
+                state=state,
+                action=action,
+                observation=obs,
+                reward=float(reward),
+                done=done,
+                reward_components=reward_components,
+            )
 
         rewards.append(float(reward))
         bids_accepted.append(float(info.get("bid_accepted", False)))
@@ -402,6 +473,14 @@ def run_macro_episode(
         tracking_errs.append(float(info.get("mean_tracking_err", 0.0)) ** 2)
         temp_a_maxes.append(float(info.get("temp_A_max", 0.0)))
         temp_b_maxes.append(float(info.get("temp_B_max", 0.0)))
+        # Accumulate power metrics from macro env
+        cumul_p_pump_mw += float(info.get("p_pump_mw", 0.0))
+        cumul_p_hvac_mw += float(info.get("p_hvac_mw", 0.0))
+        cumul_flex_reduction_kw += float(info.get("flex_reduction_kw", 0.0))
+        cumul_bess_actual_kw += float(info.get("bess_actual_kw", 0.0))
+
+    if transition_logger is not None:
+        transition_logger.close()
 
     n_steps = len(rewards)
     macro_ticks_full = env._episode_macro_ticks
@@ -420,6 +499,10 @@ def run_macro_episode(
         "temp_B_max":           float(np.max(temp_b_maxes)) if temp_b_maxes else 0.0,
         "episode_length":       n_steps,
         "survived":             survived,
+        "cumul_p_pump_mw"   : cumul_p_pump_mw,
+        "cumul_p_hvac_mw"   : cumul_p_hvac_mw,
+        "cumul_flex_reduction_kw" : cumul_flex_reduction_kw,
+        "cumul_bess_actual_kw" : cumul_bess_actual_kw,
     }
 
 
@@ -430,7 +513,6 @@ def benchmark(
     seed_start  : int,
     model_dir   : str | None,
     record_transitions: bool = True,
-    unavailable_actions: tuple[str, ...] = (),
     fixed_action_values: dict[str, float] | None = None,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
@@ -454,7 +536,6 @@ def benchmark(
             else:
                 env_for_space = _make_env(
                     scenario=scenario,
-                    unavailable_actions=unavailable_actions,
                     fixed_action_values=fixed_action_values,
                 )
             env_for_space.reset(seed=0)
@@ -546,8 +627,10 @@ def benchmark(
                         agent=agent,
                         scenario=scenario,
                         seed=seed_start + ep,
+                        agent_type=agent_type,
                         episode_number=ep,
                         inner_action_fn=inner_action_fn,
+                        record_transitions=record_transitions,
                     )
                 else:
                     m = run_episode(
@@ -557,7 +640,6 @@ def benchmark(
                         agent_type=agent_type,
                         episode_number=ep,
                         record_transitions=record_transitions,
-                        unavailable_actions=unavailable_actions,
                         fixed_action_values=fixed_action_values,
                     )
                 ep_metrics.append(m)
@@ -667,8 +749,11 @@ if __name__ == "__main__":
         help="Override model directory for SB3 agents (optional)",
     )
     parser.add_argument(
-        "--output", default="evaluation/results.csv",
-        help="Path to write the results CSV",
+        "--output", default=None,
+        help=(
+            "Path to write the results CSV. If omitted, defaults to "
+            "evaluation/results/algoname_scenario_agenttype_ablation.csv"
+        ),
     )
     parser.add_argument(
         "--record_transitions",
@@ -677,29 +762,22 @@ if __name__ == "__main__":
         help="Enable/disable per-step transition logging under runs/<algo>_<scenario>_<agent>/transitions_<episode>.csv",
     )
     parser.add_argument(
-        "--disable-actions", "--disabled_actions",
-        nargs="*",
-        default=None,
-        choices=_VALID_ACTIONS,
-        help="Low-level actions to mark unavailable: throttle_batch pump_speed_A hvac_effort bess_dispatch",
-    )
-    parser.add_argument(
         "--fixed-action",
         action="append",
         default=[],
-        help="Optional fixed value for a disabled action, e.g. --fixed-action hvac_effort=0.8",
+        help="Optional fixed value for an action, e.g. --fixed-action hvac_effort=0.8",
     )
     args = parser.parse_args()
 
-    if args.disable_actions is not None and len(args.disable_actions) == 0:
-        parser.error("--disable-actions/--disabled_actions was provided but no actions were listed.")
+    project_root = Path(__file__).resolve().parent.parent
+    evaluation_results_dir = project_root / "evaluation" / "results"
+    if not (evaluation_results_dir.exists() and evaluation_results_dir.is_dir()):
+        evaluation_results_dir.mkdir(parents=True, exist_ok=True)
 
     try:
         fixed_action_values = _parse_fixed_action_args(args.fixed_action)
     except ValueError as exc:
         parser.error(str(exc))
-
-    unavailable_actions = tuple(args.disable_actions or ())
 
     # Expand --inner-agents: for each macro agent × inner agent, add a combo
     agents = list(args.agents)
@@ -718,8 +796,16 @@ if __name__ == "__main__":
         seed_start = args.seed,
         model_dir  = args.model_dir,
         record_transitions = args.record_transitions,
-        unavailable_actions = unavailable_actions,
         fixed_action_values = fixed_action_values,
     )
     print_results_table(rows)
-    save_csv(rows, Path(args.output))
+    output_path = (
+        Path(args.output)
+        if args.output
+        else _default_output_path(
+            agents=agents,
+            scenarios=args.scenarios,
+            fixed_action_values=fixed_action_values,
+        )
+    )
+    save_csv(rows, output_path)

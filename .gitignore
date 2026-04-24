@@ -51,3 +51,5 @@ paper/*.synctex.gz
 results/sweep_results.csv
 results/sweep_summary.csv
 .github
+c2g_paper_04_22.pdf
+
