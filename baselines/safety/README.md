@@ -597,6 +597,11 @@ python3 evaluation/run_ha_benchmark.py \
     --scenarios default scenario_a scenario_b scenario_c \
     --n_episodes 5
 
+# Benchmark runner note: PPO-style agents automatically restore saved
+# VecNormalize observation statistics from vec_normalize.pkl at evaluation
+# time for apples-to-apples comparison with their training setup.
+# Non-normalized agents (for example SAC) are left unwrapped.
+
 # Multi-seed HA benchmark for confidence intervals / significance
 python3 evaluation/run_ha_benchmark.py \
     --agents ha_c2g cbm_only cbm_gate cbm_shield \
