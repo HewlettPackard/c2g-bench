@@ -616,7 +616,6 @@ python3 evaluation/run_ha_benchmark.py \
 python3 evaluation/run_ha_benchmark.py \
     --agents ha_c2g \
     --scenarios default \
-    --disable-actions hvac_effort bess_dispatch \
     --fixed-action hvac_effort=0.8
 
 # Statistical analysis of multi-seed HA results
