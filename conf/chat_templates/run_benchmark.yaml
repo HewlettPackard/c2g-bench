@@ -2,24 +2,25 @@ hardware_system_prompt: |
   You control a data center at a 5-second tick. Output one JSON action per tick.
   Episode length: 17,280 ticks (24 h). Episode ends early if any HARD CONSTRAINT is breached.
 
-  ── STATE (17 keys in state_json) ──────────────────────────────────────────
-  temp_A_norm     Zone A temperature ÷ 35°C      [0–1]   DANGER ≥ 0.943 (33°C), FATAL ≥ 1.0
-  temp_B_norm     Zone B temperature ÷ 35°C      [0–1]   same thresholds as temp_A_norm
-  bess_soc        Battery state of charge         [0–1]   penalty below 0.12; keep ≥ 0.15
-  p_base_norm     Base IT load ÷ capacity         [0–2]
-  p_flex_nom_norm Flexible batch capacity norm    [0–2]
-  p_facility_norm Total facility power norm       [0–2]
-  regd_signal     Grid regulation signal          [-1–1]  +ve = grid needs power; −ve = surplus
-  lmp_norm        Electricity price norm          [0–1]   high = expensive to run jobs; avoid high p_facility
-  grid_load_norm  System-wide grid demand norm    [0–1]
-  is_spike        GenAI inference spike active    {0,1}
-  prev_throttle   throttle_batch last tick        [0–1]
-  prev_pump_speed pump_speed_A last tick          [0–1]
-  pue_norm        Power Usage Effectiveness norm  [0–1]
-  T_amb_norm      Outdoor temperature norm        [0–1]   high = passive cooling weak
-  freq_dev_norm   Frequency deviation norm        [-1–1]  FATAL |val| ≥ 1.0 (±0.5 Hz)
-  v_pcc_pu        Grid voltage per-unit           [pu]    penalty <0.95 or >1.05; FATAL <0.90
-  backlog_norm    Batch job queue backlog norm     [0–2]   high = SLA risk
+  ── STATE (18 keys in state_json) ──────────────────────────────────────────
+  temp_A_norm        Zone A temperature ÷ 35°C      [0–1]   DANGER ≥ 0.943 (33°C), FATAL ≥ 1.0
+  temp_B_norm        Zone B temperature ÷ 35°C      [0–1]   same thresholds as temp_A_norm
+  bess_soc           Battery state of charge         [0–1]   penalty below 0.12; keep ≥ 0.15
+  p_base_norm        Base IT load ÷ capacity         [0–2]
+  p_flex_nom_norm    Flexible batch capacity norm    [0–2]
+  p_facility_norm    Total facility power norm       [0–2]
+  regd_signal        Grid regulation signal          [-1–1]  +ve = grid needs power; −ve = surplus
+  lmp_norm           Electricity price norm          [0–1]   high = expensive to run jobs; avoid high p_facility
+  grid_load_norm     System-wide grid demand norm    [0–1]
+  is_spike           GenAI inference spike active    {0,1}
+  prev_throttle      throttle_batch last tick        [0–1]
+  prev_pump_speed    pump_speed_A last tick          [0–1]
+  pue_norm           Power Usage Effectiveness norm  [0–1]
+  T_amb_norm         Outdoor temperature norm        [0–1]   high = passive cooling weak
+  freq_dev_norm      Frequency deviation norm        [-1–1]  FATAL |val| ≥ 1.0 (±0.5 Hz)
+  v_pcc_pu           Grid voltage per-unit           [pu]    penalty <0.95 or >1.05; FATAL <0.90
+  backlog_norm       Batch job queue backlog norm     [0–2]   high = SLA risk
+  committed_mw_norm  Current DR commitment ÷ max     [0–1]   how much regulation capacity is committed this tick
 
   ── REWARD (per tick) ──────────────────────────────────────────────────────
   r =  +1.0 × throttle_batch
@@ -65,22 +66,24 @@ hardware_system_prompt: |
       excess=(max(temp_A_norm,temp_B_norm)-0.943)/(0.98-0.943)
       hvac_effort=min(1.0,0.6+excess), pump_speed_A=min(1.0,0.7+excess), throttle_batch=max(0.0,1.0-excess)
   Regulation/BESS rule:
-    [clip(x,lo,hi) clamps x to [lo,hi]]
-    if |regd_signal| >= 0.10: bess_dispatch=clip(2.0*regd_signal,-1,1)
-    if bess_soc < 0.15 and bess_dispatch > 0: scale discharge down toward 0
-    if bess_soc > 0.80 and bess_dispatch < 0: scale charge down toward 0
+    [clip(x,lo,hi) clamps x to [lo,hi]; SIGN: +1=charge←grid, -1=discharge→grid]
+    if |regd_signal| >= 0.10: bess_dispatch=clip(-2.0*regd_signal,-1,1)
+      [regd_signal>0 → grid needs power → dispatch bess_dispatch<0 (discharge); regd_signal<0 → surplus → bess_dispatch>0 (charge)]
+    if bess_soc < 0.15 and bess_dispatch < 0: scale bess_dispatch toward 0 (avoid draining low battery)
+    if bess_soc > 0.80 and bess_dispatch > 0: scale bess_dispatch toward 0 (avoid overcharging)
   Extra heuristics from classical RBC:
     if regd_signal > 0.4 and bess_soc > 0.25 and max(temp_A_norm,temp_B_norm) < 0.943: pump_speed_A=max(0.3,pump_speed_A-0.3*regd_signal)
     if regd_signal > 0.3 and bess_soc < 0.20 and is_spike==0: throttle_batch=min(throttle_batch,max(0.0,1.0-regd_signal))
-    if |regd_signal| < 0.10 and bess_soc < 0.40: bess_dispatch=-0.3
+    if |regd_signal| < 0.10 and bess_soc < 0.40: bess_dispatch=+0.3  [opportunistic charge when idle]
 
 hardware_user_prompt: |
   Scenario: {scenario}
 
-  Current normalized system state (17-D, keyed by name):
+  Current normalized system state (18-D, keyed by name):
   {state_json}
 
-  Respond with ONLY a JSON object — no explanation, no markdown, no extra text:
+  Respond with ONLY a valid JSON object — no explanation, no markdown, no extra text.
+  Use EXACTLY these four key names (copy them verbatim):
   {{
     "throttle_batch": <float in [0, 1]>,
     "pump_speed_A": <float in [0, 1]>,

@@ -12,8 +12,8 @@ Metrics (per episode)
   thermal_viol_rate   — fraction of ticks with temp > T_warn (33°C)
   throughput_ratio    — mean(p_flex_kw / p_flex_nom_kw) over episode
   bess_degradation    — cumulative cycle ageing fraction * 1e4
-  episode_length      — ticks in episode (< 288 means thermal termination)
-  survival_rate       — fraction of episodes that ran to full 288 ticks
+  episode_length      — ticks in episode (< episode_ticks means early termination)
+  survival_rate       — fraction of episodes that ran to full episode_ticks ticks
 
 Usage
 -----
@@ -76,7 +76,6 @@ from baselines.mpc_macro import MPCMacroController
 from baselines.milp_dispatch import MILPDispatchController
 from baselines.metrics_callback import C2GTransitionLoggerCallback, build_ablation_suffix, STATE_COLUMNS
 from baselines.train_llm_agents import (
-    COMMIT_MW,
     LLMPolicyAgent,
     load_prompt_templates,
     validate_llm_model_id,
@@ -395,8 +394,8 @@ def run_episode(
     bess_final_age = float(info.get("bess_age_frac", bess_init_age or 0.0))
     bess_degradation = (bess_final_age - (bess_init_age or 0.0)) * 1e4
 
-    n_ticks    = len(rewards)
-    survived   = 1.0 if n_ticks >= 288 else 0.0
+    n_ticks = len(rewards)
+    survived   = 1.0 if n_ticks >= env._episode_ticks else 0.0
 
     return {
         "mean_reward"       : float(np.mean(rewards)),
@@ -534,6 +533,7 @@ def benchmark(
     record_transitions: bool = True,
     fixed_action_values: dict[str, float] | None = None,
     llm_model_id: str | None = None,
+    llm_api_base: str = "http://localhost:8000/v1",
     llm_mode: str = "hardware",
     llm_template_path: str = "conf/chat_templates/run_benchmark.yaml",
     llm_max_new_tokens: int = 256,
@@ -618,7 +618,7 @@ def benchmark(
                         state_names=state_names,
                         max_new_tokens=llm_max_new_tokens,
                         temperature=llm_temperature,
-                        committed_mw=COMMIT_MW,
+                        api_base=llm_api_base,
                     )
                 except Exception as exc:
                     print(f"    SKIP: Failed to initialize llm_policy agent: {exc}")
@@ -825,7 +825,12 @@ if __name__ == "__main__":
     parser.add_argument(
         "--llm-model-id",
         default="HuggingFaceTB/SmolLM2-360M-Instruct",
-        help="Transformers model id for llm_policy agent",
+        help="Model name to query on vLLM server (e.g., org/model)",
+    )
+    parser.add_argument(
+        "--llm-api-base",
+        default="http://localhost:8000/v1",
+        help="vLLM server base URL for OpenAI-compatible API",
     )
     parser.add_argument(
         "--llm-mode",
@@ -841,8 +846,11 @@ if __name__ == "__main__":
     parser.add_argument(
         "--llm-max-new-tokens",
         type=int,
-        default=256,
-        help="Max new tokens for llm_policy generation",
+        default=16384,
+        help="Max new tokens for llm_policy generation. For reasoning models (e.g. Qwen3), "
+             "this budget is shared between the <think> chain and the final JSON output. "
+             "16384 allows ~8K for thinking and ~8K for output. "
+             "Qwen3-4B's context window is 32K; max usable is ~32768 minus prompt length.",
     )
     parser.add_argument(
         "--llm-temperature",
@@ -888,6 +896,7 @@ if __name__ == "__main__":
         record_transitions = args.record_transitions,
         fixed_action_values = fixed_action_values,
         llm_model_id = llm_model_id,
+        llm_api_base = args.llm_api_base,
         llm_mode = args.llm_mode,
         llm_template_path = args.llm_template_path,
         llm_max_new_tokens = args.llm_max_new_tokens,

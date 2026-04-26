@@ -22,9 +22,13 @@ dependencies = [
     "seaborn>=0.13.2",
     "matplotlib>=3.10.8",
     "tqdm>=4.67.3",
+    "openai>=1.0",
 ]
 
 [project.optional-dependencies]
+llm = [
+    "openai>=1.0",
+]
 pysam = [
     # Must install separately; binaries are platform-specific.
     # See: https://nrel-pysam.readthedocs.io/

@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import urllib.request
 import warnings
 from pathlib import Path
 from typing import Any
@@ -22,68 +23,65 @@ import yaml
 
 from c2g_env import C2GFastEnv
 
-# Suppress transformers and tokenizers warnings
-os.environ["TRANSFORMERS_VERBOSITY"] = "error"
-os.environ["TOKENIZERS_PARALLELISM"] = "false"
-warnings.filterwarnings("ignore", category=UserWarning, module="transformers")
-warnings.filterwarnings("ignore", category=FutureWarning, module="transformers")
-
 
 # ──────────────────────────────────────────────────────────────────
 # LLM Agent Helper Functions
 # ──────────────────────────────────────────────────────────────────
 
-def extract_json(text: str) -> dict[str, Any]:
-    """Extract JSON object from LLM-generated text."""
+def extract_json(
+    text: str,
+    field_order: list[str] | None = None,
+    bounds: dict[str, tuple[float, float]] | None = None,
+    previous_by_field: dict[str, float] | None = None,
+) -> dict[str, Any]:
+    """Extract and sanitize JSON fields with optional per-field fallback.
+
+    If ``field_order`` is provided, each field is converted to a finite float.
+    Invalid values (including NaN/Inf) reuse ``previous_by_field[field]`` when
+    available; otherwise a ValueError is raised to terminate the episode cleanly.
+    """
     match = re.search(r"\{.*\}", text, flags=re.DOTALL)
-    if not match:
-        return {}
-    try:
-        return json.loads(match.group(0))
-    except json.JSONDecodeError:
-        return {}
+    raw: dict[str, Any] = {}
+    if match:
+        try:
+            raw = json.loads(match.group(0))
+        except json.JSONDecodeError:
+            pass
 
+    if field_order is None:
+        return raw
 
-def _get_default_hardware_action() -> np.ndarray:
-    """Return hardware fallback action from ablation defaults when available.
-
-    Order: [throttle_batch, pump_speed_A, hvac_effort, bess_dispatch].
-    """
-    try:
-        from c2g_env.experiments.action_ablation_env import ActionAblationFastEnv
-
-        d = ActionAblationFastEnv.ABLATION_DEFAULTS
-        return np.array(
-            [
-                float(d["throttle_batch"]),
-                float(d["pump_speed_A"]),
-                float(d["hvac_effort"]),
-                float(d["bess_dispatch"]),
-            ],
-            dtype=np.float32,
+    if not raw and previous_by_field:
+        warnings.warn(
+            "LLM returned no parseable JSON; falling back to previous action values.",
+            RuntimeWarning,
+            stacklevel=3,
         )
-    except Exception:
-        # Fallback if ablation env import fails for any reason.
-        return np.array([1.0, 1.0, 1.0, 0.0], dtype=np.float32)
+
+    out: dict[str, float] = {}
+    for field in field_order:
+        parsed = safe_float_or_none(raw.get(field))
+        if parsed is None:
+            if previous_by_field is not None and field in previous_by_field:
+                parsed = float(previous_by_field[field])
+            else:
+                raise ValueError(
+                    f"LLM field '{field}' is missing/invalid and no previous value is available."
+                )
+
+        low, high = bounds[field] if bounds and field in bounds else (-np.inf, np.inf)
+        out[field] = float(np.clip(parsed, low, high))
+
+    return out
 
 
-def _get_default_macro_action() -> np.ndarray:
-    """Return safe default action for macro mode (moderate bidding).
-    
-    Action components:
-    - commit_norm=0.5: moderate commitment level
-    - bid_price_norm=0.5: moderate bidding price
-    """
-    return np.array([0.5, 0.5], dtype=np.float32)
-
-
-def safe_float(value: Any, default: float) -> float:
-    """Safely convert value to float with fallback default."""
+def safe_float_or_none(value: Any) -> float | None:
+    """Safely convert value to float; return None for invalid/non-finite values."""
     try:
         out = float(value)
     except (TypeError, ValueError):
-        return default
-    return out if np.isfinite(out) else default
+        return None
+    return out if np.isfinite(out) else None
 
 
 def obs_to_dict(obs: np.ndarray, state_names: list[str]) -> dict[str, float]:
@@ -100,7 +98,6 @@ def build_prompt(
     mode_prompts: dict[str, str],
     state_dict: dict[str, float],
     scenario: str,
-    mode: str,
 ) -> str:
     """Build full prompt from system and user prompts with state context."""
     system_prompt = mode_prompts["system"]
@@ -109,28 +106,49 @@ def build_prompt(
 
 
 def generate_structured(
-    generator: Any,
+    client: Any,
+    model_name: str,
     prompt: str,
     max_new_tokens: int,
     temperature: float,
+    field_order: list[str] | None = None,
+    bounds: dict[str, tuple[float, float]] | None = None,
+    previous_by_field: dict[str, float] | None = None,
 ) -> dict[str, Any]:
-    """Generate structured JSON response from LLM via text-generation pipeline."""
-    do_sample = temperature > 0.0
-    kwargs: dict[str, Any] = {
-        "max_new_tokens": max_new_tokens,
-        "do_sample": do_sample,
-        "return_full_text": False,
-        "truncation": True,
-    }
-    if do_sample:
-        kwargs["temperature"] = temperature
-
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        outputs = generator(prompt, **kwargs)
-    
-    text = outputs[0].get("generated_text", "") if outputs else ""
-    return extract_json(text)
+    """Generate structured JSON response from LLM via vLLM server (OpenAI-compatible API)."""
+    try:
+        response = client.chat.completions.create(
+            model=model_name,
+            messages=[
+                {"role": "user", "content": prompt}
+            ],
+            max_tokens=max(1, int(max_new_tokens)),
+            temperature=max(0.0, float(temperature)),
+        )
+        choice = response.choices[0]
+        if choice.finish_reason == "length":
+            warnings.warn(
+                f"LLM response was truncated (finish_reason='length'). "
+                "Increase --llm-max-new-tokens to fit thinking + JSON output.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+        text = choice.message.content or ""
+        # Strip <think>…</think> blocks emitted by reasoning models (e.g. Qwen3, QwQ)
+        text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+    except Exception as exc:
+        warnings.warn(
+            f"vLLM server call failed: {exc}",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        text = ""
+    return extract_json(
+        text,
+        field_order=field_order,
+        bounds=bounds,
+        previous_by_field=previous_by_field,
+    )
 
 
 def load_prompt_templates(template_path: str | Path) -> dict[str, dict[str, str]]:
@@ -141,7 +159,7 @@ def load_prompt_templates(template_path: str | Path) -> dict[str, dict[str, str]
     if not path.exists():
         raise FileNotFoundError(f"Prompt template file not found: {path}")
 
-    with open(path) as fh:
+    with open(path, encoding="utf-8") as fh:
         data = yaml.safe_load(fh) or {}
 
     # Load hardware prompts
@@ -168,114 +186,220 @@ def load_prompt_templates(template_path: str | Path) -> dict[str, dict[str, str]
     }
 
 
+def probe_api_base(api_base: str, timeout: float = 5.0) -> None:
+    """Verify the API endpoint is reachable by hitting /models.
+
+    Raises ``ConnectionError`` with a human-readable message on failure.
+    """
+    url = api_base.rstrip("/") + "/models"
+    try:
+        with urllib.request.urlopen(url, timeout=timeout):  # noqa: S310
+            pass
+    except Exception as exc:
+        raise ConnectionError(
+            f"Cannot reach LLM API at {url!r}. "
+            "Check that the server is running and --llm-api-base is correct.\n"
+            f"  ({type(exc).__name__}: {exc})"
+        ) from exc
+
+
 def validate_llm_model_id(model_id: str) -> str:
     """
-    Validate that model_id is either:
-      1) a local filesystem path to a loadable HF model directory, or
-      2) a Hugging Face Hub repo id / URL for a remote model.
+    Validate and normalise a model identifier.
 
-    Returns a normalized identifier usable by transformers.pipeline.
+    Accepted forms:
+      - Hugging Face repo id:  ``org/model``
+      - Hugging Face URL:      ``https://huggingface.co/org/model``
+      - Ollama-style tag:      ``name:tag``  (e.g. ``qwen3:4b``)
+      - Bare name:             ``modelname``  (passed through as-is)
+
+    Returns the model id string as the backend expects it.
     """
     model_ref = str(model_id).strip()
     if not model_ref:
-        raise ValueError("--llm-model-id must be a non-empty local path or Hugging Face model id/URL.")
+        raise ValueError("--llm-model-id must be non-empty.")
 
-    local_path = Path(model_ref).expanduser().resolve()
-    if local_path.exists() and local_path.is_dir():
-        try:
-            from transformers import AutoConfig
-        except ImportError as exc:
-            raise ImportError(
-                "transformers is required for llm_policy validation. Install with: pip install transformers"
-            ) from exc
+    if " " in model_ref:
+        raise ValueError("--llm-model-id must not contain spaces.")
 
-        try:
-            AutoConfig.from_pretrained(str(local_path), local_files_only=True)
-        except Exception as exc:
-            raise ValueError(
-                f"llm_model_id points to an existing directory but it is not a loadable HF model: {local_path}"
-            ) from exc
-        return str(local_path)
-
-    # Normalize Hugging Face model URL to repo_id when applicable.
-    parsed = urlparse(model_ref)
-    repo_id = model_ref
-    if parsed.scheme in {"http", "https"}:
+    # Only parse as URL if it contains "://" (avoids treating "name:tag" as a scheme)
+    if "://" in model_ref:
+        parsed = urlparse(model_ref)
+        if parsed.scheme not in {"http", "https"}:
+            raise ValueError("--llm-model-id URL scheme must be http or https.")
         if parsed.netloc not in {"huggingface.co", "www.huggingface.co"}:
+            raise ValueError("--llm-model-id URL must point to huggingface.co.")
+        repo_id = parsed.path.strip("/")
+        if repo_id.count("/") != 1:
             raise ValueError(
-                "--llm-model-id URL must point to huggingface.co for remote model loading."
+                "--llm-model-id URL must contain exactly one path segment (e.g. org/model)."
             )
-        path = parsed.path.strip("/")
-        if not path:
-            raise ValueError("--llm-model-id URL is missing a model repo path.")
-        parts = path.split("/")
-        if parts[0] == "models":
-            parts = parts[1:]
-        if len(parts) < 2:
-            raise ValueError(
-                "--llm-model-id URL must be a model repo URL like https://huggingface.co/<org>/<model>."
-            )
-        repo_id = "/".join(parts[:2])
+        return repo_id
 
-    try:
-        from huggingface_hub import HfApi
-        from huggingface_hub.errors import HfHubHTTPError
-        from huggingface_hub.utils import HFValidationError, validate_repo_id
-    except ImportError as exc:
-        raise ImportError(
-            "huggingface_hub is required for llm_policy remote id validation. "
-            "Install with: pip install huggingface_hub"
-        ) from exc
-
-    try:
-        validate_repo_id(repo_id)
-    except HFValidationError as exc:
-        raise ValueError(
-            "--llm-model-id must be a valid local path or Hugging Face repo id/URL (e.g. org/model or https://huggingface.co/org/model)."
-        ) from exc
-
-    try:
-        HfApi().model_info(repo_id)
-    except HfHubHTTPError as exc:
-        raise ValueError(
-            f"Remote Hugging Face model repo not accessible: {repo_id}. "
-            "Check repo id, visibility, token permissions, and network access."
-        ) from exc
-
-    return repo_id
+    # Bare id: org/model, name:tag, or plain name — pass through as-is
+    return model_ref
 
 
 # ──────────────────────────────────────────────────────────────────
 # LLM Policy Agent
 # ──────────────────────────────────────────────────────────────────
 
-def _load_committed_mw_from_config() -> dict[str, float]:
-    """Load committed_mw values from scenario config files."""
-    scenarios = ["default", "scenario_a", "scenario_b", "scenario_c"]
-    committed_mw = {}
-    
-    for scenario in scenarios:
+
+class _BaseLLMPolicyAgent:
+    """Shared client/prompt plumbing for LLM-driven policy agents."""
+
+    uses_env_context = True
+
+    def __init__(
+        self,
+        model_id: str,
+        prompts: dict[str, dict[str, str]],
+        state_names: list[str],
+        max_new_tokens: int = 256,
+        temperature: float = 0.0,
+        api_base: str = "http://localhost:8000/v1",
+    ):
+        probe_api_base(api_base)
+
         try:
-            config_path = Path(__file__).resolve().parent.parent / "conf" / "scenario" / f"{scenario}.yaml"
-            if config_path.exists():
-                with open(config_path) as fh:
-                    data = yaml.safe_load(fh) or {}
-                committed_mw[scenario] = float(data.get("committed_mw", 15.0))
-            else:
-                # Fallback if config not found
-                committed_mw[scenario] = 15.0
-        except Exception:
-            # Fallback to defaults on any error
-            committed_mw[scenario] = 15.0
-    
-    return committed_mw
+            from openai import OpenAI
+        except ImportError as exc:
+            raise ImportError(
+                "openai is required for llm agent. Install with: pip install openai"
+            ) from exc
+
+        self._client = OpenAI(
+            api_key=os.environ.get("HF_TOKEN") or os.environ.get("OPENAI_API_KEY") or "not-needed",
+            base_url=api_base,
+        )
+        self._model_name = model_id
+        self._prompts = prompts
+        self._state_names = state_names
+        self._max_new_tokens = int(max_new_tokens)
+        self._temperature = float(temperature)
+        self._previous_action: np.ndarray | None = None
+
+    def _generate_payload(
+        self,
+        obs: np.ndarray,
+        scenario: str,
+        mode: str,
+        field_order: list[str],
+        bounds: dict[str, tuple[float, float]],
+        previous_by_field: dict[str, float] | None,
+    ) -> dict[str, Any]:
+        obs_dict = obs_to_dict(obs, self._state_names)
+        prompt = build_prompt(self._prompts[mode], obs_dict, scenario)
+        return generate_structured(
+            self._client,
+            self._model_name,
+            prompt,
+            self._max_new_tokens,
+            self._temperature,
+            field_order=field_order,
+            bounds=bounds,
+            previous_by_field=previous_by_field,
+        )
 
 
-COMMIT_MW = _load_committed_mw_from_config()
+class HardwareLLMPolicyAgent(_BaseLLMPolicyAgent):
+    """Hardware-level LLM policy that emits 4-D low-level actions."""
+
+    def predict(
+        self,
+        obs: np.ndarray,
+        deterministic: bool = True,
+        env: C2GFastEnv | None = None,
+        scenario: str = "default",
+    ):
+        previous_by_field = None
+        if self._previous_action is not None:
+            previous_by_field = {
+                "throttle_batch": float(self._previous_action[0]),
+                "pump_speed_A": float(self._previous_action[1]),
+                "hvac_effort": float(self._previous_action[2]),
+                "bess_dispatch": float(self._previous_action[3]),
+            }
+
+        try:
+            payload = self._generate_payload(
+                obs=obs,
+                scenario=scenario,
+                mode="hardware",
+                field_order=["throttle_batch", "pump_speed_A", "hvac_effort", "bess_dispatch"],
+                bounds={
+                    "throttle_batch": (0.0, 1.0),
+                    "pump_speed_A": (0.0, 1.0),
+                    "hvac_effort": (0.0, 1.0),
+                    "bess_dispatch": (-1.0, 1.0),
+                },
+                previous_by_field=previous_by_field,
+            )
+        except ValueError as exc:
+            raise RuntimeError(
+                f"LLM hardware agent failed to produce a valid action at step 0 "
+                f"(no previous action to fall back on): {exc}"
+            ) from exc
+
+        action = np.array([
+            float(payload["throttle_batch"]),
+            float(payload["pump_speed_A"]),
+            float(payload["hvac_effort"]),
+            float(payload["bess_dispatch"]),
+        ], dtype=np.float32)
+        self._previous_action = action
+        return action, None
+
+
+class MacroLLMPolicyAgent(_BaseLLMPolicyAgent):
+    """Macro-level LLM policy that emits commitment and bidding actions."""
+
+    def predict(
+        self,
+        obs: np.ndarray,
+        deterministic: bool = True,
+        env: C2GFastEnv | None = None,
+        scenario: str = "default",
+    ):
+        previous_by_field = None
+        if self._previous_action is not None:
+            previous_by_field = {
+                "commit_norm": float(self._previous_action[0]),
+                "bid_price": float(self._previous_action[1] * 100.0),
+            }
+
+        try:
+            payload = self._generate_payload(
+                obs=obs,
+                scenario=scenario,
+                mode="macro",
+                field_order=["commit_norm", "bid_price"],
+                bounds={
+                    "commit_norm": (0.0, 1.0),
+                    "bid_price": (0.0, 100.0),
+                },
+                previous_by_field=previous_by_field,
+            )
+        except ValueError as exc:
+            raise RuntimeError(
+                f"LLM macro agent failed to produce a valid action at step 0 "
+                f"(no previous action to fall back on): {exc}"
+            ) from exc
+
+        commit_norm = float(payload["commit_norm"])
+        bid_price_norm = float(payload["bid_price"]) / 100.0
+
+        if env is not None:
+            max_commit_mw = float(getattr(env, "_committed_max_mw", 15.0))
+            env.committed_mw = commit_norm * max_commit_mw
+
+        action = np.array([commit_norm, bid_price_norm], dtype=np.float32)
+        self._previous_action = action
+        return action, None
 
 
 class LLMPolicyAgent:
-    """LLM-driven policy via transformers text-generation backend."""
+    """Backward-compatible wrapper over dedicated hardware/macro LLM classes."""
 
     uses_env_context = True
 
@@ -287,50 +411,28 @@ class LLMPolicyAgent:
         state_names: list[str],
         max_new_tokens: int = 256,
         temperature: float = 0.0,
-        committed_mw: dict[str, float] | None = None,
+        api_base: str = "http://localhost:8000/v1",
     ):
-        """
-        Initialize LLM policy agent.
-        
-        Parameters
-        ----------
-        model_id : str
-            HuggingFace model ID (e.g., "gpt2", "meta-llama/Llama-2-7b-chat")
-        mode : str
-            "hardware" for 4-D low-level control, "macro" for 2-D commitment control
-        prompts : dict[str, dict[str, str]]
-            System and user prompts for each mode: {"hardware": {"system": "...", "user": "..."}, ...}
-        state_names : list[str]
-            Semantic names for each state dimension (replaces index-based naming)
-        max_new_tokens : int
-            Max tokens in LLM response
-        temperature : float
-            Sampling temperature (0 = deterministic)
-        committed_mw : dict[str, float] | None
-            Max commitment MW by scenario
-        """
-        if mode not in {"hardware", "macro"}:
+        if mode == "hardware":
+            self._delegate = HardwareLLMPolicyAgent(
+                model_id=model_id,
+                prompts=prompts,
+                state_names=state_names,
+                max_new_tokens=max_new_tokens,
+                temperature=temperature,
+                api_base=api_base,
+            )
+        elif mode == "macro":
+            self._delegate = MacroLLMPolicyAgent(
+                model_id=model_id,
+                prompts=prompts,
+                state_names=state_names,
+                max_new_tokens=max_new_tokens,
+                temperature=temperature,
+                api_base=api_base,
+            )
+        else:
             raise ValueError(f"Invalid LLM mode '{mode}'. Expected 'hardware' or 'macro'.")
-
-        try:
-            from transformers import pipeline
-        except ImportError as exc:
-            raise ImportError(
-                "transformers is required for llm agent. Install with: pip install transformers"
-            ) from exc
-
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            self._generator = pipeline("text-generation", model=model_id)
-        
-        self._mode = mode
-        self._max_new_tokens = int(max_new_tokens)
-        self._temperature = float(temperature)
-        self._committed_mw = committed_mw or COMMIT_MW
-        self._prompts = prompts  # {"hardware": {"system": "...", "user": "..."}, "macro": {...}}
-        self._state_names = state_names
-        self._previous_action = None  # Track last action for fallback
-        self.algo_name = f"llm_policy_{mode}"
 
     def predict(
         self,
@@ -339,106 +441,4 @@ class LLMPolicyAgent:
         env: C2GFastEnv | None = None,
         scenario: str = "default",
     ):
-        """
-        Predict action from observation using LLM.
-        
-        Parameters
-        ----------
-        obs : np.ndarray
-            Observation vector (17-D for hardware, 2-D for macro)
-        deterministic : bool
-            Ignored (use temperature in init instead)
-        env : object | None
-            Environment (C2GFastEnv for hardware, C2GMacroEnv for macro) for context
-        scenario : str
-            Scenario name for prompt formatting
-        
-        Returns
-        -------
-        action : np.ndarray
-            4-D action vector for hardware mode, 2-D for macro mode
-        info : None
-        """
-        # Convert observation to semantic state dict
-        obs_dict = obs_to_dict(obs, self._state_names)
-        
-        # Build prompt from system + user templates
-        prompt = build_prompt(
-            self._prompts[self._mode],
-            obs_dict,
-            scenario,
-            self._mode,
-        )
-        
-        # Generate structured response from LLM
-        payload = generate_structured(
-            self._generator,
-            prompt,
-            self._max_new_tokens,
-            self._temperature,
-        )
-
-        if self._mode == "hardware":
-            # Check if payload is empty (JSON extraction failed)
-            if not payload:
-                # Use previous action if available, otherwise use default full cooling
-                if self._previous_action is not None:
-                    warnings.warn(
-                        f"LLM did not return valid JSON for hardware mode in scenario {scenario}. "
-                        "Using previous action.",
-                        RuntimeWarning,
-                        stacklevel=2,
-                    )
-                    return self._previous_action, None
-                else:
-                    warnings.warn(
-                        f"LLM did not return valid JSON for hardware mode in scenario {scenario} at step 0. "
-                        "Using default action (throttle=1.0, pump=1.0, hvac=1.0, bess=0.0).",
-                        RuntimeWarning,
-                        stacklevel=2,
-                    )
-                    action = _get_default_hardware_action()
-                    self._previous_action = action
-                    return action, None
-            
-            action = np.array([
-                np.clip(safe_float(payload.get("throttle_batch"), 1.0), 0.0, 1.0),
-                np.clip(safe_float(payload.get("pump_speed_A"), 1.0), 0.0, 1.0),
-                np.clip(safe_float(payload.get("hvac_effort"), 1.0), 0.0, 1.0),
-                np.clip(safe_float(payload.get("bess_dispatch"), 0.0), -1.0, 1.0),
-            ], dtype=np.float32)
-            self._previous_action = action
-            return action, None
-
-        # Macro mode: return 2-D action (commitment_mw, bid_price)
-        if not payload:
-            # Use previous action if available, otherwise use default moderate bidding
-            if self._previous_action is not None:
-                warnings.warn(
-                    f"LLM did not return valid JSON for macro mode in scenario {scenario}. "
-                    "Using previous action.",
-                    RuntimeWarning,
-                    stacklevel=2,
-                )
-                return self._previous_action, None
-            else:
-                warnings.warn(
-                    f"LLM did not return valid JSON for macro mode in scenario {scenario} at step 0. "
-                    "Using default action (commit_norm=0.5, bid_price_norm=0.5).",
-                    RuntimeWarning,
-                    stacklevel=2,
-                )
-                action = _get_default_macro_action()
-                self._previous_action = action
-                return action, None
-        
-        commit_norm = np.clip(safe_float(payload.get("commit_norm"), 0.5), 0.0, 1.0)
-        bid_price = np.clip(safe_float(payload.get("bid_price"), 50.0), 0.0, 100.0)
-        
-        if env is not None:
-            max_commit_mw = float(self._committed_mw.get(scenario, 15.0))
-            env.committed_mw = commit_norm * max_commit_mw
-
-        action = np.array([commit_norm, bid_price / 100.0], dtype=np.float32)
-        self._previous_action = action
-        return action, None
+        return self._delegate.predict(obs, deterministic=deterministic, env=env, scenario=scenario)
