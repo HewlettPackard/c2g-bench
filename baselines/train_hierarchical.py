@@ -204,7 +204,13 @@ def main(cfg: DictConfig) -> None:
     log_cfg  = cfg.logging
 
     # HRL-specific overrides (optional, via +hrl.xxx on CLI)
-    hrl = OmegaConf.to_container(cfg.get("hrl", {}), resolve=True)
+    hrl_cfg = cfg.get("hrl")
+    if hrl_cfg is None:
+        hrl = {}
+    elif OmegaConf.is_config(hrl_cfg):
+        hrl = OmegaConf.to_container(hrl_cfg, resolve=True)
+    else:
+        hrl = dict(hrl_cfg)
     skip_phase1    = hrl.get("skip_phase1", False)
     low_level_path = hrl.get("low_level_path", None)
     phase1_steps   = hrl.get("phase1_steps", 300_000)

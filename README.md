@@ -1324,6 +1324,11 @@ uv run evaluation/run_benchmark.py --agents rule_based bang_bang pid random
 uv run evaluation/run_benchmark.py --agents ppo sac --scenarios default scenario_b --n_episodes 10
 ```
 
+Benchmark runner note: PPO-style agents automatically restore saved
+`VecNormalize` observation statistics from `vec_normalize.pkl` at evaluation
+time for apples-to-apples comparison with their training setup.
+Non-normalized agents such as `SAC` are left unwrapped.
+
 **Transition Logging:**
 ```bash
 uv run evaluation/run_benchmark.py --agents ppo --record_transitions

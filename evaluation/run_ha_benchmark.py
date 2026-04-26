@@ -59,6 +59,19 @@ T_WARN_NORM = 33.0 / 35.0
 T_SAFE = 35.0
 SOC_MIN = 0.10
 SOC_MAX = 0.95
+_PPO_LIKE_AGENT_KEYS = {
+    "shielded_ppo",
+    "cbf_ppo",
+    "hj_ppo",
+    "mpcsf_ppo",
+    "ppo_lagrangian",
+    "cpo",
+    "shield_reward_shaping",
+    "ha_c2g",
+    "cbm_only",
+    "cbm_gate",
+    "cbm_shield",
+}
 _VALID_ACTIONS = ("throttle_batch", "pump_speed_A", "hvac_effort", "bess_dispatch")
 _ACTION_BOUNDS: dict[str, tuple[float, float]] = {
     "throttle_batch": (0.0, 1.0),
@@ -238,6 +251,31 @@ class RandomAgent:
         return action, None
 
 
+class SB3Agent:
+    def __init__(self, model, algo_name: str, obs_normalizer=None):
+        self._m = model
+        self.algo_name = algo_name
+        self._obs_normalizer = obs_normalizer
+
+    def predict(self, obs, deterministic=True):
+        if self._obs_normalizer is not None:
+            obs = self._obs_normalizer.normalize_obs(np.asarray(obs, dtype=np.float32))
+        return self._m.predict(obs, deterministic=deterministic)
+
+
+def _maybe_load_obs_normalizer(stats_path: Path, scenario: str):
+    if not stats_path.exists():
+        return None
+
+    from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
+
+    vec_env = DummyVecEnv([lambda: C2GFastEnv(scenario=scenario)])
+    vec_norm = VecNormalize.load(str(stats_path), vec_env)
+    vec_norm.training = False
+    vec_norm.norm_reward = False
+    return vec_norm
+
+
 def load_agent(agent_name: str, scenario: str, seed: int, model_dir: str | None):
     """Load a trained agent. Returns (agent, needs_shield) tuple."""
     if agent_name == "random":
@@ -263,14 +301,10 @@ def load_agent(agent_name: str, scenario: str, seed: int, model_dir: str | None)
 
     if path.with_suffix(".zip").exists():
         model = PPO.load(str(path))
-
-        class SB3Agent:
-            def __init__(self, m):
-                self._m = m
-            def predict(self, obs, deterministic=True):
-                return self._m.predict(obs, deterministic=deterministic)
-
-        return SB3Agent(model), True
+        obs_normalizer = None
+        if algo_key in _PPO_LIKE_AGENT_KEYS:
+            obs_normalizer = _maybe_load_obs_normalizer(path.parent / "vec_normalize.pkl", scenario)
+        return SB3Agent(model, algo_name=agent_name, obs_normalizer=obs_normalizer), True
     else:
         print(f"    SKIP: No model at {path}.zip — using random agent")
         return RandomAgent(), True

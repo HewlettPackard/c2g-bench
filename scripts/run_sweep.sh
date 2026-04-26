@@ -21,7 +21,19 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 ROOT="$(pwd)"
-PYTHON="${ROOT}/.venv/bin/python3"
+if [[ -n "${PYTHON:-}" ]]; then
+    PYTHON="${PYTHON}"
+elif [[ -x "${ROOT}/.venv/bin/python3" ]]; then
+    PYTHON="${ROOT}/.venv/bin/python3"
+else
+    PYTHON="$(command -v python3)"
+fi
+
+if [[ -z "${PYTHON}" || ! -x "${PYTHON}" ]]; then
+    echo "ERROR: No usable python3 found. Set PYTHON=/abs/path/to/python3 and retry."
+    exit 1
+fi
+
 RESULTS_DIR="${ROOT}/results"
 RESULTS_CSV="${RESULTS_DIR}/sweep_results.csv"
 MAX_PARALLEL=${MAX_PARALLEL:-4}
@@ -294,6 +306,7 @@ echo "  C2G-Bench Full Training & Evaluation Sweep"
 echo "  Scenarios: ${SCENARIOS[*]}"
 echo "  Seeds:     ${SEEDS[*]}"
 echo "  Algos:     PPO, SAC, RuleBased, Random + HA: CBF, HJ, MPCSF, CPO, Shield-RS, HA-C2G"
+echo "  Python:    ${PYTHON}"
 echo "  Parallel:  ${MAX_PARALLEL} jobs"
 echo "  Output:    ${RESULTS_CSV}"
 echo "═══════════════════════════════════════════════════════════════"
@@ -901,7 +914,10 @@ fi
 # Phase 22: Generate summary table
 # ══════════════════════════════════════════════════════════════════════════════
 echo -e "\n▸ Phase 22: Generating results summary …"
-$PYTHON - << 'PYEOF'
+if $DRY_RUN; then
+    echo "  [dry-run] summarize results/sweep_results.csv"
+else
+    "$PYTHON" - << 'PYEOF'
 import pandas as pd
 from pathlib import Path
 
@@ -959,6 +975,7 @@ summary = df.groupby(["scenario", "algo"])[["total_reward","mean_pue","max_temp_
 summary.to_csv("results/sweep_summary.csv")
 print(f"\nSummary saved to results/sweep_summary.csv")
 PYEOF
+fi
 
 echo -e "\n═══════════════════════════════════════════════════════════════"
 echo "  Sweep complete.  Results: ${RESULTS_CSV}"
@@ -971,11 +988,15 @@ echo -e "\n═══════════════════════
 echo "  Phase 23: Multi-seed HA benchmark (10 seeds)"
 echo "══════════════════════════════════════════════"
 
-uv run python evaluation/run_ha_benchmark.py \
-    --n_seeds 10 \
-    --n_episodes 5 \
-    --seed 100 \
-    --output evaluation/ha_results_multiseed.csv
+if $DRY_RUN; then
+    echo "  [dry-run] ${PYTHON} evaluation/run_ha_benchmark.py --n_seeds 10 --n_episodes 5 --seed 100 --output evaluation/ha_results_multiseed.csv"
+else
+    "${PYTHON}" evaluation/run_ha_benchmark.py \
+        --n_seeds 10 \
+        --n_episodes 5 \
+        --seed 100 \
+        --output evaluation/ha_results_multiseed.csv
+fi
 
 # ═══════════════════════════════════════════════════════════════════
 # Phase 24 — Statistical analysis (CIs + significance tests)
@@ -984,12 +1005,16 @@ echo -e "\n═══════════════════════
 echo "  Phase 24: Statistical analysis"
 echo "══════════════════════════════════════════════"
 
-uv run python evaluation/statistical_analysis.py \
-    evaluation/ha_results_multiseed.csv \
-    --baseline ha_c2g \
-    --alpha 0.05 \
-    --confidence 0.95 \
-    --latex paper/tables/ha_benchmark_table.tex
+if $DRY_RUN; then
+    echo "  [dry-run] ${PYTHON} evaluation/statistical_analysis.py evaluation/ha_results_multiseed.csv --baseline ha_c2g --alpha 0.05 --confidence 0.95 --latex paper/tables/ha_benchmark_table.tex"
+else
+    "${PYTHON}" evaluation/statistical_analysis.py \
+        evaluation/ha_results_multiseed.csv \
+        --baseline ha_c2g \
+        --alpha 0.05 \
+        --confidence 0.95 \
+        --latex paper/tables/ha_benchmark_table.tex
+fi
 
 # ═══════════════════════════════════════════════════════════════════
 # Phase 25 — Failure-case analysis
@@ -998,11 +1023,15 @@ echo -e "\n═══════════════════════
 echo "  Phase 25: Failure-case analysis"
 echo "══════════════════════════════════════════════"
 
-uv run python evaluation/failure_analysis.py \
-    --agents ha_c2g cbm_only cbm_gate cbm_shield simplex_ppo cbf_ppo random \
-    --n_seeds 10 \
-    --seed_start 100 \
-    --output evaluation/failure_analysis.json
+if $DRY_RUN; then
+    echo "  [dry-run] ${PYTHON} evaluation/failure_analysis.py --agents ha_c2g cbm_only cbm_gate cbm_shield simplex_ppo cbf_ppo random --n_seeds 10 --seed_start 100 --output evaluation/failure_analysis.json"
+else
+    "${PYTHON}" evaluation/failure_analysis.py \
+        --agents ha_c2g cbm_only cbm_gate cbm_shield simplex_ppo cbf_ppo random \
+        --n_seeds 10 \
+        --seed_start 100 \
+        --output evaluation/failure_analysis.json
+fi
 
 echo -e "\n═══════════════════════════════════════════════════════════════"
 echo "  Full sweep + analysis complete."
