@@ -12,6 +12,10 @@ dependencies = [
     "pyyaml>=6.0",
     # Phase 2 — RL environment
     "gymnasium>=1.0",
+    # Phase 3 — PyTorch (CUDA 12.4)
+    "torch>=2.6",
+    "torchvision>=0.21",
+    "torchaudio>=2.6",
     # Phase 4 — Baseline agents
     "stable-baselines3>=2.3",
     "tensorboard>=2.17",
@@ -63,6 +67,16 @@ strict = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["c2g_env", "preprocessing"]
+
+[[tool.uv.index]]
+name = "pytorch-cu124"
+url = "https://download.pytorch.org/whl/cu124"
+explicit = true
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cu124" }]
+torchvision = [{ index = "pytorch-cu124" }]
+torchaudio = [{ index = "pytorch-cu124" }]
 
 [dependency-groups]
 dev = [

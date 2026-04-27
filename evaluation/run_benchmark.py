@@ -89,17 +89,9 @@ from baselines.safety_shield import SafetyShield
 
 SCENARIOS    = ["default", "scenario_a", "scenario_b", "scenario_c"]
 T_WARN_NORM  = 33.0 / 35.0   # normalised warning threshold
-_PPO_LIKE_ALGOS = {
+_RL_ALGOS = {
     "ppo",
-    "ppo_lag",
-    "ppo_lagrangian",
-    "ppo_macro",
-    "cpo",
-    "reward_shaping",
-    "ha_c2g",
-    "cbm_only",
-    "cbm_gate",
-    "cbm_shield",
+    "sac"
 }
 _VALID_ACTIONS = ("throttle_batch", "pump_speed_A", "hvac_effort", "bess_dispatch")
 _ACTION_BOUNDS: dict[str, tuple[float, float]] = {
@@ -168,10 +160,16 @@ def _parse_fixed_action_args(values: list[str] | None) -> dict[str, float]:
     return fixed_action_values
 
 
-_INNER_CONTROLLERS = {"random", "pid", "bang_bang", "rule_based", "mpc_fast"}
+_INNER_CONTROLLERS = {"random", "pid", "bang_bang", "rule_based", "mpc_fast", "ppo"}
 
 
-def _make_inner_controller(name: str, env: "C2GFastEnv | None" = None):
+def _make_inner_controller(
+    name: str,
+    env: "C2GFastEnv | None" = None,
+    scenario: str = "default",
+    seed: int = 42,
+    model_dir: str | None = None,
+):
     """Instantiate a low-level controller by name."""
     if name == "random":
         if env is None:
@@ -185,6 +183,8 @@ def _make_inner_controller(name: str, env: "C2GFastEnv | None" = None):
         return RuleBasedController()
     if name == "mpc_fast":
         return MPCFastController()
+    if name == "ppo":
+        return load_sb3_agent("ppo", scenario, seed, model_dir)
     raise ValueError(f"Unknown inner controller '{name}'. Choose from: {_INNER_CONTROLLERS}")
 
 
@@ -266,7 +266,7 @@ def _resolve_sb3_spec(algo: str):
     algo_key = algo.lower()
     if algo_key == "sac":
         return SAC, "sac", False
-    if algo_key in _PPO_LIKE_ALGOS:
+    if algo_key in _RL_ALGOS:
         train_key_map = {
             "ppo_lag": "ppo_lagrangian",
             "reward_shaping": "shield_reward_shaping",
@@ -622,7 +622,10 @@ def benchmark(
                 macro_part, inner_part = agent_name.split("+", 1)
                 inner_env = _make_env(scenario=scenario)
                 inner_env.reset(seed=0)
-                inner_ctrl = _make_inner_controller(inner_part, env=inner_env)
+                inner_ctrl = _make_inner_controller(
+                    inner_part, env=inner_env,
+                    scenario=scenario, seed=seed_start, model_dir=model_dir,
+                )
                 inner_action_fn = lambda obs, _act, c=inner_ctrl: c.predict(obs)[0]
 
             if agent_name == "rule_based":
