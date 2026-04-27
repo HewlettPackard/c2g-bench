@@ -4,6 +4,8 @@ tests/test_baselines.py  —  Smoke tests for Phase 3 baseline & evaluation code
 from __future__ import annotations
 import csv, json
 from pathlib import Path
+import sys
+import types
 import numpy as np
 import pytest
 
@@ -223,6 +225,85 @@ class TestBenchmarkImport:
             data = list(reader)
         assert len(data) == 2
         assert "mean_reward" in data[0]
+
+    def test_load_sb3_agent_restores_obs_normalization(self, monkeypatch, tmp_path):
+        import evaluation.run_benchmark as runner
+
+        class FakeModel:
+            def __init__(self):
+                self.last_obs = None
+
+            @classmethod
+            def load(cls, _path):
+                return cls()
+
+            def predict(self, obs, deterministic=True):
+                self.last_obs = np.array(obs, copy=True)
+                return np.zeros(4, dtype=np.float32), None
+
+        class FakeNormalizer:
+            def __init__(self):
+                self.seen_obs = None
+
+            def normalize_obs(self, obs):
+                self.seen_obs = np.array(obs, copy=True)
+                return obs + 3.0
+
+        fake_norm = FakeNormalizer()
+        fake_sb3 = types.SimpleNamespace(PPO=FakeModel, SAC=FakeModel)
+        monkeypatch.setitem(sys.modules, "stable_baselines3", fake_sb3)
+        monkeypatch.setattr(runner, "_maybe_load_obs_normalizer", lambda _path, _scenario: fake_norm)
+
+        model_dir = tmp_path / "ppo_default_s42"
+        model_dir.mkdir(parents=True)
+        (model_dir / "final_model.zip").touch()
+
+        agent = runner.load_sb3_agent("ppo", "default", 42, str(model_dir))
+        raw_obs = np.array([1.0, 2.0, 3.0], dtype=np.float32)
+        agent.predict(raw_obs)
+
+        np.testing.assert_array_equal(fake_norm.seen_obs, raw_obs)
+        np.testing.assert_array_equal(agent._model.last_obs, raw_obs + 3.0)
+
+    def test_load_ha_agent_restores_obs_normalization(self, monkeypatch, tmp_path):
+        import evaluation.run_ha_benchmark as runner
+
+        class FakeModel:
+            def __init__(self):
+                self.last_obs = None
+
+            @classmethod
+            def load(cls, _path):
+                return cls()
+
+            def predict(self, obs, deterministic=True):
+                self.last_obs = np.array(obs, copy=True)
+                return np.zeros(4, dtype=np.float32), None
+
+        class FakeNormalizer:
+            def __init__(self):
+                self.seen_obs = None
+
+            def normalize_obs(self, obs):
+                self.seen_obs = np.array(obs, copy=True)
+                return obs - 2.0
+
+        fake_norm = FakeNormalizer()
+        fake_sb3 = types.SimpleNamespace(PPO=FakeModel)
+        monkeypatch.setitem(sys.modules, "stable_baselines3", fake_sb3)
+        monkeypatch.setattr(runner, "_maybe_load_obs_normalizer", lambda _path, _scenario: fake_norm)
+
+        model_dir = tmp_path / "ha_c2g_default_s42"
+        model_dir.mkdir(parents=True)
+        (model_dir / "final_model.zip").touch()
+
+        agent, needs_shield = runner.load_agent("ha_c2g", "default", 42, str(model_dir))
+        raw_obs = np.array([4.0, 5.0, 6.0], dtype=np.float32)
+        agent.predict(raw_obs)
+
+        assert needs_shield is True
+        np.testing.assert_array_equal(fake_norm.seen_obs, raw_obs)
+        np.testing.assert_array_equal(agent._m.last_obs, raw_obs - 2.0)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
