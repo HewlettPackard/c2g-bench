@@ -1530,7 +1530,7 @@ uv run python baselines/train_mpcsf_ppo.py scenario=default
 The full **HA-C2G** pipeline is a 3-layer neuro-symbolic architecture:
 
 1. **Layer 1 — Concept Bottleneck Model** (`baselines/safety/concept_bottleneck.py`): Maps raw 17-D obs → ~10 interpretable safety concepts (thermal margins, SOC health, etc.)
-2. **Layer 2 — Safe Projection Gate** (`baselines/safety/safe_projection.py`): Concept-conditioned differentiable gate that attenuates actions based on safety concepts
+2. **Layer 2 — Safe Projection Gate** (`baselines/safety/safe_projection.py`): Concept-guided differentiable projection that blends policy actions toward safe priors based on learned pass-through gates; applied consistently during training and evaluation for `ha_c2g` and `cbm_gate`
 3. **Layer 3 — Physics Rule Shield**: In-the-loop Simplex shield with shield-penalty reward
 
 **Ablation studies** isolate each layer's contribution:

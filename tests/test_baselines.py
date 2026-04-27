@@ -8,6 +8,7 @@ import sys
 import types
 import numpy as np
 import pytest
+import torch
 
 from c2g_env import C2GFastEnv
 from baselines.rule_based_mpc import RuleBasedController
@@ -268,9 +269,31 @@ class TestBenchmarkImport:
     def test_load_ha_agent_restores_obs_normalization(self, monkeypatch, tmp_path):
         import evaluation.run_ha_benchmark as runner
 
+        class FakeConceptEncoder(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.bias = torch.nn.Parameter(torch.zeros(1))
+
+            def forward(self, obs):
+                return torch.zeros((obs.shape[0], 10), dtype=obs.dtype, device=obs.device)
+
+        class FakeSafetyGate(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.bias = torch.nn.Parameter(torch.zeros(1))
+
+            def forward(self, concepts):
+                return torch.ones((concepts.shape[0], 4), dtype=concepts.dtype, device=concepts.device)
+
         class FakeModel:
             def __init__(self):
                 self.last_obs = None
+                self.policy = types.SimpleNamespace(
+                    features_extractor=types.SimpleNamespace(
+                        concept_encoder=FakeConceptEncoder(),
+                        safety_gate=FakeSafetyGate(),
+                    )
+                )
 
             @classmethod
             def load(cls, _path):
@@ -304,6 +327,125 @@ class TestBenchmarkImport:
         assert needs_shield is True
         np.testing.assert_array_equal(fake_norm.seen_obs, raw_obs)
         np.testing.assert_array_equal(agent._m.last_obs, raw_obs - 2.0)
+
+    @pytest.mark.parametrize("agent_name", ["ha_c2g", "cbm_gate"])
+    def test_load_ha_agent_applies_layer2_runtime(self, monkeypatch, tmp_path, agent_name):
+        import evaluation.run_ha_benchmark as runner
+
+        class FakeConceptEncoder(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.bias = torch.nn.Parameter(torch.zeros(1))
+
+            def forward(self, obs):
+                batch = obs.shape[0]
+                concepts = torch.zeros((batch, 10), dtype=obs.dtype, device=obs.device)
+                concepts[:, 5] = 0.9
+                concepts[:, 6] = 0.7
+                concepts[:, 7] = 0.8
+                concepts[:, 8] = 0.2
+                concepts[:, 9] = 0.5
+                return concepts
+
+        class HalfGate(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.bias = torch.nn.Parameter(torch.zeros(1))
+
+            def forward(self, concepts):
+                return torch.full((concepts.shape[0], 4), 0.5, dtype=concepts.dtype, device=concepts.device)
+
+        class FakeModel:
+            def __init__(self):
+                self.last_obs = None
+                self.policy = types.SimpleNamespace(
+                    features_extractor=types.SimpleNamespace(
+                        concept_encoder=FakeConceptEncoder(),
+                        safety_gate=HalfGate(),
+                    )
+                )
+
+            @classmethod
+            def load(cls, _path):
+                return cls()
+
+            def predict(self, obs, deterministic=True):
+                self.last_obs = np.array(obs, copy=True)
+                return np.zeros(4, dtype=np.float32), None
+
+        fake_sb3 = types.SimpleNamespace(PPO=FakeModel)
+        monkeypatch.setitem(sys.modules, "stable_baselines3", fake_sb3)
+        monkeypatch.setattr(runner, "_maybe_load_obs_normalizer", lambda _path, _scenario: None)
+
+        model_dir = tmp_path / f"{agent_name}_default_s42"
+        model_dir.mkdir(parents=True)
+        (model_dir / "final_model.zip").touch()
+
+        agent, needs_shield = runner.load_agent(agent_name, "default", 42, str(model_dir))
+        action, _ = agent.predict(np.array([34.5 / 35.0, 33.8 / 35.0, 0.5, 0.0, 0.0, 0.0, 0.8,
+                                            0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.2, 0.0], dtype=np.float32))
+
+        assert needs_shield is True
+        assert np.max(np.abs(action)) > 0.0
+
+    @pytest.mark.parametrize("algo", ["ha_c2g", "cbm_gate"])
+    def test_load_sb3_agent_applies_layer2_runtime(self, monkeypatch, tmp_path, algo):
+        import evaluation.run_benchmark as runner
+
+        class FakeConceptEncoder(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.bias = torch.nn.Parameter(torch.zeros(1))
+
+            def forward(self, obs):
+                batch = obs.shape[0]
+                concepts = torch.zeros((batch, 10), dtype=obs.dtype, device=obs.device)
+                concepts[:, 5] = 0.9
+                concepts[:, 6] = 0.7
+                concepts[:, 7] = 0.8
+                concepts[:, 8] = 0.2
+                concepts[:, 9] = 0.5
+                return concepts
+
+        class HalfGate(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.bias = torch.nn.Parameter(torch.zeros(1))
+
+            def forward(self, concepts):
+                return torch.full((concepts.shape[0], 4), 0.5, dtype=concepts.dtype, device=concepts.device)
+
+        class FakeModel:
+            def __init__(self):
+                self.last_obs = None
+                self.policy = types.SimpleNamespace(
+                    features_extractor=types.SimpleNamespace(
+                        concept_encoder=FakeConceptEncoder(),
+                        safety_gate=HalfGate(),
+                    )
+                )
+
+            @classmethod
+            def load(cls, _path):
+                return cls()
+
+            def predict(self, obs, deterministic=True):
+                self.last_obs = np.array(obs, copy=True)
+                return np.zeros(4, dtype=np.float32), None
+
+        fake_sb3 = types.SimpleNamespace(PPO=FakeModel, SAC=FakeModel)
+        monkeypatch.setitem(sys.modules, "stable_baselines3", fake_sb3)
+        monkeypatch.setattr(runner, "_maybe_load_obs_normalizer", lambda _path, _scenario: None)
+
+        model_dir = tmp_path / f"{algo}_default_s42"
+        model_dir.mkdir(parents=True)
+        (model_dir / "final_model.zip").touch()
+
+        agent = runner.load_sb3_agent(algo, "default", 42, str(model_dir))
+        action, _ = agent.predict(np.array([34.5 / 35.0, 33.8 / 35.0, 0.5, 0.0, 0.0, 0.0, 0.8,
+                                            0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.2, 0.0], dtype=np.float32))
+
+        assert np.max(np.abs(action)) > 0.0
 
 
 # ═══════════════════════════════════════════════════════════════════════════

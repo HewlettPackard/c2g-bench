@@ -13,17 +13,20 @@ This layer provides two guarantees:
     out-of-bounds actions by construction. For BESS ∈ [-1,1] we use
     2σ(·) − 1 instead.
 
-  Step 2 — Concept-conditioned gate:
-    g = σ(MLP_φ(concepts)) ∈ (0, 1)^{N_a}
-    a_final = a_bounded ⊙ g
-    The gate learns WHEN to attenuate actions based on concept values.
+    Step 2 — Concept-conditioned gate + action prior:
+        g = σ(MLP_φ(concepts)) ∈ (0, 1)^{N_a}
+        a_prior = f(concepts, obs)
+        a_final = g ⊙ a_policy + (1 − g) ⊙ a_prior
+        The gate learns how much of the policy action to keep versus how much
+        to blend toward a concept-guided safe prior.
 
 Key design: the gate is **actively trained** (not just near-pass-through):
-  - An auxiliary gate supervision loss provides an explicit training signal
-  - Gate target: g* = 1 − α · max(cooling_demand_A, cooling_demand_B)
-    meaning: when cooling demand is high, throttle down the batch action
-  - The gate is DIFFERENTIABLE: gradients flow through both sigmoid and
-    gate during PPO training, so the policy learns to cooperate.
+    - An auxiliary gate supervision loss provides an explicit training signal
+    - Gate targets encode environment-dependent pass-through values rather than
+        all-ones / pure pass-through behavior
+    - Action priors encode meaningful cooling / BESS responses from concepts
+    - The layer is DIFFERENTIABLE: gradients flow through both the gate and the
+        policy action path during PPO training, so the policy learns to cooperate.
 
 This is adapted from the SC26 HA-CompOpt paper's Safe Projection Layer
 with the gate supervision experiment (Section 5.4) integrated into the
@@ -165,7 +168,7 @@ if _TORCH_AVAILABLE:
 
     class SafeProjectionLayer(nn.Module):
         """
-        Full safe projection layer: sigmoid bound + concept-conditioned gate.
+        Full safe projection layer: sigmoid bound + concept-guided prior blend.
 
         This is applied to the raw policy output to produce bounded,
         concept-modulated actions.
@@ -232,14 +235,14 @@ if _TORCH_AVAILABLE:
 
     class GateSupervisionLoss:
         """
-        Auxiliary loss that trains the SafeProjectionGate to attenuate
-        actions when safety concepts indicate danger.
+        Auxiliary loss that trains the SafeProjectionGate to encode
+        meaningful concept-conditioned pass-through behavior.
 
         Gate target computation:
           g*_throttle = 1.0 − α · max(cooling_demand_A, cooling_demand_B)
-          g*_pump     = 1.0  (always allow full pump — pumping is safe)
-          g*_hvac     = 1.0  (always allow full HVAC — cooling is safe)
-          g*_bess     = 1.0 − β · (1.0 − bess_headroom)
+          g*_pump     = 1.0 − 0.75·α·cooling_demand_A
+          g*_hvac     = 1.0 − 0.75·α·cooling_demand_B
+          g*_bess     = 1.0 − β · grid_urgency
 
         When cooling demand is high, the gate learns to reduce throttle
         (batch compute), which is the primary heat source.
