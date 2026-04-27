@@ -60,6 +60,7 @@ evaluate() {
     $PYTHON - "$algo" "$scenario" "$seed" "$model_path" << 'PYEOF'
 import sys, time, csv, numpy as np
 from pathlib import Path
+import torch
 
 algo       = sys.argv[1]
 scenario   = sys.argv[2]
@@ -67,6 +68,7 @@ seed       = int(sys.argv[3])
 model_path = sys.argv[4] if sys.argv[4] else None
 
 from c2g_env import C2GFastEnv
+from baselines.safety.safe_projection import compute_layer2_action
 
 env = C2GFastEnv(scenario=scenario)
 
@@ -103,12 +105,83 @@ elif algo in ("cmaes", "pso"):
     else:
         print(f"  SKIP: no {npz_name} in {model_path}"); exit(0)
 else:
-    # RL agent (PPO/SAC/PPO-Lagrangian) — load from zip
-    if algo in ("ppo", "ppo_lag"):
+    # RL agent — load from zip and restore observation normalization when used
+    model_root = Path(model_path) if model_path else None
+    if model_root is None:
+        print(f"  SKIP: no model path provided for {algo}")
+        exit(0)
+    if model_root.is_dir():
+        model_root = model_root / "final_model"
+    elif model_root.suffix == ".zip":
+        model_root = model_root.with_suffix("")
+
+    if not model_root.with_suffix(".zip").exists():
+        print(f"  SKIP: missing model at {model_root}.zip")
+        exit(0)
+
+    ppo_like_algos = {
+        "ppo", "ppo_lag", "cbf_ppo", "hj_ppo", "mpcsf_ppo",
+        "cpo", "reward_shaping", "ha_c2g", "cbm_only", "cbm_gate", "cbm_shield",
+    }
+    obs_normalizer = None
+
+    if algo in ppo_like_algos:
         from stable_baselines3 import PPO as AlgoCls
+        from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
+
+        stats_path = model_root.parent / "vec_normalize.pkl"
+        if stats_path.exists():
+            stats_env = DummyVecEnv([lambda: C2GFastEnv(scenario=scenario)])
+            obs_normalizer = VecNormalize.load(str(stats_path), stats_env)
+            obs_normalizer.training = False
+            obs_normalizer.norm_reward = False
     else:
         from stable_baselines3 import SAC as AlgoCls
-    agent = AlgoCls.load(model_path, env=env)
+
+    model = AlgoCls.load(str(model_root))
+
+    class SB3Agent:
+        def __init__(self, model, obs_normalizer=None):
+            self.model = model
+            self.obs_normalizer = obs_normalizer
+
+        def predict(self, obs, deterministic=True):
+            if self.obs_normalizer is not None:
+                obs = self.obs_normalizer.normalize_obs(np.asarray(obs, dtype=np.float32))
+            return self.model.predict(obs, deterministic=deterministic)
+
+    class HAC2GAgent(SB3Agent):
+        def __init__(self, model, concept_encoder, safety_gate, obs_normalizer=None):
+            super().__init__(model, obs_normalizer=obs_normalizer)
+            self.concept_encoder = concept_encoder
+            self.safety_gate = safety_gate
+
+        def predict(self, obs, deterministic=True):
+            action, state = super().predict(obs, deterministic=deterministic)
+            raw_obs = np.asarray(obs, dtype=np.float32)
+            with torch.no_grad():
+                device = next(self.concept_encoder.parameters()).device
+                obs_t = torch.as_tensor(raw_obs, dtype=torch.float32, device=device).unsqueeze(0)
+                action_t = torch.as_tensor(action, dtype=torch.float32, device=device).unsqueeze(0)
+                concepts = self.concept_encoder(obs_t)
+                gated_action, _, _ = compute_layer2_action(
+                    action_t,
+                    concepts,
+                    obs=obs_t,
+                    safety_gate=self.safety_gate,
+                )
+            return gated_action.squeeze(0).detach().cpu().numpy(), state
+
+    if algo in {"ha_c2g", "cbm_gate"}:
+        fe = model.policy.features_extractor
+        agent = HAC2GAgent(
+            model,
+            concept_encoder=fe.concept_encoder,
+            safety_gate=fe.safety_gate,
+            obs_normalizer=obs_normalizer,
+        )
+    else:
+        agent = SB3Agent(model, obs_normalizer=obs_normalizer)
 
 # Run 3 eval episodes and average
 N_EVAL = 3

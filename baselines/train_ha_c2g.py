@@ -71,6 +71,8 @@ from baselines.safety.concept_bottleneck import (
 )
 from baselines.safety.safe_projection import (
     SafeProjectionGate, ConceptAndGateSupervisionCallback as _SupCallback,
+    build_gate_targets,
+    compute_layer2_action,
 )
 from baselines.safety.proof_tree import ProofTree
 from baselines.metrics_callback import C2GMetricsCallback
@@ -125,7 +127,7 @@ class HAC2GShieldWrapper(gym.Wrapper):
         return obs, info
 
     def _apply_gate(self, action: np.ndarray, obs: np.ndarray) -> np.ndarray:
-        """Apply concept-conditioned gate to attenuate action (Layer 2).
+        """Apply concept-guided Layer 2 blending.
 
         Device-safe: builds tensors on the same device as the encoder
         parameters (CPU or CUDA), then brings results back to numpy.
@@ -135,14 +137,17 @@ class HAC2GShieldWrapper(gym.Wrapper):
         with torch.no_grad():
             device = next(self.concept_encoder.parameters()).device
             obs_t = torch.as_tensor(obs, dtype=torch.float32, device=device).unsqueeze(0)
+            action_t = torch.as_tensor(action, dtype=torch.float32, device=device).unsqueeze(0)
             concepts = self.concept_encoder(obs_t)
-            gate = self.safety_gate(concepts)  # (1, action_dim)
-            gate_np = gate.squeeze(0).detach().cpu().numpy()
-        # Apply gate: a_gated = a_raw * gate
-        # For BESS (action 3, ∈ [-1,1]), gate attenuates magnitude
-        gated = action.copy()
-        gated[:len(gate_np)] = action[:len(gate_np)] * gate_np
-        return gated
+            gated_action, gate, action_priors = compute_layer2_action(
+                action_t,
+                concepts,
+                obs=obs_t,
+                safety_gate=self.safety_gate,
+            )
+            self._last_gate = gate.squeeze(0).detach().cpu().numpy()
+            self._last_action_prior = action_priors.squeeze(0).detach().cpu().numpy()
+        return gated_action.squeeze(0).detach().cpu().numpy()
 
     def step(self, action):
         obs_prev = self._last_obs if self._last_obs is not None else np.zeros(18, dtype=np.float32)
@@ -165,6 +170,10 @@ class HAC2GShieldWrapper(gym.Wrapper):
         info["shield_stats"] = self.shield.stats.as_dict()
         info["shield_active"] = was_modified
         info["gate_applied"] = self.concept_encoder is not None
+        if hasattr(self, "_last_gate"):
+            info["layer2_gate"] = self._last_gate.copy()
+        if hasattr(self, "_last_action_prior"):
+            info["layer2_action_prior"] = self._last_action_prior.copy()
 
         # Generate proof tree (expensive, only for evaluation)
         if self.generate_proof_trees:
@@ -274,14 +283,11 @@ class ConceptGateSupervisionCallback(BaseCallback):
         gate_values = self.safety_gate(pred_concepts.detach())
 
         # Compute gate targets
-        cooling_demand = torch.max(targets[:, 5], targets[:, 6])  # max(demand_A, demand_B)
-        bess_headroom = targets[:, 9]
-
-        gate_target = torch.ones_like(gate_values)
-        gate_target[:, 0] = 1.0 - self.gate_alpha * cooling_demand  # throttle
-        gate_target[:, 1] = 1.0   # pump — always allow (cooling is safe)
-        gate_target[:, 2] = 1.0   # HVAC — always allow
-        gate_target[:, 3] = 1.0 - self.gate_beta * (1.0 - bess_headroom)  # BESS
+        gate_target = build_gate_targets(
+            targets,
+            gate_alpha=self.gate_alpha,
+            gate_beta=self.gate_beta,
+        )
 
         gate_loss = F.mse_loss(gate_values, gate_target) * self.gate_loss_weight
 
@@ -460,7 +466,7 @@ def train(cfg: DictConfig) -> None:
         gate_loss_weight=gate_weight,
         concept_initial_weight=1.0,
         concept_decay_to=0.1,
-        supervision_freq=2048,
+        supervision_freq=int(getattr(algo_cfg, "supervision_freq", 2048)),
         batch_size=256,
         lr=1e-3,
         verbose=1,

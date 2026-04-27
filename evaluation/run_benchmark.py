@@ -58,6 +58,8 @@ Tier 3 Ablations
   cbm_shield   — PPO + concept bottleneck + physics shield (no gate)
 """
 from __future__ import annotations
+
+import torch
 import argparse, csv, time
 from pathlib import Path
 from typing import Any
@@ -74,6 +76,7 @@ from baselines.mpc_fast import MPCFastController
 from baselines.mpc_macro import MPCMacroController
 from baselines.milp_dispatch import MILPDispatchController
 from baselines.metrics_callback import C2GTransitionLoggerCallback, build_ablation_suffix
+from baselines.safety.safe_projection import compute_layer2_action
 
 # ── High-Assurance agents ────────────────────────────────────────
 from baselines.safety.cbf_shield import CBFShield, CBFShieldedAgent
@@ -254,6 +257,29 @@ class SB3Agent:
         return self._model.predict(obs, deterministic=deterministic)
 
 
+class HAC2GAgent(SB3Agent):
+    def __init__(self, model, algo_name: str, concept_encoder, safety_gate, obs_normalizer=None):
+        super().__init__(model, algo_name=algo_name, obs_normalizer=obs_normalizer)
+        self._concept_encoder = concept_encoder
+        self._safety_gate = safety_gate
+
+    def predict(self, obs: np.ndarray, deterministic: bool = True):
+        action, state = super().predict(obs, deterministic=deterministic)
+        raw_obs = np.asarray(obs, dtype=np.float32)
+        with torch.no_grad():
+            device = next(self._concept_encoder.parameters()).device
+            obs_t = torch.as_tensor(raw_obs, dtype=torch.float32, device=device).unsqueeze(0)
+            action_t = torch.as_tensor(action, dtype=torch.float32, device=device).unsqueeze(0)
+            concepts = self._concept_encoder(obs_t)
+            gated_action, _, _ = compute_layer2_action(
+                action_t,
+                concepts,
+                obs=obs_t,
+                safety_gate=self._safety_gate,
+            )
+        return gated_action.squeeze(0).detach().cpu().numpy(), state
+
+
 def _resolve_sb3_spec(algo: str):
     from stable_baselines3 import PPO, SAC
 
@@ -296,6 +322,15 @@ def load_sb3_agent(algo: str, scenario: str, seed: int, model_dir: str | None):
     obs_normalizer = None
     if should_restore_norm:
         obs_normalizer = _maybe_load_obs_normalizer(path.parent / "vec_normalize.pkl", scenario)
+    if algo.lower() in {"ha_c2g", "cbm_gate"}:
+        fe = model.policy.features_extractor
+        return HAC2GAgent(
+            model,
+            algo_name=algo.lower(),
+            concept_encoder=fe.concept_encoder,
+            safety_gate=fe.safety_gate,
+            obs_normalizer=obs_normalizer,
+        )
     return SB3Agent(model, algo_name=algo.lower(), obs_normalizer=obs_normalizer)
 
 

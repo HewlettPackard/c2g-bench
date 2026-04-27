@@ -45,6 +45,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+import torch
 from tqdm import tqdm
 
 from c2g_env import C2GFastEnv
@@ -53,6 +54,7 @@ from baselines.safety_shield import SafetyShield
 from baselines.safety.cbf_shield import CBFShield
 from baselines.safety.hj_shield import HJShield
 from baselines.safety.mpc_safety_filter import MPCSafetyFilter
+from baselines.safety.safe_projection import compute_layer2_action
 
 SCENARIOS = ["default", "scenario_a", "scenario_b", "scenario_c"]
 T_WARN_NORM = 33.0 / 35.0
@@ -263,6 +265,29 @@ class SB3Agent:
         return self._m.predict(obs, deterministic=deterministic)
 
 
+class HAC2GAgent(SB3Agent):
+    def __init__(self, model, algo_name: str, concept_encoder, safety_gate, obs_normalizer=None):
+        super().__init__(model, algo_name=algo_name, obs_normalizer=obs_normalizer)
+        self._concept_encoder = concept_encoder
+        self._safety_gate = safety_gate
+
+    def predict(self, obs, deterministic=True):
+        action, state = super().predict(obs, deterministic=deterministic)
+        raw_obs = np.asarray(obs, dtype=np.float32)
+        with torch.no_grad():
+            device = next(self._concept_encoder.parameters()).device
+            obs_t = torch.as_tensor(raw_obs, dtype=torch.float32, device=device).unsqueeze(0)
+            action_t = torch.as_tensor(action, dtype=torch.float32, device=device).unsqueeze(0)
+            concepts = self._concept_encoder(obs_t)
+            gated_action, _, _ = compute_layer2_action(
+                action_t,
+                concepts,
+                obs=obs_t,
+                safety_gate=self._safety_gate,
+            )
+        return gated_action.squeeze(0).detach().cpu().numpy(), state
+
+
 def _maybe_load_obs_normalizer(stats_path: Path, scenario: str):
     if not stats_path.exists():
         return None
@@ -304,6 +329,15 @@ def load_agent(agent_name: str, scenario: str, seed: int, model_dir: str | None)
         obs_normalizer = None
         if algo_key in _PPO_LIKE_AGENT_KEYS:
             obs_normalizer = _maybe_load_obs_normalizer(path.parent / "vec_normalize.pkl", scenario)
+        if agent_name in ("ha_c2g", "cbm_gate"):
+            fe = model.policy.features_extractor
+            return HAC2GAgent(
+                model,
+                algo_name=agent_name,
+                concept_encoder=fe.concept_encoder,
+                safety_gate=fe.safety_gate,
+                obs_normalizer=obs_normalizer,
+            ), True
         return SB3Agent(model, algo_name=agent_name, obs_normalizer=obs_normalizer), True
     else:
         print(f"    SKIP: No model at {path}.zip — using random agent")

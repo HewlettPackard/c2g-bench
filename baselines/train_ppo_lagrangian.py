@@ -31,6 +31,7 @@ from pathlib import Path
 import baselines._hydra_compat  # noqa: F401
 
 import hydra
+from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig
 
 import numpy as np
@@ -156,7 +157,7 @@ def train(cfg: DictConfig) -> None:
     scenario = cfg.scenario.name
     algo_cfg = cfg.algo
     seed     = cfg.experiment.seed
-    out_dir  = Path(".")
+    out_dir  = Path(HydraConfig.get().runtime.output_dir)
 
     log.info(f"PPO-Lagrangian: scenario={scenario}, seed={seed}")
 
@@ -224,7 +225,7 @@ def train(cfg: DictConfig) -> None:
             best_model_save_path=str(out_dir / "best_model"),
             deterministic=True,
         ),
-        C2GMetricsCallback(log_dir=str(out_dir)),
+        C2GMetricsCallback(csv_path=out_dir / "metrics.csv"),
     ]
 
     model.learn(total_timesteps=timesteps, callback=callbacks)

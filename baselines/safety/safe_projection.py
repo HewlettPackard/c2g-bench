@@ -52,6 +52,70 @@ except ImportError:
 
 if _TORCH_AVAILABLE:
 
+    def build_gate_targets(
+        concepts: torch.Tensor,
+        gate_alpha: float = 0.5,
+        gate_beta: float = 0.3,
+    ) -> torch.Tensor:
+        """Build concept-guided pass-through targets for Layer 2."""
+        cooling_A = concepts[:, 5]
+        cooling_B = concepts[:, 6]
+        cooling_demand = torch.maximum(cooling_A, cooling_B)
+        grid_urgency = concepts[:, 7]
+
+        gate_target = torch.ones(concepts.shape[0], 4, device=concepts.device, dtype=concepts.dtype)
+        gate_target[:, 0] = 1.0 - gate_alpha * cooling_demand
+        gate_target[:, 1] = 1.0 - 0.75 * gate_alpha * cooling_A
+        gate_target[:, 2] = 1.0 - 0.75 * gate_alpha * cooling_B
+        gate_target[:, 3] = 1.0 - gate_beta * grid_urgency
+        return torch.clamp(gate_target, 0.0, 1.0)
+
+
+    def build_action_priors(
+        concepts: torch.Tensor,
+        obs: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Build concept-guided safe action priors for Layer 2 blending."""
+        cooling_A = concepts[:, 5]
+        cooling_B = concepts[:, 6]
+        cooling_demand = torch.maximum(cooling_A, cooling_B)
+        batch_pressure = concepts[:, 8]
+        grid_urgency = concepts[:, 7]
+        bess_headroom = concepts[:, 9]
+
+        priors = torch.zeros(concepts.shape[0], 4, device=concepts.device, dtype=concepts.dtype)
+        priors[:, 0] = torch.clamp(cooling_demand - 0.5 * batch_pressure + 0.25, 0.0, 1.0)
+        priors[:, 1] = torch.clamp(cooling_A, 0.0, 1.0)
+        priors[:, 2] = torch.clamp(cooling_B, 0.0, 1.0)
+
+        regd = torch.zeros(concepts.shape[0], device=concepts.device, dtype=concepts.dtype)
+        if obs is not None and obs.shape[1] > 6:
+            regd = torch.clamp(obs[:, 6], -1.0, 1.0)
+        priors[:, 3] = torch.clamp(torch.sign(regd) * grid_urgency * bess_headroom, -1.0, 1.0)
+        return priors
+
+
+    def blend_with_action_priors(
+        policy_action: torch.Tensor,
+        gate_values: torch.Tensor,
+        action_priors: torch.Tensor,
+    ) -> torch.Tensor:
+        """Blend policy actions toward concept-guided priors."""
+        return gate_values * policy_action + (1.0 - gate_values) * action_priors
+
+
+    def compute_layer2_action(
+        policy_action: torch.Tensor,
+        concepts: torch.Tensor,
+        obs: torch.Tensor | None = None,
+        safety_gate: "SafeProjectionGate | None" = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Apply Layer 2 using learned pass-through gates and action priors."""
+        gate_values = safety_gate(concepts) if safety_gate is not None else torch.ones_like(policy_action)
+        action_priors = build_action_priors(concepts, obs=obs)
+        safe_action = blend_with_action_priors(policy_action, gate_values, action_priors)
+        return safe_action, gate_values, action_priors
+
     class SafeProjectionGate(nn.Module):
         """
         Concept-conditioned action gate (the trainable component).
@@ -133,6 +197,7 @@ if _TORCH_AVAILABLE:
             self,
             raw_action: torch.Tensor,
             concepts: torch.Tensor,
+            observations: torch.Tensor | None = None,
         ) -> torch.Tensor:
             """
             Project raw policy output into safe, bounded action space.
@@ -156,9 +221,13 @@ if _TORCH_AVAILABLE:
                 bounded[:, 3] = 2.0 * bounded[:, 3] - 1.0
 
             # Step 2: Concept-conditioned gate
-            gate = self.safety_gate(concepts)
-
-            return bounded * gate
+            safe_action, _, _ = compute_layer2_action(
+                bounded,
+                concepts,
+                obs=observations,
+                safety_gate=self.safety_gate,
+            )
+            return safe_action
 
 
     class GateSupervisionLoss:
@@ -213,29 +282,11 @@ if _TORCH_AVAILABLE:
             -------
             loss : scalar tensor
             """
-            # Concept indices (from C2G_CONCEPT_NAMES):
-            # 5 = cooling_demand_A, 6 = cooling_demand_B, 9 = bess_headroom
-            cooling_demand = torch.max(
-                concept_targets[:, 5],
-                concept_targets[:, 6],
-            )  # (batch,)
-            bess_headroom = concept_targets[:, 9]  # (batch,)
-
-            # Per-action gate targets
-            batch_size = gate_values.shape[0]
-            gate_target = torch.ones_like(gate_values)
-
-            # Throttle (action 0): attenuate when cooling demand high
-            gate_target[:, 0] = 1.0 - self.gate_alpha * cooling_demand
-
-            # Pump (action 1): always pass through — more cooling is safe
-            gate_target[:, 1] = 1.0
-
-            # HVAC (action 2): always pass through
-            gate_target[:, 2] = 1.0
-
-            # BESS (action 3): attenuate when headroom is low
-            gate_target[:, 3] = 1.0 - self.gate_beta * (1.0 - bess_headroom)
+            gate_target = build_gate_targets(
+                concept_targets,
+                gate_alpha=self.gate_alpha,
+                gate_beta=self.gate_beta,
+            )
 
             loss = F.mse_loss(gate_values, gate_target) * self.loss_weight
             return loss

@@ -39,15 +39,53 @@ from stable_baselines3.common.vec_env import VecNormalize
 
 from c2g_env import C2GFastEnv
 from baselines.safety.concept_bottleneck import (
+    C2GConceptEncoder,
     C2GGatedConceptFeatureExtractor,
 )
 from baselines.safety.safe_projection import SafeProjectionGate
 
 # Re-use the concept+gate supervision callback from HA-C2G
-from baselines.train_ha_c2g import ConceptGateSupervisionCallback
+from baselines.train_ha_c2g import ConceptGateSupervisionCallback, HAC2GShieldWrapper
 from baselines.metrics_callback import C2GMetricsCallback
 
 log = logging.getLogger(__name__)
+
+
+class _PassthroughShieldStats:
+    def as_dict(self):
+        return {}
+
+
+class PassthroughShield:
+    def __init__(self):
+        self.stats = _PassthroughShieldStats()
+
+    def filter(self, action, obs):
+        return np.asarray(action, dtype=np.float32), False, {}
+
+    def reset(self):
+        pass
+
+
+def make_gate_env_fn(
+    scenario: str,
+    seed: int,
+    concept_encoder: C2GConceptEncoder,
+    safety_gate: SafeProjectionGate,
+):
+    def _init():
+        base_env = C2GFastEnv(scenario=scenario)
+        env = HAC2GShieldWrapper(
+            base_env,
+            shield=PassthroughShield(),
+            shield_penalty=0.0,
+            generate_proof_trees=False,
+            concept_encoder=concept_encoder,
+            safety_gate=safety_gate,
+        )
+        env.reset(seed=seed)
+        return env
+    return _init
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -73,9 +111,13 @@ def train(cfg: DictConfig) -> None:
           f"concepts={n_concepts}  gate_α={gate_alpha}  "
           f"timesteps={algo_cfg.timesteps:,}")
 
-    # ── Environments (NO shield wrapper) ─────────────────────────
+    # ── Shared concept encoder + gate (for features and action path) ─────
+    shared_concept_encoder = C2GConceptEncoder(obs_dim=18, n_concepts=n_concepts, hidden=64)
+    shared_safety_gate = SafeProjectionGate(concept_dim=n_concepts, action_dim=4)
+
+    # ── Environments (gate active, no physics shield) ────────────────────
     vec_env = make_vec_env(
-        lambda: C2GFastEnv(scenario=scenario),
+        make_gate_env_fn(scenario, seed, shared_concept_encoder, shared_safety_gate),
         n_envs=algo_cfg.n_envs, seed=seed)
     vec_env = VecNormalize(
         vec_env,
@@ -83,7 +125,7 @@ def train(cfg: DictConfig) -> None:
         clip_obs=algo_cfg.clip_obs, clip_reward=algo_cfg.clip_reward)
 
     eval_env = make_vec_env(
-        lambda: C2GFastEnv(scenario=scenario),
+        make_gate_env_fn(scenario, seed + 999, shared_concept_encoder, shared_safety_gate),
         n_envs=1, seed=seed + 999)
     eval_env = VecNormalize(
         eval_env, norm_obs=True, norm_reward=False,
@@ -98,6 +140,8 @@ def train(cfg: DictConfig) -> None:
             n_concepts=n_concepts,
             action_dim=4,
             hidden=64,
+            concept_encoder=shared_concept_encoder,
+            safety_gate=shared_safety_gate,
         ),
         net_arch=net_arch,
     )
@@ -122,8 +166,10 @@ def train(cfg: DictConfig) -> None:
     )
 
     fe = model.policy.features_extractor
-    concept_encoder = fe.concept_encoder
-    safety_gate = fe.safety_gate
+    assert fe.concept_encoder is shared_concept_encoder
+    assert fe.safety_gate is shared_safety_gate
+    concept_encoder = shared_concept_encoder
+    safety_gate = shared_safety_gate
 
     # ── Callbacks ────────────────────────────────────────────────
     checkpoint_cb = CheckpointCallback(
@@ -151,7 +197,7 @@ def train(cfg: DictConfig) -> None:
         gate_loss_weight=gate_weight,
         concept_initial_weight=1.0,
         concept_decay_to=0.1,
-        supervision_freq=2048,
+        supervision_freq=int(getattr(algo_cfg, "supervision_freq", 2048)),
         batch_size=256,
         lr=1e-3,
         verbose=1,
