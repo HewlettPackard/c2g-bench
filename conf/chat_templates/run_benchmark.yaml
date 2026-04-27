@@ -77,7 +77,7 @@ hardware_system_prompt: |
     if |regd_signal| < 0.10 and bess_soc < 0.40: bess_dispatch=+0.3  [opportunistic charge when idle]
 
 hardware_user_prompt: |
-  Scenario: {scenario}
+  Scenario: {scenario}  |  committed_mw_max: {committed_mw_max} MW
 
   Current normalized system state (18-D, keyed by name):
   {state_json}
@@ -146,18 +146,19 @@ macro_system_prompt: |
   • v_pcc_pu < 0.90
 
   ── ACTIONS (2 floats) ─────────────────────────────────────────────────────
-  commit_norm  [0,1]   Fraction of committed_mw_max to bid.
+  commit_norm  [0,1]   Fraction of committed_mw_max to bid (committed_mw_max passed above).
     Winning bid → hardware tier tracks this MW for next 180 sub-steps.
-    Losing bid  → falls back to DR baseline (~5–20 MW depending on scenario).
+    Losing bid  → committed_mw falls to dr_baseline_mw (passed above).
     High commit_norm = more revenue potential but harder to track → lower perf_score.
     Reduce when: max(temp_A_norm, temp_B_norm) > 0.85, backlog_norm > 1.0, or bess_soc < 0.2.
 
-  bid_price    [0,100] Offer price in USD/MW.
-    Grid accepts bid if bid_price ≤ obs_17 × 100 (posted RMCP).
+  bid_price    [0,100] Offer price in USD/MW·h.
+    Internally mapped as: actual_bid = bid_price / 100 × 200 USD/MW·h.
+    Grid accepts bid if bid_price ≤ 50 × obs_17  [obs_17 = rmcp / rmcp_max; rmcp_max = 100].
     Low price  → near-certain acceptance, lower revenue per MW.
     High price → possible rejection, higher revenue if accepted.
-    Rule of thumb: bid_price = obs_17 × 80 when obs_18 < 1.0 (low urgency, be conservative);
-                   bid_price = obs_17 × 95 when obs_18 > 2.0 (high urgency, be aggressive).
+    Rule of thumb: bid_price = 40 × obs_17 when obs_18 < 1.0 (conservative);
+                   bid_price = 48 × obs_17 when obs_18 > 2.0 (aggressive).
 
   ── REASONING WARM-START PRIOR ─────
   Use this as a deterministic starting point, then explore possible actions to refine for reward/cost tradeoffs.
@@ -166,7 +167,7 @@ macro_system_prompt: |
     elif grid_load_norm > 0.4: commit_norm=0.50
     else: commit_norm=0.20
   Base bid pricing from RMCP:
-    bid_price_norm=clip(0.4*obs_17,0,1)  =>  bid_price=clip(80*obs_17,0,100)
+    bid_price=clip(40*obs_17, 0, 100)    [acceptance threshold = 50×obs_17; bidding at 80% of it]
   Safety overrides:
     [headroom_A = 1.0−temp_A_norm; headroom_B = 1.0−temp_B_norm; clip(x,lo,hi) clamps x to [lo,hi]]
     if min(headroom_A,headroom_B) < 0.10: commit_norm=min(commit_norm,0.30)
@@ -174,12 +175,13 @@ macro_system_prompt: |
     if v_pcc_pu < 0.96: commit_norm=min(commit_norm,0.40)
 
 macro_user_prompt: |
-  Scenario: {scenario}
+  Scenario: {scenario}  |  committed_mw_max: {committed_mw_max} MW  |  dr_baseline_mw (bid rejected): {dr_baseline_mw} MW
 
   Current normalized system state (19-D, keyed by name):
   {state_json}
 
-  Respond with ONLY a JSON object — no explanation, no markdown, no extra text:
+  Respond with ONLY a valid JSON object — no explanation, no markdown, no extra text.
+  Use EXACTLY these two key names (copy them verbatim):
   {{
     "commit_norm": <float in [0, 1]>,
     "bid_price": <float in [0, 100]>

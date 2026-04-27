@@ -98,10 +98,22 @@ def build_prompt(
     mode_prompts: dict[str, str],
     state_dict: dict[str, float],
     scenario: str,
+    env_context: dict[str, Any] | None = None,
 ) -> str:
-    """Build full prompt from system and user prompts with state context."""
+    """Build full prompt from system and user prompts with state context.
+
+    ``env_context`` is an optional dict of environment-derived values (e.g.
+    ``committed_mw_max``, ``dr_baseline_mw``) injected as extra format variables
+    into the user prompt template.
+    """
     system_prompt = mode_prompts["system"]
-    user_prompt = mode_prompts["user"].format(scenario=scenario, state_json=json.dumps(state_dict))
+    fmt_kwargs: dict[str, Any] = {
+        "scenario": scenario,
+        "state_json": json.dumps(state_dict),
+    }
+    if env_context:
+        fmt_kwargs.update(env_context)
+    user_prompt = mode_prompts["user"].format(**fmt_kwargs)
     return f"{system_prompt}\n\n{user_prompt}"
 
 
@@ -287,9 +299,10 @@ class _BaseLLMPolicyAgent:
         field_order: list[str],
         bounds: dict[str, tuple[float, float]],
         previous_by_field: dict[str, float] | None,
+        env_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         obs_dict = obs_to_dict(obs, self._state_names)
-        prompt = build_prompt(self._prompts[mode], obs_dict, scenario)
+        prompt = build_prompt(self._prompts[mode], obs_dict, scenario, env_context=env_context)
         return generate_structured(
             self._client,
             self._model_name,
@@ -321,6 +334,12 @@ class HardwareLLMPolicyAgent(_BaseLLMPolicyAgent):
                 "bess_dispatch": float(self._previous_action[3]),
             }
 
+        env_context: dict[str, Any] | None = None
+        if env is not None:
+            env_context = {
+                "committed_mw_max": float(env._scfg.get("committed_mw_max", 30.0)),
+            }
+
         try:
             payload = self._generate_payload(
                 obs=obs,
@@ -334,6 +353,7 @@ class HardwareLLMPolicyAgent(_BaseLLMPolicyAgent):
                     "bess_dispatch": (-1.0, 1.0),
                 },
                 previous_by_field=previous_by_field,
+                env_context=env_context,
             )
         except ValueError as exc:
             raise RuntimeError(
@@ -368,6 +388,13 @@ class MacroLLMPolicyAgent(_BaseLLMPolicyAgent):
                 "bid_price": float(self._previous_action[1] * 100.0),
             }
 
+        env_context: dict[str, Any] | None = None
+        if env is not None:
+            env_context = {
+                "committed_mw_max": float(getattr(env, "_committed_max_mw", 30.0)),
+                "dr_baseline_mw": float(getattr(env, "_dr_baseline_mw", 5.0)),
+            }
+
         try:
             payload = self._generate_payload(
                 obs=obs,
@@ -379,6 +406,7 @@ class MacroLLMPolicyAgent(_BaseLLMPolicyAgent):
                     "bid_price": (0.0, 100.0),
                 },
                 previous_by_field=previous_by_field,
+                env_context=env_context,
             )
         except ValueError as exc:
             raise RuntimeError(
