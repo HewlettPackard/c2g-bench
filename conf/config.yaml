@@ -20,7 +20,7 @@
 
 defaults:
   - scenario: default
-  - algo: ppo
+  - algo: rule_macro_ppo
   - market: nyiso_nyc
   - logging: tensorboard
   - _self_
@@ -30,6 +30,10 @@ experiment:
   name: "${algo.name}_${scenario.name}"
   seed: 42
   market: "${scenario.grid_market}"  # logged for tracking
+
+# Hardware — "auto" uses CUDA when available, otherwise CPU.
+# Override: python baselines/train_ppo.py device=cpu
+device: cpu
 
 # Output directory structure: outputs/{algo}_{scenario}/seed_{N}/{timestamp}/
 hydra:
