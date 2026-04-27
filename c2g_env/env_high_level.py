@@ -237,30 +237,25 @@ class C2GMacroEnv(gym.Env):
         bid_price = bid_price_norm * 2.0 * self._rmcp_max
 
         # =================================================================
-        # Phase 1: Grid posts offer (RMCP + regulation need)
+        # Market handshake (Phases 1–3)
         # =================================================================
-        grid = self._fast_env._grid
-        offer = grid.step_rmcp()
-        rmcp_norm     = offer["rmcp_usd"] / self._rmcp_max
-        reg_need_norm = offer["residual_mw"] / max(self._committed_max_mw, 1.0)
-        self._last_rmcp_norm     = rmcp_norm
+        hs = self.run_handshake(
+            self._fast_env._grid,
+            bid_mw_norm=bid_mw_norm,
+            bid_price_norm=bid_price_norm,
+            committed_max_mw=self._committed_max_mw,
+            rmcp_max=self._rmcp_max,
+            dr_baseline_mw=self._dr_baseline_mw,
+            dr_rate_usd_mw=self._dr_rate_usd_mw,
+        )
+        committed_mw = hs["committed_mw"]
+        rate = hs["rate"]
+        offer = hs["offer"]
+        result = hs["result"]
+        rmcp_norm = hs["rmcp_norm"]
+        reg_need_norm = hs["reg_need_norm"]
+        self._last_rmcp_norm = rmcp_norm
         self._last_reg_need_norm = reg_need_norm
-
-        # =================================================================
-        # Phase 2: DC bids (agent action already decoded above)
-        # =================================================================
-
-        # =================================================================
-        # Phase 3: Grid clears bid
-        # =================================================================
-        result = grid.clear_bid(bid_price, bid_mw)
-
-        if result["accepted"]:
-            committed_mw = result["accepted_mw"]
-            rate = result["clearing_price"]
-        else:
-            committed_mw = self._dr_baseline_mw
-            rate = self._dr_rate_usd_mw
 
         self._fast_env.committed_mw = committed_mw
 
@@ -269,6 +264,7 @@ class C2GMacroEnv(gym.Env):
         # =================================================================
         sub_rewards    = []
         sub_obs_list   = []
+        sub_infos      = []
         temp_As, temp_Bs = [], []
         regd_abs, lmps, load_norms = [], [], []
         track_errs    = []
@@ -298,6 +294,7 @@ class C2GMacroEnv(gym.Env):
             obs, rew, term, trunc, info = self._fast_env.step(low_action)
             sub_rewards.append(rew)
             sub_obs_list.append(obs)
+            sub_infos.append(info)
 
             temp_As.append(info["temp_A"])
             temp_Bs.append(info["temp_B"])
@@ -333,30 +330,21 @@ class C2GMacroEnv(gym.Env):
         mean_lmp = float(np.mean(lmps))
         bess_soc_end = last_obs[2]
 
-        freq_devs = [float(o[14]) for o in sub_obs_list]
-        v_pccs    = [float(o[15]) for o in sub_obs_list]
+        # Inject p_flex_max_kw into infos so aggregate_macro_obs can
+        # compute backlog_norms without reaching into the env.
+        p_flex_max_kw = self._fast_env._workload.p_flex_max_kw
+        for idx, info in enumerate(sub_infos):
+            info["p_flex_max_kw"] = p_flex_max_kw
 
-        obs = np.array([
-            np.mean(temp_As) / T_safe,                     # 0
-            np.mean(temp_Bs) / T_safe,                     # 1
-            bess_soc_end,                                  # 2
-            float(np.mean([o[3] for o in sub_obs_list])),  # 3 p_base_mean
-            float(np.mean([o[5] for o in sub_obs_list])),  # 4 p_facility_mean
-            float(np.mean(regd_abs)),                      # 5 regd_mean
-            min(mean_lmp / 200.0, 1.0),                    # 6 lmp_norm
-            float(np.mean(load_norms)),                    # 7 grid_load_mean
-            float(np.mean(track_errs)) / max(committed_mw * 1_000, 1),  # 8
-            float(spike_any),                              # 9
-            max(0.0, (T_safe - max(temp_As)) / T_safe),   # 10 headroom_A
-            max(0.0, (T_safe - max(temp_Bs)) / T_safe),   # 11 headroom_B
-            bid_mw_norm,                                   # 12 bid_mw_prev
-            bid_price_norm,                                # 13 bid_price_prev
-            float(np.mean(freq_devs)),                     # 14 freq_dev_mean
-            float(np.mean(v_pccs)),                        # 15 v_pcc_mean
-            float(np.mean(backlog_norms)),                 # 16 backlog_norm_mean
-            float(np.clip(rmcp_norm, 0.0, 5.0)),          # 17 rmcp_norm
-            float(np.clip(reg_need_norm, 0.0, 5.0)),      # 18 reg_need_norm
-        ], dtype=np.float32)
+        obs = self.aggregate_macro_obs(
+            sub_obs_list, sub_infos,
+            T_safe=T_safe,
+            committed_mw=committed_mw,
+            bid_mw_norm=bid_mw_norm,
+            bid_price_norm=bid_price_norm,
+            rmcp_norm=rmcp_norm,
+            reg_need_norm=reg_need_norm,
+        )
 
         # -----------------------------------------------------------------
         # Macro reward (market handshake)
@@ -428,17 +416,116 @@ class C2GMacroEnv(gym.Env):
         pass
 
     # ------------------------------------------------------------------
-    # Private helpers
+    # Reusable static / class methods for macro-level logic
     # ------------------------------------------------------------------
+    # These are extracted so that other environments (e.g. wrappers that
+    # pair a rule-based macro with a learned low-level) can reuse the
+    # same observation aggregation and market handshake logic without
+    # duplicating code.
 
-    def _obs_from_reset(self, inner_obs: np.ndarray) -> np.ndarray:
-        """Build macro observation from inner env's reset observation."""
-        T_safe = self._fast_env._thermal.T_safe
-        bess_soc = inner_obs[2]
+    @staticmethod
+    def aggregate_macro_obs(
+        sub_obs_list: list[np.ndarray],
+        sub_infos: list[dict],
+        *,
+        T_safe: float,
+        committed_mw: float,
+        bid_mw_norm: float,
+        bid_price_norm: float,
+        rmcp_norm: float,
+        reg_need_norm: float,
+    ) -> np.ndarray:
+        """
+        Aggregate sub-step data into a 19-D macro observation.
+
+        Parameters
+        ----------
+        sub_obs_list : list of ndarray (N, 18)
+            Low-level observations collected over the macro window.
+        sub_infos : list of dict
+            Corresponding info dicts from ``C2GFastEnv.step()``.
+        T_safe : float
+            Thermal safety limit (°C).
+        committed_mw : float
+            Current grid commitment [MW].
+        bid_mw_norm, bid_price_norm : float
+            Previous bid action (normalised).
+        rmcp_norm, reg_need_norm : float
+            Latest market signals (normalised).
+
+        Returns
+        -------
+        ndarray of shape (19,)
+        """
+        buf = np.array(sub_obs_list)  # (N, 18)
+
+        temp_As = [info["temp_A"] for info in sub_infos]
+        temp_Bs = [info["temp_B"] for info in sub_infos]
+        regd_abs = [abs(info["regd_signal"]) for info in sub_infos]
+        lmps = [info["lmp"] for info in sub_infos]
+        track_errs = [info["tracking_err_kw"] for info in sub_infos]
+        spike_any = any(info["is_spike"] for info in sub_infos)
+        backlog_norms = [
+            min(info["backlog_kw"] / max(info.get("p_flex_max_kw", 1.0), 1.0), 2.0)
+            for info in sub_infos
+        ]
+
+        mean_lmp = float(np.mean(lmps))
+
+        return np.array([
+            np.mean(temp_As) / T_safe,                         # 0
+            np.mean(temp_Bs) / T_safe,                         # 1
+            float(buf[-1, 2]),                                 # 2  bess_soc_end
+            float(np.mean(buf[:, 3])),                         # 3  p_base_mean
+            float(np.mean(buf[:, 5])),                         # 4  p_facility_mean
+            float(np.mean(regd_abs)),                          # 5  regd_mean
+            min(mean_lmp / 200.0, 1.0),                        # 6  lmp_norm
+            float(np.mean(buf[:, 8])),                         # 7  grid_load_mean
+            float(np.mean(track_errs)) / max(committed_mw * 1_000, 1),  # 8
+            float(spike_any),                                  # 9
+            max(0.0, (T_safe - max(temp_As)) / T_safe),       # 10 headroom_A
+            max(0.0, (T_safe - max(temp_Bs)) / T_safe),       # 11 headroom_B
+            bid_mw_norm,                                       # 12 bid_mw_prev
+            bid_price_norm,                                    # 13 bid_price_prev
+            float(np.mean(buf[:, 14])),                        # 14 freq_dev_mean
+            float(np.mean(buf[:, 15])),                        # 15 v_pcc_mean
+            float(np.mean(backlog_norms)),                     # 16 backlog_norm_mean
+            float(np.clip(rmcp_norm, 0.0, 5.0)),              # 17 rmcp_norm
+            float(np.clip(reg_need_norm, 0.0, 5.0)),          # 18 reg_need_norm
+        ], dtype=np.float32)
+
+    @staticmethod
+    def macro_obs_from_reset(
+        inner_obs: np.ndarray,
+        *,
+        T_safe: float,
+        temp_A: float,
+        temp_B: float,
+        prev_bid_mw_norm: float = 0.5,
+        prev_bid_price_norm: float = 0.5,
+    ) -> np.ndarray:
+        """
+        Build macro observation from a single inner env reset observation.
+
+        Parameters
+        ----------
+        inner_obs : ndarray of shape (18,)
+            Observation from ``C2GFastEnv.reset()``.
+        T_safe : float
+            Thermal safety limit (°C).
+        temp_A, temp_B : float
+            Current zone temperatures (°C, raw, not normalised).
+        prev_bid_mw_norm, prev_bid_price_norm : float
+            Previous bid action (normalised).
+
+        Returns
+        -------
+        ndarray of shape (19,)
+        """
         return np.array([
             inner_obs[0],   # temp_A_norm
             inner_obs[1],   # temp_B_norm
-            bess_soc,
+            inner_obs[2],   # bess_soc
             inner_obs[3],   # p_base_norm
             inner_obs[5],   # p_facility_norm
             abs(inner_obs[6]),  # regd_abs
@@ -446,13 +533,90 @@ class C2GMacroEnv(gym.Env):
             inner_obs[8],   # grid_load_norm
             0.0,            # tracking_err_mean (no steps yet)
             0.0,            # is_spike_any
-            max(0.0, (T_safe - self._fast_env._thermal.temp_A) / T_safe),
-            max(0.0, (T_safe - self._fast_env._thermal.temp_B) / T_safe),
-            self._prev_bid_mw_norm,
-            self._prev_bid_price_norm,
-            0.0,                        # 14 freq_dev_mean (nominal)
-            1.0,                        # 15 v_pcc_mean (nominal)
-            0.0,                        # 16 backlog_norm_mean
-            0.0,                        # 17 rmcp_norm (no market signal yet)
-            0.0,                        # 18 reg_need_norm (no market signal yet)
+            max(0.0, (T_safe - temp_A) / T_safe),
+            max(0.0, (T_safe - temp_B) / T_safe),
+            prev_bid_mw_norm,
+            prev_bid_price_norm,
+            0.0,            # 14 freq_dev_mean (nominal)
+            1.0,            # 15 v_pcc_mean (nominal)
+            0.0,            # 16 backlog_norm_mean
+            0.0,            # 17 rmcp_norm (no market signal yet)
+            0.0,            # 18 reg_need_norm (no market signal yet)
         ], dtype=np.float32)
+
+    @staticmethod
+    def run_handshake(
+        grid,
+        *,
+        bid_mw_norm: float,
+        bid_price_norm: float,
+        committed_max_mw: float,
+        rmcp_max: float,
+        dr_baseline_mw: float,
+        dr_rate_usd_mw: float,
+    ) -> dict:
+        """
+        Execute the 3-phase market handshake (RMCP → bid → clear).
+
+        Parameters
+        ----------
+        grid : MacroGridSignal
+            The grid model instance (provides ``step_rmcp`` / ``clear_bid``).
+        bid_mw_norm, bid_price_norm : float
+            Agent's normalised bid action.
+        committed_max_mw : float
+            Maximum biddable capacity [MW].
+        rmcp_max : float
+            RMCP normalisation ceiling [$/MWh].
+        dr_baseline_mw : float
+            Fallback DR commitment if bid rejected [MW].
+        dr_rate_usd_mw : float
+            Fallback DR rate [$/MW].
+
+        Returns
+        -------
+        dict with keys:
+            committed_mw, rate, rmcp_norm, reg_need_norm,
+            offer (raw grid offer dict), result (raw clear_bid dict).
+        """
+        bid_mw = bid_mw_norm * committed_max_mw
+        bid_price = bid_price_norm * 2.0 * rmcp_max
+
+        # Phase 1: Grid posts RMCP + regulation need
+        offer = grid.step_rmcp()
+        rmcp_norm = offer["rmcp_usd"] / rmcp_max
+        reg_need_norm = offer["residual_mw"] / max(committed_max_mw, 1.0)
+
+        # Phase 3: Grid clears bid
+        result = grid.clear_bid(bid_price, bid_mw)
+
+        if result["accepted"]:
+            committed_mw = result["accepted_mw"]
+            rate = result["clearing_price"]
+        else:
+            committed_mw = dr_baseline_mw
+            rate = dr_rate_usd_mw
+
+        return {
+            "committed_mw": committed_mw,
+            "rate": rate,
+            "rmcp_norm": rmcp_norm,
+            "reg_need_norm": reg_need_norm,
+            "offer": offer,
+            "result": result,
+        }
+
+    # ------------------------------------------------------------------
+    # Private helpers
+    # ------------------------------------------------------------------
+
+    def _obs_from_reset(self, inner_obs: np.ndarray) -> np.ndarray:
+        """Build macro observation from inner env's reset observation."""
+        return self.macro_obs_from_reset(
+            inner_obs,
+            T_safe=self._fast_env._thermal.T_safe,
+            temp_A=self._fast_env._thermal.temp_A,
+            temp_B=self._fast_env._thermal.temp_B,
+            prev_bid_mw_norm=self._prev_bid_mw_norm,
+            prev_bid_price_norm=self._prev_bid_price_norm,
+        )
