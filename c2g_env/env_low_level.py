@@ -165,7 +165,7 @@ class C2GFastEnv(gym.Env):
         super().__init__()
 
         cfg_path = Path(config_path) if config_path else _CONFIG_PATH
-        with open(cfg_path) as fh:
+        with open(cfg_path, encoding="utf-8") as fh:
             full_cfg = yaml.safe_load(fh)
 
         self._gcfg   = full_cfg["global"]
@@ -243,7 +243,7 @@ class C2GFastEnv(gym.Env):
         # Allow per-episode scenario override
         if options and "scenario" in options:
             cfg_path = _CONFIG_PATH
-            with open(cfg_path) as fh:
+            with open(cfg_path, encoding="utf-8") as fh:
                 full_cfg = yaml.safe_load(fh)
             self._scfg     = full_cfg[options["scenario"]]
             self._scenario = options["scenario"]
