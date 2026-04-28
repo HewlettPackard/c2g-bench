@@ -164,7 +164,7 @@ def _make_inner_controller(
     name: str,
     env: "C2GFastEnv | None" = None,
     scenario: str = "default",
-    seed: int = 42,
+    seed: int = 100,
     model_dir: str | None = None,
 ):
     """Instantiate a low-level controller by name."""

@@ -120,8 +120,8 @@ def train(cfg: DictConfig) -> None:
         clip_reward=algo_cfg.clip_reward,
     )
 
-    eval_env = make_vec_env(make_env_fn(scenario, seed + 999),
-                            n_envs=1, seed=seed + 999)
+    eval_env = make_vec_env(make_env_fn(scenario, seed),
+                            n_envs=1, seed=seed)
     eval_env = VecNormalize(eval_env, norm_obs=True, norm_reward=False,
                             clip_obs=algo_cfg.clip_obs, training=False)
 
