@@ -86,9 +86,17 @@ from baselines.safety_shield import SafetyShield
 
 SCENARIOS    = ["default", "scenario_a", "scenario_b", "scenario_c"]
 T_WARN_NORM  = 33.0 / 35.0   # normalised warning threshold
-_RL_ALGOS = {
+_PPO_LIKE_ALGOS = {
     "ppo",
-    "sac"
+    "ppo_lag",
+    "ppo_lagrangian",
+    "ppo_macro",
+    "cpo",
+    "reward_shaping",
+    "ha_c2g",
+    "cbm_only",
+    "cbm_gate",
+    "cbm_shield",
 }
 _VALID_ACTIONS = ("throttle_batch", "pump_speed_A", "hvac_effort", "bess_dispatch")
 _ACTION_BOUNDS: dict[str, tuple[float, float]] = {
@@ -286,7 +294,7 @@ def _resolve_sb3_spec(algo: str):
     algo_key = algo.lower()
     if algo_key == "sac":
         return SAC, "sac", False
-    if algo_key in _RL_ALGOS:
+    if algo_key in _PPO_LIKE_ALGOS:
         train_key_map = {
             "ppo_lag": "ppo_lagrangian",
             "reward_shaping": "shield_reward_shaping",
@@ -308,6 +316,19 @@ def _maybe_load_obs_normalizer(stats_path: Path, scenario: str):
     return vec_norm
 
 
+def _maybe_load_macro_obs_normalizer(stats_path: Path, scenario: str):
+    if not stats_path.exists():
+        return None
+
+    from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
+
+    vec_env = DummyVecEnv([lambda: C2GMacroEnv(scenario=scenario)])
+    vec_norm = VecNormalize.load(str(stats_path), vec_env)
+    vec_norm.training = False
+    vec_norm.norm_reward = False
+    return vec_norm
+
+
 def load_sb3_agent(algo: str, scenario: str, seed: int, model_dir: str | None):
     cls, train_key, should_restore_norm = _resolve_sb3_spec(algo)
     if model_dir:
@@ -321,7 +342,12 @@ def load_sb3_agent(algo: str, scenario: str, seed: int, model_dir: str | None):
     model = cls.load(str(path))
     obs_normalizer = None
     if should_restore_norm:
-        obs_normalizer = _maybe_load_obs_normalizer(path.parent / "vec_normalize.pkl", scenario)
+        normalizer_loader = (
+            _maybe_load_macro_obs_normalizer
+            if algo.lower() == "ppo_macro"
+            else _maybe_load_obs_normalizer
+        )
+        obs_normalizer = normalizer_loader(path.parent / "vec_normalize.pkl", scenario)
     if algo.lower() in {"ha_c2g", "cbm_gate"}:
         fe = model.policy.features_extractor
         return HAC2GAgent(

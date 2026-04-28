@@ -266,6 +266,47 @@ class TestBenchmarkImport:
         np.testing.assert_array_equal(fake_norm.seen_obs, raw_obs)
         np.testing.assert_array_equal(agent._model.last_obs, raw_obs + 3.0)
 
+    def test_load_ppo_macro_agent_restores_macro_obs_normalization(self, monkeypatch, tmp_path):
+        import evaluation.run_benchmark as runner
+
+        class FakeModel:
+            def __init__(self):
+                self.last_obs = None
+
+            @classmethod
+            def load(cls, _path):
+                return cls()
+
+            def predict(self, obs, deterministic=True):
+                self.last_obs = np.array(obs, copy=True)
+                return np.zeros(2, dtype=np.float32), None
+
+        class FakeNormalizer:
+            def __init__(self):
+                self.seen_obs = None
+
+            def normalize_obs(self, obs):
+                self.seen_obs = np.array(obs, copy=True)
+                return obs + 5.0
+
+        fake_norm = FakeNormalizer()
+        fake_sb3 = types.SimpleNamespace(PPO=FakeModel, SAC=FakeModel)
+        monkeypatch.setitem(sys.modules, "stable_baselines3", fake_sb3)
+        monkeypatch.setattr(runner, "_maybe_load_obs_normalizer", lambda _path, _scenario: None)
+        monkeypatch.setattr(runner, "_maybe_load_macro_obs_normalizer", lambda _path, _scenario: fake_norm)
+
+        model_dir = tmp_path / "ppo_macro_default_s42"
+        model_dir.mkdir(parents=True)
+        (model_dir / "final_model.zip").touch()
+
+        agent = runner.load_sb3_agent("ppo_macro", "default", 42, str(model_dir))
+        raw_obs = np.array([1.0, 2.0, 3.0, 4.0], dtype=np.float32)
+        action, _ = agent.predict(raw_obs)
+
+        np.testing.assert_array_equal(fake_norm.seen_obs, raw_obs)
+        np.testing.assert_array_equal(agent._model.last_obs, raw_obs + 5.0)
+        np.testing.assert_array_equal(action, np.zeros(2, dtype=np.float32))
+
     def test_load_ha_agent_restores_obs_normalization(self, monkeypatch, tmp_path):
         import evaluation.run_ha_benchmark as runner
 
