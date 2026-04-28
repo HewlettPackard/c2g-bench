@@ -382,7 +382,8 @@ def run_episode(
     cumul_bess_actual_kw : float = 0.0
 
     done = False
-    while not done:
+    try:
+      while not done:
         state = obs.copy()
         if getattr(agent, "uses_env_context", False):
             action, _ = agent.predict(obs, deterministic=True, env=env, scenario=scenario)
@@ -398,6 +399,8 @@ def run_episode(
                     "reward_soc", "reward_freq", "reward_volt", "reward_backlog",
                 )
             }
+
+            print(f"[Transition] Step reward: {reward:.3f}, components: {reward_components}", flush=True)
             transition_logger.record_transition(
                 state=state,
                 action=action,
@@ -431,8 +434,9 @@ def run_episode(
         if bess_init_age is None:
             bess_init_age = float(info.get("bess_age_frac", 0.0))
 
-    if transition_logger is not None:
-        transition_logger.close()
+    finally:
+        if transition_logger is not None:
+            transition_logger.close()
 
     bess_final_age = float(info.get("bess_age_frac", bess_init_age or 0.0))
     bess_degradation = (bess_final_age - (bess_init_age or 0.0)) * 1e4
@@ -499,7 +503,8 @@ def run_macro_episode(
     p_hvacs: list[float] = []
 
     done = False
-    while not done:
+    try:
+      while not done:
         state = obs.copy()
         action, _ = agent.predict(obs, deterministic=True)
         obs, reward, terminated, truncated, info = env.step(action)
@@ -535,12 +540,9 @@ def run_macro_episode(
         cool_deltas.append(float(info.get("mean_cool_delta_kw", 0.0)))
         p_pumps.append(float(info.get("mean_p_pump_mw", 0.0)))
         p_hvacs.append(float(info.get("mean_p_hvac_mw", 0.0)))
-
-    if transition_logger is not None:
-        transition_logger.close()
-
-    if transition_logger is not None:
-        transition_logger.close()
+    finally:
+      if transition_logger is not None:
+          transition_logger.close()
 
     n_steps = len(rewards)
     macro_ticks_full = env._episode_macro_ticks
@@ -573,14 +575,15 @@ def benchmark(
     n_episodes  : int,
     seed_start  : int,
     model_dir   : str | None,
-    record_transitions: bool = True,
+    record_transitions: bool = False,
     fixed_action_values: dict[str, float] | None = None,
     llm_model_id: str | None = None,
     llm_api_base: str = "http://localhost:8000/v1",
     llm_mode: str = "hardware",
     llm_template_path: str = "conf/chat_templates/run_benchmark.yaml",
-    llm_max_new_tokens: int = 256,
+    llm_max_new_tokens: int = 9216,
     llm_temperature: float = 0.0,
+    llm_enable_thinking: bool = True,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
 
@@ -665,6 +668,7 @@ def benchmark(
                         max_new_tokens=llm_max_new_tokens,
                         temperature=llm_temperature,
                         api_base=llm_api_base,
+                        enable_thinking=llm_enable_thinking,
                     )
                 except Exception as exc:
                     print(f"    SKIP: Failed to initialize llm_policy agent: {exc}")
@@ -892,17 +896,24 @@ if __name__ == "__main__":
     parser.add_argument(
         "--llm-max-new-tokens",
         type=int,
-        default=16384,
-        help="Max new tokens for llm_policy generation. For reasoning models (e.g. Qwen3), "
-             "this budget is shared between the <think> chain and the final JSON output. "
-             "16384 allows ~8K for thinking and ~8K for output. "
-             "Qwen3-4B's context window is 32K; max usable is ~32768 minus prompt length.",
+        default=9216,
+        help="Max new tokens for llm_policy generation. vLLM has no per-request thinking-budget "
+             "parameter, so this is the only knob: the model fills <think> first, then emits JSON. "
+             "Default 9216 = ~8704 thinking tokens + ~512 for the JSON action output. "
+             "Must be less than the server's --max-model-len minus the prompt length (~2500 tokens).",
     )
     parser.add_argument(
         "--llm-temperature",
         type=float,
         default=0.0,
         help="Sampling temperature for llm_policy generation (0 = greedy)",
+    )
+    parser.add_argument(
+        "--llm-no-thinking",
+        dest="llm_enable_thinking",
+        action="store_false",
+        default=True,
+        help="Disable <think> reasoning for all LLM agents (faster, lower token cost).",
     )
     args = parser.parse_args()
 
@@ -947,6 +958,7 @@ if __name__ == "__main__":
         llm_template_path = args.llm_template_path,
         llm_max_new_tokens = args.llm_max_new_tokens,
         llm_temperature = args.llm_temperature,
+        llm_enable_thinking = args.llm_enable_thinking,
     )
     print_results_table(rows)
     output_path = (

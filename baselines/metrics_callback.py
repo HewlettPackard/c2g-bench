@@ -609,6 +609,7 @@ class C2GTransitionLoggerCallback(BaseCallback):
             row[f"r_{k}"] = float((reward_components or {}).get(k, 0.0))
 
         self._csv_writer.writerow(row)
+        self._csv_file.flush()
         self._global_step += 1
 
         if d: self.close()

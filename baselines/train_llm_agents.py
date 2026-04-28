@@ -126,8 +126,16 @@ def generate_structured(
     field_order: list[str] | None = None,
     bounds: dict[str, tuple[float, float]] | None = None,
     previous_by_field: dict[str, float] | None = None,
+    enable_thinking: bool = True,
 ) -> dict[str, Any]:
-    """Generate structured JSON response from LLM via vLLM server (OpenAI-compatible API)."""
+    """Generate structured JSON response from LLM via vLLM server (OpenAI-compatible API).
+
+    vLLM has no per-request thinking-budget parameter. We cap total output tokens
+    (max_new_tokens) as an indirect limit: the model fills <think> first, so
+    max_new_tokens ≈ thinking_budget + json_headroom .
+    When enable_thinking=False the <think> block is suppressed; max_new_tokens
+    can then be set much smaller (~128 tokens for JSON-only output).
+    """
     try:
         response = client.chat.completions.create(
             model=model_name,
@@ -136,6 +144,7 @@ def generate_structured(
             ],
             max_tokens=max(1, int(max_new_tokens)),
             temperature=max(0.0, float(temperature)),
+            extra_body={"chat_template_kwargs": {"enable_thinking": enable_thinking}},
         )
         choice = response.choices[0]
         if choice.finish_reason == "length":
@@ -146,8 +155,10 @@ def generate_structured(
                 stacklevel=2,
             )
         text = choice.message.content or ""
+        print(f"[LLM RAW] {text}", flush=True)
         # Strip <think>…</think> blocks emitted by reasoning models (e.g. Qwen3, QwQ)
         text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+        
     except Exception as exc:
         warnings.warn(
             f"vLLM server call failed: {exc}",
@@ -270,6 +281,7 @@ class _BaseLLMPolicyAgent:
         max_new_tokens: int = 256,
         temperature: float = 0.0,
         api_base: str = "http://localhost:8000/v1",
+        enable_thinking: bool = True,
     ):
         probe_api_base(api_base)
 
@@ -289,6 +301,10 @@ class _BaseLLMPolicyAgent:
         self._state_names = state_names
         self._max_new_tokens = int(max_new_tokens)
         self._temperature = float(temperature)
+        self._enable_thinking: dict[str, bool] = {
+            "hardware": enable_thinking,
+            "macro": enable_thinking,
+        }
         self._previous_action: np.ndarray | None = None
 
     def _generate_payload(
@@ -312,6 +328,7 @@ class _BaseLLMPolicyAgent:
             field_order=field_order,
             bounds=bounds,
             previous_by_field=previous_by_field,
+            enable_thinking=self._enable_thinking.get(mode, True),
         )
 
 
@@ -336,8 +353,10 @@ class HardwareLLMPolicyAgent(_BaseLLMPolicyAgent):
 
         env_context: dict[str, Any] | None = None
         if env is not None:
+            bess_p_max = float(getattr(env._bess, "P_MAX_MW", 5.0))
             env_context = {
                 "committed_mw_max": float(env._scfg.get("committed_mw_max", 30.0)),
+                "bess_p_max_mw": bess_p_max,
             }
 
         try:
@@ -390,9 +409,11 @@ class MacroLLMPolicyAgent(_BaseLLMPolicyAgent):
 
         env_context: dict[str, Any] | None = None
         if env is not None:
+            bess_p_max = float(getattr(env._bess, "P_MAX_MW", 5.0))
             env_context = {
                 "committed_mw_max": float(getattr(env, "_committed_max_mw", 30.0)),
-                "dr_baseline_mw": float(getattr(env, "_dr_baseline_mw", 5.0)),
+                "dr_baseline_mw":   float(getattr(env, "_dr_baseline_mw", 5.0)),
+                "bess_p_max_mw":    bess_p_max,
             }
 
         try:
@@ -440,6 +461,7 @@ class LLMPolicyAgent:
         max_new_tokens: int = 256,
         temperature: float = 0.0,
         api_base: str = "http://localhost:8000/v1",
+        enable_thinking: bool = True,
     ):
         if mode == "hardware":
             self._delegate = HardwareLLMPolicyAgent(
@@ -449,6 +471,7 @@ class LLMPolicyAgent:
                 max_new_tokens=max_new_tokens,
                 temperature=temperature,
                 api_base=api_base,
+                enable_thinking=enable_thinking,
             )
         elif mode == "macro":
             self._delegate = MacroLLMPolicyAgent(
@@ -458,6 +481,7 @@ class LLMPolicyAgent:
                 max_new_tokens=max_new_tokens,
                 temperature=temperature,
                 api_base=api_base,
+                enable_thinking=enable_thinking,
             )
         else:
             raise ValueError(f"Invalid LLM mode '{mode}'. Expected 'hardware' or 'macro'.")
