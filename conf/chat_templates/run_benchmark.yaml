@@ -106,8 +106,9 @@ hardware_user_prompt: |
                [all four actions affect tracking; zero error when delta_p_actual_kw = target_kw]
         [3-THROUGHPUT] +1.0 × throttle_batch
         [4-BACKLOG+SOC  — next-step values, action-sensitive]
-        −2.0 × backlog_norm′        [backlog_norm′ = max(0, backlog_norm + p_flex_nom_norm − throttle_batch); exactly computable]
-        −2.0 × 1{{bess_soc′ < 0.12}} [higher bess_dispatch changes SOC next step]
+        −2.0 × backlog_norm′        [backlog_norm′ = max(0, backlog_norm + p_flex_nom_norm×2.78 − throttle_batch); exactly computable]
+                                      [factor 2.78 = FACILITY_CAP_KW(250000) / p_flex_max_kw(90000); both scenario-invariant]
+        −0.5 × 1{{bess_soc′ < 0.12}} [soc_penalty=0.5 in config; higher bess_dispatch depletes SOC next step]
     (′ = value in next state resulting from your chosen action)
 
   Before outputting action JSON, reason through these steps:
@@ -137,11 +138,11 @@ hardware_user_prompt: |
      Step 3b — EXACT computable reward deltas vs baseline:
        Δr_tracking   = −2.0 × (|target_kw − delta_p_actual(candidate)| − |target_kw − delta_p_actual(baseline)|) / (committed_mw × 1000)
        Δr_throughput = +1.0 × (candidate_t − baseline_t)
-       Δr_backlog    = −2.0 × (max(0, backlog_norm + p_flex_nom_norm − candidate_t) − max(0, backlog_norm + p_flex_nom_norm − baseline_t))
+       Δr_backlog    = −2.0 × (max(0, backlog_norm + p_flex_nom_norm×2.78 − candidate_t) − max(0, backlog_norm + p_flex_nom_norm×2.78 − baseline_t))
 
      Step 3c — APPROXIMATE computable reward delta (SOC penalty):
-       bess_soc′ ≈ bess_soc − bess_dispatch × 9.75×10⁻⁴   [E_nom=15 MWh, η≈0.95, dt=5 s]
-       Δr_soc = −2.0 × [1(bess_soc′_candidate < 0.12) − 1(bess_soc′_baseline < 0.12)]
+       bess_soc′ ≈ bess_soc − bess_dispatch × {bess_p_max_mw} × 9.54×10⁻⁵   [E_nom=15 MWh, η=0.97, dt=5 s; delta_soc = P_MW×dt/(η×E_nom×3600)]
+       Δr_soc = −0.5 × [1(bess_soc′_candidate < 0.12) − 1(bess_soc′_baseline < 0.12)]
 
      The remaining components (thermal safety, voltage, freq) depend on the
      next-step state which is UNKNOWN, so estimate the net direction for each action change:
