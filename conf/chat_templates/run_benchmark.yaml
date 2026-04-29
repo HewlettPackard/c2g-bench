@@ -4,7 +4,7 @@ hardware_system_prompt: |
                   but also more heat and more power draw.
     2. COOLING  — liquid pumps (pump_speed_A) and air-conditioning fans (hvac_effort) remove heat from
                   the two server zones (A & B). If any zone exceeds 35 °C, data center shuts down. 
-    3. BATTERY  — a large on-site battery (BESS) that can either push electricity onto the power grid
+    3. BATTERY  — an on-site power reservoir (battery / BESS) that can either push electricity onto the power grid
                   (by discharge or bess_dispatch > 0) or pull electricity from it to recharge (by charging or
                   bess_dispatch < 0).  
 
@@ -19,7 +19,7 @@ hardware_system_prompt: |
   p_flex_nom_norm    Flexible batch capacity ÷ capacity    [0–2]   batch job arrival rate; high = queue may build if throttle stays low
   p_facility_norm    Total facility power ÷ capacity       [0–2]   p_base + p_flex + cooling + BESS draw; directly drives electricity bill
   regd_signal        Grid regulation signal          [-1–1]  +ve = grid needs power; −ve = surplus
-  lmp_norm           Electricity price ÷ max                [0–1]   real-time grid cost per MWh; high = running facility is expensive this tick
+  lmp_norm           LMP ÷ 200 USD/MWh (soft-capped)         [0–1]   real-time grid cost per MWh; high = running facility is expensive this tick
   grid_load_norm     System-wide grid demand ÷ max   [0–1]   overall grid stress; high → LMP likely rising; expect strong regulation demand
   is_spike           GenAI inference spike active    {0,1}   when 1: p_base_norm and zone A heat surge this tick; pre-emptively raise cooling
   prev_throttle      throttle_batch last tick        [0–1]   last batch action; use to detect thermal momentum and avoid rapid oscillation
@@ -48,13 +48,17 @@ hardware_system_prompt: |
   pump_speed_A    [0,1]   Liquid-cooling pump speed.
     Prevents thermal penalty. Ramp toward 1.0 when either temp_A_norm or temp_B_norm > 0.85.
     Combine with hvac_effort for faster cooling; both draw power.
-    NOTE: cooling power ABOVE nominal is subtracted from the regulation delivery signal,
-    so raising pump_speed_A too high worsens tracking when regd_signal > 0.
+    DUAL ROLE: cool_delta_kw = (50×h + 1.5×max(0.15,p) − 36.5)×1000 is subtracted from
+    delta_p_actual_kw — so LOWER cooling draw = more negative cool_delta_kw = higher delivery.
+    Raising pump_speed_A above the Step 1 baseline hurts tracking (and raises electricity cost);
+    reducing it below the Step 1 baseline improves tracking delivery and saves electricity cost.
+    Reducing below the baseline is only safe when T_max < 0.85 — do NOT reduce if T_max ≥ 0.85.
 
   hvac_effort     [0,1]   HVAC fan effort.
     Assists pump cooling. Increase when T_amb_norm > 0.6 (hot outdoor air weakens passive cooling).
-    NOTE: cooling power ABOVE nominal is subtracted from the regulation delivery signal,
-    so raising hvac_effort too high worsens tracking when regd_signal > 0.
+    DUAL ROLE: same as pump_speed_A — cool_delta_kw increases with hvac_effort, so raising above
+    the Step 1 baseline hurts tracking and raises electricity cost; reducing below the baseline
+    improves tracking delivery and saves electricity cost. Do NOT reduce if T_max ≥ 0.85.
 
   bess_dispatch   [-1,1]  Battery dispatch (+1=discharge→grid, −1=charge←grid).
     actual_bess_kw (realized dispatch) = bess_dispatch × {bess_p_max_mw} MW × 1000
@@ -112,14 +116,30 @@ hardware_user_prompt: |
   2. Mandatory action search — do NOT skip even if the baseline looks good.
 
      Step 2 prelude — pick the criticality order in ONE step using the FIRST matching row below:
-       Condition                                          Order (A1 → A2 → A3 → A4)
-       tracking=ACTIVE and thermal=HOT/CRITICAL     →    pump_speed_A, hvac_effort, bess_dispatch, throttle_batch
-       tracking=ACTIVE                              →    bess_dispatch, pump_speed_A, hvac_effort, throttle_batch
-       thermal=HOT or CRITICAL                      →    pump_speed_A, hvac_effort, throttle_batch, bess_dispatch
-       backlog=HIGH and thermal=SAFE                →    throttle_batch, pump_speed_A, hvac_effort, bess_dispatch
-       default (none of the above): choose ONE of:
-         throttle_batch, bess_dispatch, pump_speed_A, hvac_effort  ← use when bess_dispatch_base ≠ 0 (regulation fired but signal weak)
-         bess_dispatch, throttle_batch, pump_speed_A, hvac_effort  ← use when bess_dispatch_base = 0 and backlog_norm > 0
+       Condition                                                      Order (A1 → A2 → A3 → A4)
+       tracking_regime=ACTIVE and thermal_regime=HOT/CRITICAL   →    pump_speed_A, hvac_effort, bess_dispatch, throttle_batch
+       tracking_regime=ACTIVE                                   →    bess_dispatch, pump_speed_A, hvac_effort, throttle_batch
+       thermal_regime=HOT or thermal_regime=CRITICAL            →    pump_speed_A, hvac_effort, throttle_batch, bess_dispatch
+       backlog_regime=HIGH and thermal_regime=SAFE              →    throttle_batch, pump_speed_A, hvac_effort, bess_dispatch
+       default (none of the above): Choose the order that best balances all four objective priorities
+         (SAFETY → TRACKING → THROUGHPUT → BACKLOG) given the current state. Put the action whose
+         outcome most constrains or enables the others first. Choose ONE of:
+         TBC: throttle_batch, bess_dispatch, pump_speed_A, hvac_effort
+              ← use when batch throughput is the primary lever: bess_dispatch_base ≠ 0 (regulation fired but signal weak),
+                OR tracking_regime=IDLE and backlog_regime=HIGH (clear backlog first, bess opportunistic),
+                OR is_spike=1 and thermal_regime=SAFE (lock in throughput before spike heat builds)
+         BTC: bess_dispatch, throttle_batch, pump_speed_A, hvac_effort
+              ← use when BESS action must be decided before throttle: bess_dispatch_base=0 and lmp_norm>0.6 and backlog_regime=LOW (pure arbitrage),
+                OR soc_regime=HIGH and regd_signal≈0 (discharge to avoid overfull before allocating batch power),
+                OR soc_regime=LOW and regd_signal<−0.1 (emergency charge must be locked in first)
+         CTB: pump_speed_A, hvac_effort, throttle_batch, bess_dispatch
+              ← use when cooling headroom determines what throughput is safe: thermal_regime=WARM and lmp_norm>0.6 (cooling reduction frees power and saves cost),
+                OR T_amb_norm>0.6 and thermal_regime=WARM (hot ambient makes cooling effectiveness the binding constraint),
+                OR is_spike=1 and thermal_regime=WARM (pre-emptive cooling ceiling before throttle),
+                OR backlog_regime=HIGH and thermal_regime=WARM (throttle urgency must not override cooling — establish safe throttle ceiling first)
+         CBT: pump_speed_A, hvac_effort, bess_dispatch, throttle_batch
+              ← use when cooling directly interacts with both tracking and temperature: thermal_regime=WARM and bess_dispatch_base≠0 (cool_delta_kw enters delta_p_actual_kw when regulation is live),
+                OR regd_signal>0.3 and T_max>0.85 (cooling ceiling determines safe bess headroom; throttle adds heat so goes last)
      Write exactly one line: "criticality order: A1=<name>, A2=<name>, A3=<name>, A4=<name>" — no further reasoning about the order.
 
      # Baseline tuple (from Step 1): b_t=throttle_batch_0, b_p=pump_speed_A_0, b_h=hvac_effort_0, b_d=bess_dispatch_0
@@ -158,11 +178,24 @@ hardware_user_prompt: |
          Δr_soc        = −0.5 × [1(bess_soc′ < 0.12) − 1(bess_soc_base′ < 0.12)]
          # Qualitative — action-specific, δ in scope:
          if action == throttle_batch:
-           Δr_qual = −99                                      if T_max ≥ 0.98 and δ > 0   # VETO
-                   = 0                                        if T_max < 0.85
-                   = −5 × max(0, T_max−0.943)/0.037 × |δ|   otherwise
+           Δr_qual = −99                                      if T_max ≥ 0.98 and δ > 0     # VETO (CRITICAL)
+                   = 0                                        if T_max < 0.943               # SAFE or WARM: max(0,…)=0
+                   = −5 × (T_max − 0.943) / 0.037 × |δ|     if 0.943 ≤ T_max < 0.98        # HOT: linear penalty
+                   # (CRITICAL+δ>0 already caught by VETO above; CRITICAL+δ<0 → 0)
          elif action == pump_speed_A or action == hvac_effort:
-           Δr_qual = (+0.3 if T_max > 0.943 else 0) × |δ| − (0.1 if regd_signal > 0 else 0) × |δ|
+           if δ < 0:   # reducing cooling
+             if T_max < 0.85:   # SAFE — reduction beneficial
+               Δr_qual = (+0.15 if regd_signal > 0 else 0) × |δ|   # tracking delivery improves (less cool subtracted)
+                        + (+0.10 if lmp_norm > 0.5 else 0) × |δ|   # facility power cost saving
+             elif T_max < 0.943:   # WARM — marginal benefit, no bonus
+               Δr_qual = 0
+             else:   # HOT/CRITICAL — reducing cooling is dangerous
+               Δr_qual = −0.5 × |δ|
+           else:   # δ > 0, increasing cooling
+             if T_max > 0.943:   # HOT/CRITICAL — thermal relief needed
+               Δr_qual = +0.3 × |δ|
+             else:   # SAFE/WARM — not needed; costs tracking headroom
+               Δr_qual = −0.1 × |δ| × (1 if regd_signal > 0 else 0)
          else:   # bess_dispatch
            Δr_qual = 0
          return Δr_comp + Δr_soc + Δr_qual
@@ -220,7 +253,7 @@ macro_system_prompt: |
                                                             NOTE: unlike the hardware agent's instantaneous signed regd_signal (−1 to +1),
                                                             this is always non-negative — it tells you HOW ACTIVE regulation was,
                                                             not which direction.
-  lmp_norm        Mean electricity price(Normalized)     [0–1]   real-time cost of electricity (Locational Marginal Price) ÷ max;
+  lmp_norm        LMP ÷ 200 USD/MWh (soft-capped)       [0–1]   real-time cost of electricity (Locational Marginal Price);
                                                             high = buying power from the grid is expensive this interval;
                                                             high lmp_norm combined with high p_facility_norm = large electricity bill.
   grid_load_norm  Mean system grid demand(Normalized)    [0–1]
@@ -283,9 +316,21 @@ macro_user_prompt: |
   2. Mandatory grid search — do NOT skip even if the baseline looks good.
 
      Step 2 prelude — pick the criticality order in ONE step using the FIRST matching rule below:
-       • market=RICH or headroom=TIGHT          → commit_norm, bid_price
-       • market=STRESSED                        → bid_price, commit_norm
-       • (none of the above / default)          → commit_norm, bid_price
+       • market_regime=RICH or hardware_headroom=TIGHT        → commit_norm, bid_price
+       • market_regime=STRESSED                              → bid_price, commit_norm
+       • (none of the above / default): Choose the order that best balances both objectives
+           (REVENUE ← commit_norm drives capacity offered; PRICE ← bid_price drives acceptance)
+           given the current state. Put the action whose outcome most constrains or enables the other first.
+           Choose ONE of:
+           CB: commit_norm, bid_price
+               ← use when capacity level is the binding decision: market_regime=NORMAL/OK (safe to optimize volume first),
+                 OR hardware_headroom=AMPLE and regd_signal < 0.1 (no active regulation; set commitment ceiling then price it),
+                 OR commit_norm_prev far from commit_norm_0 (churn penalty makes capacity adjustment more urgent than price)
+           BC: bid_price, commit_norm
+               ← use when price is the binding decision: rmcp_norm close to bid_price_0/50 (acceptance probability highly sensitive to price),
+                 OR reg_need_norm between 1 and 2 (grid moderately stressed; price determines if bid wins before committing capacity),
+                 OR prev_throttle < 0.5 (hardware was throttled; capacity headroom uncertain — lock in price first, then commit conservatively)
+                 OR hardware_headroom=TIGHT and market_regime=STRESSED 
      Write exactly one line: "criticality order: A1=<name>, A2=<name>" — no further reasoning about the order.
 
      remaining = [A1, A2]                        # criticality order from prelude
@@ -299,12 +344,12 @@ macro_user_prompt: |
            # Step 2b — EXACT churn penalty:
            Δr_comp = −0.05 × (|c − {commit_norm_prev}| − |{commit_norm_0} − {commit_norm_prev}|)
            # Qualitative — revenue direction and headroom VETO:
-           Δr_qual = −99                                                                    if headroom=TIGHT and c > 0.6
+           Δr_qual = −99                                                                    if hardware_headroom=TIGHT and c > 0.6
                    = +{rmcp_usd} × (c − {commit_norm_0}) × {committed_mw_max} × 2.5e-4   otherwise
            return Δr_comp + Δr_qual
 
          # (1) Sign detection:
-         sign = +1 if (headroom=AMPLE and rmcp_norm > 0.5) else −1
+         sign = +1 if (hardware_headroom=AMPLE and rmcp_norm > 0.5 and is_spike=0) else −1
          best_c = clip(commit_norm_0 + sign×0.05, 0, 1)
          best_r = eval(best_c)
 
@@ -318,10 +363,16 @@ macro_user_prompt: |
 
        else:   # bid_price
          # eval(p): ALL reward components for one candidate bid_price value p.
+         # Pre-compute quantity factor (grid residual vs bid size):
+         # quantity_factor = min(1.0, reg_need_norm / max(commit_norm_0, 0.01))
+         #   reg_need_norm > 1 → grid needs more than one facility's max → factor=1 (full acceptance capacity)
+         #   reg_need_norm < commit_norm_0 → grid residual < our bid → factor<1 (partial acceptance)
          def eval(p):
            # Step 2b — EXACT acceptance probability:
-           Δr_comp = 1 / (1 + exp(−0.30 × ({rmcp_usd}/2 − p))) × {rmcp_usd}
-           #         [env converts LLM bid_price p → actual_bid = 2p]
+           Δr_comp = 1 / (1 + exp(−0.30 × ({rmcp_usd}/2 − p)))
+                     × min(1.0, reg_need_norm / max({commit_norm_0}, 0.01))
+                     × {rmcp_usd}
+           #         [env: actual_bid = 2p; sigmoid k=0.15 on actual_bid = k=0.30 on p]
            # Qualitative — market stress adjustment (additive tie-break ±1):
            Δr_qual = −1   if reg_need_norm < 1 and p > bid_price_0   # penalise overbid in soft market
                    = +1   if reg_need_norm > 2 and p > bid_price_0   # reward higher bid in stressed market
