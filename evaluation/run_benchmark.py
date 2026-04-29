@@ -549,6 +549,11 @@ def run_macro_episode(
     cool_deltas: list[float] = []
     p_pumps: list[float] = []
     p_hvacs: list[float] = []
+    # Inner (low-level) action means per macro tick
+    inner_throttles: list[float] = []
+    inner_pumps: list[float] = []
+    inner_hvacs: list[float] = []
+    inner_besses: list[float] = []
 
     done = False
     while not done:
@@ -587,6 +592,10 @@ def run_macro_episode(
         cool_deltas.append(float(info.get("mean_cool_delta_kw", 0.0)))
         p_pumps.append(float(info.get("mean_p_pump_mw", 0.0)))
         p_hvacs.append(float(info.get("mean_p_hvac_mw", 0.0)))
+        inner_throttles.append(float(info.get("mean_inner_throttle", 0.0)))
+        inner_pumps.append(float(info.get("mean_inner_pump", 0.0)))
+        inner_hvacs.append(float(info.get("mean_inner_hvac", 0.0)))
+        inner_besses.append(float(info.get("mean_inner_bess", 0.0)))
 
     if transition_logger is not None:
         transition_logger.close()
@@ -613,6 +622,10 @@ def run_macro_episode(
         "mean_cool_delta_kw":   float(np.mean(cool_deltas)) if cool_deltas else 0.0,
         "mean_p_pump_mw":       float(np.mean(p_pumps)) if p_pumps else 0.0,
         "mean_p_hvac_mw":       float(np.mean(p_hvacs)) if p_hvacs else 0.0,
+        "mean_inner_throttle":  float(np.mean(inner_throttles)) if inner_throttles else 0.0,
+        "mean_inner_pump":      float(np.mean(inner_pumps)) if inner_pumps else 0.0,
+        "mean_inner_hvac":      float(np.mean(inner_hvacs)) if inner_hvacs else 0.0,
+        "mean_inner_bess":      float(np.mean(inner_besses)) if inner_besses else 0.0,
     }
 
 
@@ -785,7 +798,11 @@ def benchmark(
                     f"survive={agg['survival_rate']:.2f}  "
                     f"flex={agg['mean_flex_kw']:.0f}kW  "
                     f"bess={agg['mean_bess_kw']:.0f}kW  "
-                    f"cool_d={agg['mean_cool_delta_kw']:.0f}kW"
+                    f"cool_d={agg['mean_cool_delta_kw']:.0f}kW  "
+                    f"inner[thr={agg['mean_inner_throttle']:.2f} "
+                    f"pmp={agg['mean_inner_pump']:.2f} "
+                    f"hvac={agg['mean_inner_hvac']:.2f} "
+                    f"bess={agg['mean_inner_bess']:+.2f}]"
                 )
             else:
                 tqdm.write(

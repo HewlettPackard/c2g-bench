@@ -283,6 +283,30 @@ class C2GMetricsCallback(BaseCallback):
             if info.get("thermal_fault", False):
                 buf["terminated"] = 1
 
+            # ── Actions (executed by env, always 4-D even with wrappers) ─
+            act_vals = [info.get(k) for k in ACTION_NAMES]
+            if all(v is not None for v in act_vals):
+                buf["actions"].append(np.array(act_vals, dtype=np.float32))
+
+            # ── Reward components ─────────────────────────────────────
+            for rkey in ("reward_throughput", "reward_tracking",
+                         "reward_thermal", "reward_soc", "reward_freq",
+                         "reward_volt", "reward_backlog"):
+                if rkey in info:
+                    buf[rkey.replace("reward_", "r_")].append(float(info[rkey]))
+
+            # ── Safety / SLA diagnostics ──────────────────────────────
+            for skey in ("freq_dev_hz", "v_pcc_pu", "backlog_kw",
+                         "T_amb", "cool_delta_kw"):
+                if skey in info:
+                    buf[skey].append(float(info[skey]))
+
+            # ── Termination breakdown ─────────────────────────────────
+            if info.get("freq_fault", False):
+                buf["freq_fault"] = 1
+            if info.get("voltage_fault", False):
+                buf["voltage_fault"] = 1
+
             # Episode ended → log aggregates
             if done:
                 self._log_episode(env_idx, info)
@@ -300,13 +324,19 @@ class C2GMetricsCallback(BaseCallback):
         n    = self.num_timesteps
 
         def _mean(lst):
-            return float(np.mean(lst)) if lst else 0.0
+            return float(np.mean(lst)) if len(lst) > 0 else 0.0
 
         def _max(lst):
-            return float(np.max(lst)) if lst else 0.0
+            return float(np.max(lst)) if len(lst) > 0 else 0.0
+
+        def _min(lst):
+            return float(np.min(lst)) if len(lst) > 0 else 0.0
+
+        def _std(lst):
+            return float(np.std(lst)) if len(lst) > 0 else 0.0
 
         def _rmse(lst):
-            return float(np.sqrt(np.mean(np.square(lst)))) if lst else 0.0
+            return float(np.sqrt(np.mean(np.square(lst)))) if len(lst) > 0 else 0.0
 
         ep_len      = buf["tick"]
         survived    = 1.0 if ep_len >= 287 else 0.0   # 288 ticks = full ep
@@ -328,7 +358,7 @@ class C2GMetricsCallback(BaseCallback):
             "thermal/terminated"        : float(buf["terminated"]),
             # BESS
             "bess/mean_soc"             : _mean(buf["bess_soc"]),
-            "bess/min_soc"              : float(np.min(buf["bess_soc"])) if buf["bess_soc"] else 0.0,
+            "bess/min_soc"              : float(np.min(buf["bess_soc"])) if len(buf["bess_soc"]) > 0 else 0.0,
             "bess/mean_dispatch_kw"     : _mean([abs(v) for v in buf["bess_actual_kw"]]),
             # grid
             "grid/tracking_rmse_kw"     : _rmse(buf["tracking_err_kw"]),
@@ -339,6 +369,41 @@ class C2GMetricsCallback(BaseCallback):
             "facility/mean_p_facility_mw": _mean(buf["p_facility_mw"]),
             "facility/mean_flex_reduction_kw": _mean(buf["flex_reduction_kw"]),
         }
+
+        # ── Action distribution statistics ────────────────────────────
+        if buf["actions"]:
+            act_arr = np.array(buf["actions"])  # always (N, 4)
+        else:
+            act_arr = np.empty((0, len(ACTION_NAMES)))
+        _act_tb_names = [ACTION_SHORT_NAMES[k].lower() for k in ACTION_NAMES]
+        for i, name in enumerate(_act_tb_names):
+            col = act_arr[:, i] if act_arr.shape[0] > 0 else []
+            metrics[f"actions/mean_{name}"] = _mean(col)
+            metrics[f"actions/std_{name}"]  = _std(col)
+
+        # ── Reward component breakdown ────────────────────────────────
+        for rkey in ("r_throughput", "r_tracking", "r_thermal",
+                     "r_soc", "r_freq", "r_volt", "r_backlog"):
+            metrics[f"reward/mean_{rkey[2:]}"] = _mean(buf[rkey])
+
+        # ── Safety / SLA diagnostics ──────────────────────────────────
+        metrics["safety/mean_freq_dev_hz"]     = _mean(buf["freq_dev_hz"])
+        metrics["safety/max_abs_freq_dev_hz"]  = _max([abs(v) for v in buf["freq_dev_hz"]]) if len(buf["freq_dev_hz"]) > 0 else 0.0
+        metrics["safety/mean_v_pcc_pu"]        = _mean(buf["v_pcc_pu"])
+        metrics["safety/min_v_pcc_pu"]         = _min(buf["v_pcc_pu"])
+        metrics["env/mean_T_amb"]              = _mean(buf["T_amb"])
+        metrics["sla/mean_backlog_kw"]         = _mean(buf["backlog_kw"])
+        metrics["sla/max_backlog_kw"]          = _max(buf["backlog_kw"])
+
+        # ── Tracking lever decomposition ──────────────────────────────
+        metrics["tracking/mean_demanded_kw"]   = _mean(buf["delta_p_demanded_kw"])
+        metrics["tracking/mean_actual_kw"]     = _mean(buf["delta_p_actual_kw"])
+        metrics["tracking/mean_cool_delta_kw"] = _mean(buf["cool_delta_kw"])
+
+        # ── Termination breakdown ─────────────────────────────────────
+        metrics["termination/thermal"]  = float(buf["terminated"])
+        metrics["termination/freq"]     = float(buf["freq_fault"])
+        metrics["termination/voltage"]  = float(buf["voltage_fault"])
 
         # Write to TensorBoard via SB3 logger
         for tag, val in metrics.items():
@@ -354,6 +419,7 @@ class C2GMetricsCallback(BaseCallback):
 
         # Console summary
         if self.verbose >= 1 and self._ep_count % self._print_freq == 0:
+            a_means = np.mean(act_arr, axis=0) if act_arr.shape[0] > 0 else np.zeros(4)
             print(
                 f"  ep {self._ep_count:5d} | steps {n:8d} | "
                 f"r={mean_r:8.2f} | "
@@ -362,7 +428,9 @@ class C2GMetricsCallback(BaseCallback):
                 f"viol={_mean(buf['thermal_viol']):.3f} | "
                 f"SOC={_mean(buf['bess_soc']):.2f} | "
                 f"RMSE={_rmse(buf['tracking_err_kw']):7.0f}kW | "
-                f"PUE={_mean(buf['pue']):.3f}"
+                f"PUE={_mean(buf['pue']):.3f} | "
+                f"thr={a_means[0]:.2f} pmp={a_means[1]:.2f} "
+                f"hvac={a_means[2]:.2f} bess={a_means[3]:+.2f}"
             )
 
     # ------------------------------------------------------------------
@@ -382,6 +450,16 @@ class C2GMetricsCallback(BaseCallback):
             "bess_actual_kw": [], "p_facility_mw": [],
             "spike": [], "thermal_viol": [],
             "tick": 0, "terminated": 0,
+            # ── Action statistics ──
+            "actions": [],  # list of (4,) arrays
+            # ── Reward components ──
+            "r_throughput": [], "r_tracking": [], "r_thermal": [],
+            "r_soc": [], "r_freq": [], "r_volt": [], "r_backlog": [],
+            # ── Safety / SLA diagnostics ──
+            "freq_dev_hz": [], "v_pcc_pu": [], "backlog_kw": [],
+            "T_amb": [], "cool_delta_kw": [],
+            # ── Termination breakdown ──
+            "freq_fault": 0, "voltage_fault": 0,
         }
 
     def __getitem__(self, env_idx: int):
@@ -410,6 +488,25 @@ class C2GMetricsCallback(BaseCallback):
             "grid/tracking_rmse_kw", "grid/mean_lmp", "grid/spike_fraction",
             "facility/mean_pue", "facility/mean_p_facility_mw",
             "facility/mean_flex_reduction_kw",
+            # actions
+            "actions/mean_throttle", "actions/std_throttle",
+            "actions/mean_pump", "actions/std_pump",
+            "actions/mean_hvac", "actions/std_hvac",
+            "actions/mean_bess", "actions/std_bess",
+            # reward components
+            "reward/mean_throughput", "reward/mean_tracking",
+            "reward/mean_thermal", "reward/mean_soc",
+            "reward/mean_freq", "reward/mean_volt", "reward/mean_backlog",
+            # safety / SLA
+            "safety/mean_freq_dev_hz", "safety/max_abs_freq_dev_hz",
+            "safety/mean_v_pcc_pu", "safety/min_v_pcc_pu",
+            "env/mean_T_amb",
+            "sla/mean_backlog_kw", "sla/max_backlog_kw",
+            # tracking decomposition
+            "tracking/mean_demanded_kw", "tracking/mean_actual_kw",
+            "tracking/mean_cool_delta_kw",
+            # termination breakdown
+            "termination/thermal", "termination/freq", "termination/voltage",
         ]
 
 
