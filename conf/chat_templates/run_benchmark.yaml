@@ -48,9 +48,13 @@ hardware_system_prompt: |
   pump_speed_A    [0,1]   Liquid-cooling pump speed.
     Prevents thermal penalty. Ramp toward 1.0 when either temp_A_norm or temp_B_norm > 0.85.
     Combine with hvac_effort for faster cooling; both draw power.
+    NOTE: cooling power ABOVE nominal is subtracted from the regulation delivery signal,
+    so raising pump_speed_A too high worsens tracking when regd_signal > 0.
 
   hvac_effort     [0,1]   HVAC fan effort.
     Assists pump cooling. Increase when T_amb_norm > 0.6 (hot outdoor air weakens passive cooling).
+    NOTE: cooling power ABOVE nominal is subtracted from the regulation delivery signal,
+    so raising hvac_effort too high worsens tracking when regd_signal > 0.
 
   bess_dispatch   [-1,1]  Battery dispatch (+1=discharge→grid, −1=charge←grid).
     actual_bess_kw (realized dispatch) = bess_dispatch × {bess_p_max_mw} MW × 1000
@@ -63,23 +67,24 @@ hardware_system_prompt: |
   Compute a baseline from these rules, then refine using the reward formula in the user prompt.
   These rules are a starting point only — always adjust for the actual state values.
   Baseline defaults:
-    throttle_batch=1.0, pump_speed_A=0.7, hvac_effort=0.6, bess_dispatch=0.0
+    throttle_batch=1.0, pump_speed_A=0.7, hvac_effort=0.7, bess_dispatch=0.0
   Thermal override (T = max(temp_A_norm, temp_B_norm)):
     T < 0.85           → throttle_batch=1.0,         pump_speed_A=0.70,          hvac_effort=0.6
     0.85 ≤ T < 0.943  → throttle_batch=1.0,         pump_speed_A=0.85,          hvac_effort=0.7
-    0.943 ≤ T < 0.98  → throttle_batch=max(0, 1−e), pump_speed_A=min(1, 0.7+e), hvac_effort=min(1, 0.6+e)
+    0.943 ≤ T < 0.98  → throttle_batch=max(0, 1−e), pump_speed_A=min(1, 0.7+e), hvac_effort=min(1, 0.7+e)
                           [e = (T − 0.943) / 0.037]
     T ≥ 0.98           → throttle_batch=0.0,          pump_speed_A=1.0,           hvac_effort=1.0
   Regulation/BESS rule:
     [clip(x,lo,hi) clamps x to [lo,hi]; SIGN: +1=discharge→grid, −1=charge←grid]
-    if |regd_signal| >= 0.10: bess_dispatch=clip(+regd_signal,-1,1)
+    if |regd_signal| >= 0.10: bess_dispatch=clip(regd_signal × committed_mw / bess_p_max_mw, −1, 1)
+                               [committed_mw and bess_p_max_mw are provided in the user prompt]
     if bess_soc < 0.15 and bess_dispatch > 0: bess_dispatch=0.0  [battery too low to discharge]
     if bess_soc > 0.80 and bess_dispatch < 0: bess_dispatch=0.0  [battery too full to charge]
   
   Additional Rule-based heuristics:
     if regd_signal > 0.4 and bess_soc > 0.25 and max(temp_A_norm,temp_B_norm) < 0.943: pump_speed_A=max(0.3,pump_speed_A-0.3*regd_signal)
     if regd_signal > 0.3 and bess_soc < 0.20 and is_spike==0: throttle_batch=min(throttle_batch,max(0.0,1.0-regd_signal))
-    if |regd_signal| < 0.10 and bess_soc < 0.40: bess_dispatch=+0.3  [opportunistic charge when idle]
+    if |regd_signal| < 0.10 and bess_soc < 0.40: bess_dispatch=−0.3  [opportunistic charge from grid when idle]
 
 hardware_user_prompt: |
   Scenario: {scenario}  |  committed_mw_max: {committed_mw_max} MW
@@ -87,36 +92,69 @@ hardware_user_prompt: |
   Current normalized system state (18-D, keyed by name):
   {state_json}
 
-  Reward this tick (priority order; all quantities evaluated on the NEXT observation after your action):
+  Reward this tick (priority order; all quantities evaluated on the NEXT state resulting from your chosen action):
     committed_mw = committed_mw_norm × {committed_mw_max} MW
-    actual_bess_kw = bess_dispatch × {bess_p_max_mw} × 1000
     r = [1-SAFETY]
         −5.0 × [max(0, 35×temp_A_norm′−33) + max(0, 35×temp_B_norm′−33)] / 2
         −5.0 × [max(0, 0.95−v_pcc_pu′) + max(0, v_pcc_pu′−1.05)]
         −2.0 × max(0, |freq_dev_norm′| × 0.5 − 0.2)
         [2-TRACKING]
-        −2.0 × |regd_signal × committed_mw − actual_bess_kw| / (committed_mw × 1000)
-               → optimal bess_dispatch = clip(regd_signal × committed_mw / {bess_p_max_mw}, −1, 1)
+        −2.0 × |regd_signal × committed_mw × 1000 − delta_p_actual_kw| / (committed_mw × 1000)
+          where delta_p_actual_kw = (1−throttle_batch) × p_flex_nom_norm × 250000
+                                   + bess_dispatch × {bess_p_max_mw} × 1000
+                                   − (50×hvac_effort + 1.5×max(0.15,pump_speed_A) − 36.5) × 1000
+               [all four actions affect tracking; zero error when delta_p_actual_kw = target_kw]
         [3-THROUGHPUT] +1.0 × throttle_batch
         [4-BACKLOG+SOC  — next-step values, action-sensitive]
-        −2.0 × backlog_norm′        [higher throttle_batch reduces backlog next step]
+        −2.0 × backlog_norm′        [backlog_norm′ = max(0, backlog_norm + p_flex_nom_norm − throttle_batch); exactly computable]
         −2.0 × 1{{bess_soc′ < 0.12}} [higher bess_dispatch changes SOC next step]
-    (′ = value in next observation after your action)
+    (′ = value in next state resulting from your chosen action)
 
-  Before outputting JSON, reason through these steps:
+  Before outputting action JSON, reason through these steps:
   1. Compute warm-start baseline:
      - T = max(temp_A_norm, temp_B_norm) = ?  →  apply thermal table row
      - committed_mw = committed_mw_norm × {committed_mw_max} = ? MW
      - bess_dispatch_baseline = clip(regd_signal × committed_mw / {bess_p_max_mw}, −1, 1) = ?
      - Apply SOC overrides
   2. Estimate baseline reward r_baseline using the formula above.
-  3. Search for improvements: consider ±0.1 to ±0.3 perturbations to each action.
-     For each candidate, estimate the change in r. Keep changes that increase r without
-     violating safety constraints (temp, freq, voltage).
-     Key levers:
-     - throttle_batch: raising it increases [3-THROUGHPUT] but risks thermal penalty
-     - bess_dispatch: tuning closer to optimal reduces [2-TRACKING] penalty most
-     - pump_speed_A / hvac_effort: raising them reduces thermal risk but costs power
+  3. Mandatory grid search — do NOT skip even if the baseline looks good.
+     For EACH of the four actions independently, enumerate δ ∈ {{−0.30, −0.20, −0.10, +0.10, +0.20, +0.30}}
+     Clip candidate = baseline_action + δ to valid bounds before evaluating:
+       throttle_batch, pump_speed_A, hvac_effort: clip to [0, 1]
+       bess_dispatch: clip to [−1, 1]
+     Step 3a — define intermediate quantities (substitute actual obs values):
+       p_flex_nom_kw = p_flex_nom_norm × 250000
+       target_kw     = regd_signal × committed_mw × 1000
+       For a candidate action (t=throttle_batch, p=pump_speed_A, h=hvac_effort, d=bess_dispatch):
+         flex_reduction_kw = (1 − t) × p_flex_nom_kw
+         bess_actual_kw    = d × {bess_p_max_mw} × 1000            [assumes SOC not limiting]
+         cool_delta_kw     = (50.0×h + 1.5×max(0.15,p) − 36.5) × 1000  [deviation from nominal 36.5 MW cooling]
+         delta_p_actual_kw = flex_reduction_kw + bess_actual_kw − cool_delta_kw
+
+     Step 3b — EXACT computable reward deltas vs baseline:
+       Δr_tracking   = −2.0 × (|target_kw − delta_p_actual(candidate)| − |target_kw − delta_p_actual(baseline)|) / (committed_mw × 1000)
+       Δr_throughput = +1.0 × (candidate_t − baseline_t)
+       Δr_backlog    = −2.0 × (max(0, backlog_norm + p_flex_nom_norm − candidate_t) − max(0, backlog_norm + p_flex_nom_norm − baseline_t))
+
+     Step 3c — APPROXIMATE computable reward delta (SOC penalty):
+       bess_soc′ ≈ bess_soc − bess_dispatch × 9.75×10⁻⁴   [E_nom=15 MWh, η≈0.95, dt=5 s]
+       Δr_soc = −2.0 × [1(bess_soc′_candidate < 0.12) − 1(bess_soc′_baseline < 0.12)]
+
+     The remaining components (thermal safety, voltage, freq) depend on the
+     next-step state which is UNKNOWN, so estimate the net direction for each action change:
+       throttle_batch ↑ : raises thermal risk if T > 0.85  [Δr_tracking, Δr_throughput, Δr_backlog are exact above]
+       throttle_batch ↓ : reduces thermal risk if T > 0.85 [Δr_tracking, Δr_throughput, Δr_backlog are exact above]
+       pump_speed_A ↑   : reduces thermal penalty [1]; raises p_facility_norm → lowers v_pcc_pu (voltage penalty risk);
+                          cooling ABOVE nominal subtracts from regulation delivery → worsens tracking [2] when regd_signal > 0
+       pump_speed_A ↓   : saves facility power and improves tracking headroom; increases thermal risk
+       hvac_effort ↑    : reduces thermal penalty [1]; raises p_facility_norm → lowers v_pcc_pu (voltage penalty risk);
+                          cooling ABOVE nominal subtracts from regulation delivery → worsens tracking [2] when regd_signal > 0
+       hvac_effort ↓    : saves facility power and improves tracking headroom; increases thermal risk
+       bess_dispatch ↑  : closer to regd_signal if regd_signal > 0 → improves tracking [2]; depletes battery faster
+       bess_dispatch ↓  : closer to regd_signal if regd_signal < 0 → improves tracking [2]; charges battery
+     For each action, report only the single best δ: "action: best_δ → candidate, Δr_total=X, risk=<qualitative>"
+     Discard any candidate which risks a likely safety violation.
+     Select the joint action with the highest sum of Δr_total across all four actions.
   4. Output the best action found.
 
   Then output ONLY a valid JSON object — no explanation, no markdown, no extra text.
@@ -216,17 +254,37 @@ macro_user_prompt: |
         [includes: thermal −5.0, voltage −5.0, freq −2.0, tracking −2.0, SOC −2.0, throughput +1.0, backlog −2.0]
     All ′_next quantities are from the NEXT interval's observation — your action determines committed_mw_next
 
-  Before outputting JSON, reason through these steps:
+  Before outputting action JSON, reason through these steps:
   1. Compute warm-start baseline: apply grid_load_norm sizing and RMCP pricing rules.
      Apply safety overrides. This gives (commit_norm_0, bid_price_0).
   2. Estimate R for the baseline.
-  3. Search for improvements:
-     - commit_norm: consider ±0.1 to ±0.2 from baseline. Higher raises regulation_revenue
-       but risks perf_score collapse if hardware is already stressed (high temp, backlog, low SOC).
-       Lower is safer but leaves revenue on the table.
-     - bid_price: consider ±5 to ±10 from baseline. Lower → higher acceptance prob but less
-       revenue per MW. Higher → more revenue if accepted, less likely to win.
-       Use rmcp_norm and reg_need_norm to judge which direction increases expected R.
+  3. Mandatory grid search — do NOT skip even if the baseline looks good.
+
+     Step 3a — define intermediate quantities (substitute actual obs values):
+       committed_mw(c)   = c × {committed_mw_max}              [if bid accepted]
+       committed_mw_lose = {dr_baseline_mw}                     [if bid rejected; always charged]
+       rmcp_usd          = 100 × rmcp_norm                      [USD/MWh; clearing price]
+
+     Step 3b — EXACT computable reward deltas vs baseline:
+       Δchurn(c)          = −0.05 × (|c − commit_norm_prev| − |commit_norm_0 − commit_norm_prev|)
+       acceptance_prob(p) = 1 / (1 + exp(−0.30 × (50 × rmcp_norm − p)))
+                            [env converts LLM bid_price p → actual_bid = 2p; rmcp_actual = rmcp_usd]
+       commit_norm sweep: enumerate δ ∈ {{−0.30, −0.20, −0.10, +0.10, +0.20, +0.30}}
+         candidate = clip(commit_norm_0 + δ, 0, 1)
+         Report only the single best δ: "best_δ → candidate c, Δchurn=X"
+       bid_price check: evaluate p ∈ {{bid_price_0 − 10, bid_price_0, bid_price_0 + 10}} clipped to [0, 100]
+         Report: "best p → acceptance_prob(p)"
+
+     Step 3c — QUALITATIVE direction for remaining unknowns:
+       commit_norm ↑ : regulation_revenue ↑ (rmcp_usd × committed_mw(c) × perf_score × 0.25);
+                       mean_sub_reward ↑ if hardware has headroom;
+                       risks perf_score → 0 if T > 0.85, backlog > 1, or SOC < 0.2
+       commit_norm ↓ : regulation_revenue ↓; safer perf_score; lower mean_sub_reward tracking penalty
+       bid_price ↑   : lower acceptance_prob; R_win unchanged if accepted; if rejected → committed_mw = dr_baseline_mw
+       bid_price ↓   : higher acceptance_prob; earn rmcp_usd × committed_mw × perf_score; risk leaving revenue on table
+       Lower bid_price favoured when reg_need_norm < 1 (competition high); higher when reg_need_norm > 2 (grid short).
+       Discard commit_norm candidates only where perf_score collapse is highly likely.
+     Select the (commit_norm, bid_price) pair with the highest total estimated R.
   4. Output the (commit_norm, bid_price) pair with the highest estimated R.
 
   Then output ONLY a valid JSON object — no explanation, no markdown, no extra text.

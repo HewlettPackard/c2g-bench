@@ -411,9 +411,10 @@ class MacroLLMPolicyAgent(_BaseLLMPolicyAgent):
         if env is not None:
             bess_p_max = float(getattr(env._bess, "P_MAX_MW", 5.0))
             env_context = {
-                "committed_mw_max": float(getattr(env, "_committed_max_mw", 30.0)),
-                "dr_baseline_mw":   float(getattr(env, "_dr_baseline_mw", 5.0)),
-                "bess_p_max_mw":    bess_p_max,
+                "committed_mw_max":  float(getattr(env, "_committed_max_mw", 30.0)),
+                "dr_baseline_mw":    float(getattr(env, "_dr_baseline_mw", 5.0)),
+                "bess_p_max_mw":     bess_p_max,
+                "commit_norm_prev":  float(self._previous_action[0]) if self._previous_action is not None else 0.0,
             }
 
         try:
