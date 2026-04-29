@@ -117,9 +117,12 @@ hardware_user_prompt: |
      - bess_dispatch_baseline = clip(regd_signal × committed_mw / {bess_p_max_mw}, −1, 1) = ?
      - Apply SOC overrides
   2. Estimate baseline reward r_baseline using the formula above.
-  3. Mandatory grid search — do NOT skip even if the baseline looks good.
-     For EACH of the four actions independently, enumerate δ ∈ {{−0.30, −0.20, −0.10, +0.10, +0.20, +0.30}}
-     Clip candidate = baseline_action + δ to valid bounds before evaluating:
+  3. Mandatory action search — do NOT skip even if the baseline looks good.
+     For EACH of the four actions independently, use sign-then-magnitude:
+       Sign step:     evaluate δ=+0.05 and δ=−0.05; pick the sign with the higher Δr_total.
+       Magnitude step: in the winning direction only, evaluate δ ∈ {{0.05, 0.10, 0.15, 0.20, 0.25, 0.30}} in order;
+                       stop as soon as Δr_total stops improving OR a safety condition is violated.
+     Clip candidate = baseline_action + δ to valid bounds:
        throttle_batch, pump_speed_A, hvac_effort: clip to [0, 1]
        bess_dispatch: clip to [−1, 1]
      Step 3a — define intermediate quantities (substitute actual obs values):
@@ -269,9 +272,12 @@ macro_user_prompt: |
        Δchurn(c)          = −0.05 × (|c − commit_norm_prev| − |commit_norm_0 − commit_norm_prev|)
        acceptance_prob(p) = 1 / (1 + exp(−0.30 × (50 × rmcp_norm − p)))
                             [env converts LLM bid_price p → actual_bid = 2p; rmcp_actual = rmcp_usd]
-       commit_norm sweep: enumerate δ ∈ {{−0.30, −0.20, −0.10, +0.10, +0.20, +0.30}}
-         candidate = clip(commit_norm_0 + δ, 0, 1)
-         Report only the single best δ: "best_δ → candidate c, Δchurn=X"
+       commit_norm search: use sign-then-magnitude.
+         Sign step:     evaluate δ=+0.05 and δ=−0.05; pick the sign with higher Δchurn.
+         Magnitude step: in the winning direction only, evaluate δ ∈ {{0.05, 0.10, 0.15, 0.20, 0.25, 0.30}} in order;
+                         stop as soon as Δchurn stops improving OR perf_score collapse becomes likely.
+         candidate = clip(commit_norm_0 + best_δ, 0, 1)
+         Report only the best: "best_δ → candidate c, Δchurn=X"
        bid_price check: evaluate p ∈ {{bid_price_0 − 10, bid_price_0, bid_price_0 + 10}} clipped to [0, 100]
          Report: "best p → acceptance_prob(p)"
 
