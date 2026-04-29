@@ -401,10 +401,24 @@ class HardwareLLMPolicyAgent(_BaseLLMPolicyAgent):
                 env_context=env_context,
             )
         except ValueError as exc:
-            raise RuntimeError(
-                f"LLM hardware agent failed to produce a valid action at step 0 "
-                f"(no previous action to fall back on): {exc}"
-            ) from exc
+            if previous_by_field is None and env_context is not None:
+                warnings.warn(
+                    f"LLM hardware agent: thinking terminated early at step 0 with no JSON "
+                    f"({exc}). Using env_context defaults.",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+                payload = {
+                    "throttle_batch": 1.0,
+                    "pump_speed_A":   0.7,
+                    "hvac_effort":    0.7,
+                    "bess_dispatch":  0.0,
+                }
+            else:
+                raise RuntimeError(
+                    f"LLM hardware agent failed to produce a valid action at step 0 "
+                    f"(no previous action to fall back on): {exc}"
+                ) from exc
 
         action = np.array([
             float(payload["throttle_batch"]),
@@ -487,10 +501,22 @@ class MacroLLMPolicyAgent(_BaseLLMPolicyAgent):
                 env_context=env_context,
             )
         except ValueError as exc:
-            raise RuntimeError(
-                f"LLM macro agent failed to produce a valid action at step 0 "
-                f"(no previous action to fall back on): {exc}"
-            ) from exc
+            if previous_by_field is None and env_context is not None:
+                warnings.warn(
+                    f"LLM macro agent: thinking terminated early at step 0 with no JSON "
+                    f"({exc}). Using env_context defaults.",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+                payload = {
+                    "commit_norm": float(env_context.get("commit_norm_0", 0.5)),
+                    "bid_price":   float(env_context.get("bid_price_0", 40.0)),
+                }
+            else:
+                raise RuntimeError(
+                    f"LLM macro agent failed to produce a valid action at step 0 "
+                    f"(no previous action to fall back on): {exc}"
+                ) from exc
 
         commit_norm = float(payload["commit_norm"])
         bid_price_norm = float(payload["bid_price"]) / 100.0
