@@ -380,6 +380,10 @@ class C2GMetricsCallback(BaseCallback):
 
         # Per-step accumulators (one list per parallel env, keyed by env idx)
         self._reset_buffers()
+        # Episodes completed during the current rollout (for TB averaging)
+        self._rollout_episodes: list[dict[str, float]] = []
+        self._rollout_count = 0
+        self._rollout_ep_idx = 0  # episode index within current rollout
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -430,29 +434,22 @@ class C2GMetricsCallback(BaseCallback):
     def _log_episode(self, env_idx: int, last_info: dict[str, Any]) -> None:
         buf  = self._bufs[env_idx]
         self._ep_count += 1
+        self._rollout_ep_idx += 1
         n    = self.num_timesteps
 
         metrics = _compute_episode_metrics(buf)
 
-        # Write to TensorBoard via SB3 logger
-        for tag, val in metrics.items():
-            self.logger.record(tag, val)
-        self.logger.dump(step=n)
+        # Buffer for rollout-averaged TensorBoard logging
+        self._rollout_episodes.append(metrics)
 
-        # CSV row
-        if self._csv_writer:
-            row = {"timestep": n, "episode": self._ep_count,
-                   "env_idx": env_idx, **metrics}
-            self._csv_writer.writerow(row)
-            self._csv_file.flush()
-
-        # Console summary
+        # Console summary (per-episode with rollout:ep label)
         if self.verbose >= 1 and self._ep_count % self._print_freq == 0:
             act_arr = (np.array(buf["actions"]) if buf["actions"]
                        else np.empty((0, 4)))
             a_means = np.mean(act_arr, axis=0) if act_arr.shape[0] > 0 else np.zeros(4)
             print(
-                f"  ep {self._ep_count:5d} | steps {n:8d} | "
+                f"  R{self._rollout_count}:E{self._rollout_ep_idx} "
+                f"(ep {self._ep_count:5d}) | steps {n:8d} | "
                 f"r={metrics['ep/mean_reward']:8.2f} | "
                 f"T_A={metrics['thermal/mean_temp_A']:5.1f}°C "
                 f"T_B={metrics['thermal/mean_temp_B']:5.1f}°C | "
@@ -463,6 +460,51 @@ class C2GMetricsCallback(BaseCallback):
                 f"thr={a_means[0]:.2f} pmp={a_means[1]:.2f} "
                 f"hvac={a_means[2]:.2f} bess={a_means[3]:+.2f}"
             )
+
+    def _on_rollout_end(self) -> None:
+        """Log mean of all episodes completed during this rollout to TB + CSV."""
+        self._rollout_count += 1
+        if not self._rollout_episodes:
+            self._rollout_ep_idx = 0
+            return
+
+        n_eps = len(self._rollout_episodes)
+        keys = self._rollout_episodes[0].keys()
+        mean_metrics: dict[str, float] = {}
+        for key in keys:
+            vals = [ep[key] for ep in self._rollout_episodes]
+            mean_metrics[key] = float(np.mean(vals))
+
+        # TensorBoard (one averaged data point per rollout)
+        for tag, val in mean_metrics.items():
+            self.logger.record(tag, val)
+        self.logger.record("ep/rollout_n_episodes", n_eps)
+
+        # CSV (rollout-mean row only)
+        if self._csv_writer:
+            row = {"timestep": self.num_timesteps,
+                   "rollout": self._rollout_count,
+                   "n_episodes": n_eps, **mean_metrics}
+            self._csv_writer.writerow(row)
+            self._csv_file.flush()
+
+        # Console rollout summary
+        if self.verbose >= 1:
+            m = mean_metrics
+            print(
+                f"  R{self._rollout_count} MEAN ({n_eps} eps) | "
+                f"steps {self.num_timesteps:8d} | "
+                f"r={m['ep/mean_reward']:8.2f} | "
+                f"T_A={m['thermal/mean_temp_A']:5.1f}°C "
+                f"T_B={m['thermal/mean_temp_B']:5.1f}°C | "
+                f"viol={m['thermal/viol_rate']:.3f} | "
+                f"SOC={m['bess/mean_soc']:.2f} | "
+                f"RMSE={m['grid/tracking_rmse_kw']:7.0f}kW | "
+                f"PUE={m['facility/mean_pue']:.3f}"
+            )
+
+        self._rollout_episodes.clear()
+        self._rollout_ep_idx = 0
 
     # ------------------------------------------------------------------
     # Buffer helpers
@@ -493,7 +535,7 @@ class C2GMetricsCallback(BaseCallback):
 
     def _csv_columns(self) -> list[str]:
         return [
-            "timestep", "episode", "env_idx",
+            "timestep", "rollout", "n_episodes",
             "ep/mean_reward", "ep/total_reward", "ep/length", "ep/survived",
             "thermal/mean_temp_A", "thermal/mean_temp_B",
             "thermal/max_temp_A", "thermal/max_temp_B",
@@ -576,11 +618,16 @@ class SyncNormEvalCallback(EvalCallback):
         TensorBoard as ``eval/<original_tag>``.
     """
 
-    def __init__(self, *args, eval_metrics_wrappers=None, **kwargs):
+    def __init__(self, *args, eval_metrics_wrappers=None,
+                 csv_path: str | Path | None = None, **kwargs):
         super().__init__(*args, **kwargs)
         self._eval_metrics_wrappers: list[C2GEvalMetricsWrapper] = (
             eval_metrics_wrappers or []
         )
+        self._eval_csv_path = Path(csv_path) if csv_path else None
+        self._eval_csv_writer: csv.DictWriter | None = None
+        self._eval_csv_file = None
+        self._eval_rollout_count = 0
 
     def _on_step(self) -> bool:
         if self.eval_freq > 0 and self.n_calls % self.eval_freq == 0:
@@ -594,10 +641,32 @@ class SyncNormEvalCallback(EvalCallback):
             for w in self._eval_metrics_wrappers:
                 all_episodes.extend(w.pop_episodes())
             if all_episodes:
+                self._eval_rollout_count += 1
+                n_eps = len(all_episodes)
                 keys = all_episodes[0].keys()
+                mean_metrics: dict[str, float] = {}
                 for key in keys:
                     vals = [ep[key] for ep in all_episodes]
-                    self.logger.record(f"eval/{key}", float(np.mean(vals)))
+                    mean_metrics[key] = float(np.mean(vals))
+                for key, val in mean_metrics.items():
+                    self.logger.record(f"eval/{key}", val)
+                self.logger.record("eval/n_episodes", n_eps)
+
+                # Eval CSV (rollout-mean only)
+                if self._eval_csv_path:
+                    if self._eval_csv_writer is None:
+                        self._eval_csv_path.parent.mkdir(parents=True, exist_ok=True)
+                        write_header = not self._eval_csv_path.exists()
+                        self._eval_csv_file = open(self._eval_csv_path, "a", newline="")  # noqa: SIM115
+                        cols = ["timestep", "eval_rollout", "n_episodes"] + sorted(mean_metrics.keys())
+                        self._eval_csv_writer = csv.DictWriter(self._eval_csv_file, fieldnames=cols)
+                        if write_header:
+                            self._eval_csv_writer.writeheader()
+                    row = {"timestep": self.num_timesteps,
+                           "eval_rollout": self._eval_rollout_count,
+                           "n_episodes": n_eps, **mean_metrics}
+                    self._eval_csv_writer.writerow(row)
+                    self._eval_csv_file.flush()
 
         return result
 

@@ -145,6 +145,7 @@ def train(cfg: DictConfig) -> None:
     eval_cb = SyncNormEvalCallback(
         eval_env,
         eval_metrics_wrappers=_eval_metric_wrappers,
+        csv_path=out_dir / "eval_metrics.csv" if log_cfg.csv else None,
         best_model_save_path=str(out_dir / "best_model"),
         log_path=str(out_dir / "tensorboard"),
         eval_freq=algo_cfg.eval_freq,
