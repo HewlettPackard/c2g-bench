@@ -144,7 +144,12 @@ def generate_structured(
             ],
             max_tokens=max(1, int(max_new_tokens)),
             temperature=max(0.0, float(temperature)),
-            extra_body={"chat_template_kwargs": {"enable_thinking": enable_thinking}},
+            extra_body={
+                "chat_template_kwargs": {
+                    "enable_thinking": enable_thinking,
+                    "thinking_budget": 8000,
+                }
+            },
         )
         choice = response.choices[0]
         if choice.finish_reason == "length":
@@ -278,7 +283,7 @@ class _BaseLLMPolicyAgent:
         model_id: str,
         prompts: dict[str, dict[str, str]],
         state_names: list[str],
-        max_new_tokens: int = 256,
+        max_new_tokens: int = 16000,
         temperature: float = 0.0,
         api_base: str = "http://localhost:8000/v1",
         enable_thinking: bool = True,
@@ -459,7 +464,7 @@ class LLMPolicyAgent:
         mode: str,
         prompts: dict[str, dict[str, str]],
         state_names: list[str],
-        max_new_tokens: int = 256,
+        max_new_tokens: int = 16000,
         temperature: float = 0.0,
         api_base: str = "http://localhost:8000/v1",
         enable_thinking: bool = True,

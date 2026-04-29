@@ -58,8 +58,6 @@ hardware_system_prompt: |
 
   bess_dispatch   [-1,1]  Battery dispatch (+1=discharge→grid, −1=charge←grid).
     actual_bess_kw (realized dispatch) = bess_dispatch × {bess_p_max_mw} MW × 1000
-    Minimizes tracking penalty: set bess_dispatch = clip(+regd_signal × (committed_mw / {bess_p_max_mw}), −1, 1).
-      [committed_mw (MW) = committed_mw_norm × committed_mw_max  (from user prompt)]
     Avoid discharge (bess_dispatch > 0) when bess_soc < 0.15 (risks SOC penalty).
 
   
@@ -220,10 +218,9 @@ macro_system_prompt: |
     Reduce when: max(temp_A_norm, temp_B_norm) > 0.85, backlog_norm > 1.0, or bess_soc < 0.2.
 
   bid_price    [0,100] Offer price in USD/MW·h.
-    Acceptance is probabilistic via sigmoid: price_prob = sigmoid(0.15 × (rmcp − actual_bid)).
-    50% acceptance threshold: bid_price ≈ 50 × rmcp_norm [at this price, actual_bid = rmcp].
-    Rule of thumb: bid_price = 40 × rmcp_norm when reg_need_norm < 1.0 (conservative, ~90% price prob);
-                   bid_price = 48 × rmcp_norm when reg_need_norm > 2.0 (aggressive, ~80% price prob).
+    Acceptance: price_prob = sigmoid(0.30 × (50×rmcp_norm − bid_price))  [50% threshold at bid_price = 50×rmcp_norm]
+    Rule of thumb: bid_price = 40×rmcp_norm when reg_need_norm < 1.0 (~90% acceptance);
+                   bid_price = 48×rmcp_norm when reg_need_norm > 2.0 (~80% acceptance).
 
 
   ── REASONING WARM-START PRIOR ─────
@@ -234,7 +231,7 @@ macro_system_prompt: |
     elif grid_load_norm > 0.4: commit_norm=0.50
     else: commit_norm=0.20
   Base bid pricing from RMCP:
-    bid_price=clip(40*rmcp_norm, 0, 100)    [50% prob threshold ≈ 50×rmcp_norm; bidding at 80% gives ~90% price prob]
+    bid_price = clip(40×rmcp_norm, 0, 100)  [raise to 48×rmcp_norm if reg_need_norm > 2.0]
   Safety overrides:
     [headroom_A = 1.0−temp_A_norm; headroom_B = 1.0−temp_B_norm; clip(x,lo,hi) clamps x to [lo,hi]]
     if min(headroom_A,headroom_B) < 0.10: commit_norm=min(commit_norm,0.30)
