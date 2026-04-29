@@ -31,6 +31,7 @@ from pathlib import Path
 import baselines._hydra_compat  # noqa: F401
 
 import hydra
+from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig
 
 import numpy as np
@@ -151,7 +152,7 @@ def train(cfg: DictConfig) -> None:
     scenario = cfg.scenario.name
     algo_cfg = cfg.algo
     seed     = cfg.experiment.seed
-    out_dir  = Path(".")
+    out_dir  = Path(HydraConfig.get().runtime.output_dir)
 
     w_thermal = float(getattr(algo_cfg, "w_thermal", 2.0))
     w_soc     = float(getattr(algo_cfg, "w_soc", 1.0))
@@ -204,7 +205,7 @@ def train(cfg: DictConfig) -> None:
                      n_eval_episodes=int(getattr(algo_cfg, "n_eval_episodes", 5)),
                      best_model_save_path=str(out_dir / "best_model"),
                      deterministic=True),
-        C2GMetricsCallback(log_dir=str(out_dir)),
+        C2GMetricsCallback(csv_path=out_dir / "metrics.csv"),
     ]
 
     model.learn(total_timesteps=timesteps, callback=callbacks)

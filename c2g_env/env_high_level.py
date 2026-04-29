@@ -275,6 +275,7 @@ class C2GMacroEnv(gym.Env):
         cool_deltas     = []
         p_pumps         = []
         p_hvacs         = []
+        inner_actions   = []   # executed 4-D inner actions
         terminated     = False
         truncated      = False
         last_info: dict = {}
@@ -307,6 +308,12 @@ class C2GMacroEnv(gym.Env):
             cool_deltas.append(info["cool_delta_kw"])
             p_pumps.append(info["p_pump_mw"])
             p_hvacs.append(info["p_hvac_mw"])
+            inner_actions.append([
+                info.get("throttle_batch", 0.0),
+                info.get("pump_speed_A", 0.0),
+                info.get("hvac_effort", 0.0),
+                info.get("bess_dispatch", 0.0),
+            ])
             spike_any = spike_any or bool(info["is_spike"])
             backlog_norms.append(min(
                 info["backlog_kw"] / self._fast_env._workload.p_flex_max_kw, 2.0
@@ -405,6 +412,10 @@ class C2GMacroEnv(gym.Env):
             "mean_cool_delta_kw":    float(np.mean(cool_deltas)),
             "mean_p_pump_mw":        float(np.mean(p_pumps)),
             "mean_p_hvac_mw":        float(np.mean(p_hvacs)),
+            "mean_inner_throttle":   float(np.mean([a[0] for a in inner_actions])) if inner_actions else 0.0,
+            "mean_inner_pump":       float(np.mean([a[1] for a in inner_actions])) if inner_actions else 0.0,
+            "mean_inner_hvac":       float(np.mean([a[2] for a in inner_actions])) if inner_actions else 0.0,
+            "mean_inner_bess":       float(np.mean([a[3] for a in inner_actions])) if inner_actions else 0.0,
             "reward_regulation":     r_regulation,
             "reward_sub":            r_sub,
             "reward_elec":           r_elec,

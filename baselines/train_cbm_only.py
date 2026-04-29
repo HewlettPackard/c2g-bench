@@ -215,7 +215,7 @@ def train(cfg: DictConfig) -> None:
     concept_cb = ConceptSupervisionCallback(
         concept_encoder=concept_encoder,
         total_timesteps=algo_cfg.timesteps,
-        supervision_freq=2048,
+        supervision_freq=int(getattr(algo_cfg, "supervision_freq", 2048)),
         batch_size=256,
         lr=1e-3,
         verbose=1,

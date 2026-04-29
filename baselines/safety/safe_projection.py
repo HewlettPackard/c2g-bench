@@ -13,17 +13,20 @@ This layer provides two guarantees:
     out-of-bounds actions by construction. For BESS ∈ [-1,1] we use
     2σ(·) − 1 instead.
 
-  Step 2 — Concept-conditioned gate:
-    g = σ(MLP_φ(concepts)) ∈ (0, 1)^{N_a}
-    a_final = a_bounded ⊙ g
-    The gate learns WHEN to attenuate actions based on concept values.
+    Step 2 — Concept-conditioned gate + action prior:
+        g = σ(MLP_φ(concepts)) ∈ (0, 1)^{N_a}
+        a_prior = f(concepts, obs)
+        a_final = g ⊙ a_policy + (1 − g) ⊙ a_prior
+        The gate learns how much of the policy action to keep versus how much
+        to blend toward a concept-guided safe prior.
 
 Key design: the gate is **actively trained** (not just near-pass-through):
-  - An auxiliary gate supervision loss provides an explicit training signal
-  - Gate target: g* = 1 − α · max(cooling_demand_A, cooling_demand_B)
-    meaning: when cooling demand is high, throttle down the batch action
-  - The gate is DIFFERENTIABLE: gradients flow through both sigmoid and
-    gate during PPO training, so the policy learns to cooperate.
+    - An auxiliary gate supervision loss provides an explicit training signal
+    - Gate targets encode environment-dependent pass-through values rather than
+        all-ones / pure pass-through behavior
+    - Action priors encode meaningful cooling / BESS responses from concepts
+    - The layer is DIFFERENTIABLE: gradients flow through both the gate and the
+        policy action path during PPO training, so the policy learns to cooperate.
 
 This is adapted from the SC26 HA-CompOpt paper's Safe Projection Layer
 with the gate supervision experiment (Section 5.4) integrated into the
@@ -51,6 +54,70 @@ except ImportError:
 
 
 if _TORCH_AVAILABLE:
+
+    def build_gate_targets(
+        concepts: torch.Tensor,
+        gate_alpha: float = 0.5,
+        gate_beta: float = 0.3,
+    ) -> torch.Tensor:
+        """Build concept-guided pass-through targets for Layer 2."""
+        cooling_A = concepts[:, 5]
+        cooling_B = concepts[:, 6]
+        cooling_demand = torch.maximum(cooling_A, cooling_B)
+        grid_urgency = concepts[:, 7]
+
+        gate_target = torch.ones(concepts.shape[0], 4, device=concepts.device, dtype=concepts.dtype)
+        gate_target[:, 0] = 1.0 - gate_alpha * cooling_demand
+        gate_target[:, 1] = 1.0 - 0.75 * gate_alpha * cooling_A
+        gate_target[:, 2] = 1.0 - 0.75 * gate_alpha * cooling_B
+        gate_target[:, 3] = 1.0 - gate_beta * grid_urgency
+        return torch.clamp(gate_target, 0.0, 1.0)
+
+
+    def build_action_priors(
+        concepts: torch.Tensor,
+        obs: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Build concept-guided safe action priors for Layer 2 blending."""
+        cooling_A = concepts[:, 5]
+        cooling_B = concepts[:, 6]
+        cooling_demand = torch.maximum(cooling_A, cooling_B)
+        batch_pressure = concepts[:, 8]
+        grid_urgency = concepts[:, 7]
+        bess_headroom = concepts[:, 9]
+
+        priors = torch.zeros(concepts.shape[0], 4, device=concepts.device, dtype=concepts.dtype)
+        priors[:, 0] = torch.clamp(cooling_demand - 0.5 * batch_pressure + 0.25, 0.0, 1.0)
+        priors[:, 1] = torch.clamp(cooling_A, 0.0, 1.0)
+        priors[:, 2] = torch.clamp(cooling_B, 0.0, 1.0)
+
+        regd = torch.zeros(concepts.shape[0], device=concepts.device, dtype=concepts.dtype)
+        if obs is not None and obs.shape[1] > 6:
+            regd = torch.clamp(obs[:, 6], -1.0, 1.0)
+        priors[:, 3] = torch.clamp(torch.sign(regd) * grid_urgency * bess_headroom, -1.0, 1.0)
+        return priors
+
+
+    def blend_with_action_priors(
+        policy_action: torch.Tensor,
+        gate_values: torch.Tensor,
+        action_priors: torch.Tensor,
+    ) -> torch.Tensor:
+        """Blend policy actions toward concept-guided priors."""
+        return gate_values * policy_action + (1.0 - gate_values) * action_priors
+
+
+    def compute_layer2_action(
+        policy_action: torch.Tensor,
+        concepts: torch.Tensor,
+        obs: torch.Tensor | None = None,
+        safety_gate: "SafeProjectionGate | None" = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Apply Layer 2 using learned pass-through gates and action priors."""
+        gate_values = safety_gate(concepts) if safety_gate is not None else torch.ones_like(policy_action)
+        action_priors = build_action_priors(concepts, obs=obs)
+        safe_action = blend_with_action_priors(policy_action, gate_values, action_priors)
+        return safe_action, gate_values, action_priors
 
     class SafeProjectionGate(nn.Module):
         """
@@ -101,7 +168,7 @@ if _TORCH_AVAILABLE:
 
     class SafeProjectionLayer(nn.Module):
         """
-        Full safe projection layer: sigmoid bound + concept-conditioned gate.
+        Full safe projection layer: sigmoid bound + concept-guided prior blend.
 
         This is applied to the raw policy output to produce bounded,
         concept-modulated actions.
@@ -133,6 +200,7 @@ if _TORCH_AVAILABLE:
             self,
             raw_action: torch.Tensor,
             concepts: torch.Tensor,
+            observations: torch.Tensor | None = None,
         ) -> torch.Tensor:
             """
             Project raw policy output into safe, bounded action space.
@@ -156,21 +224,25 @@ if _TORCH_AVAILABLE:
                 bounded[:, 3] = 2.0 * bounded[:, 3] - 1.0
 
             # Step 2: Concept-conditioned gate
-            gate = self.safety_gate(concepts)
-
-            return bounded * gate
+            safe_action, _, _ = compute_layer2_action(
+                bounded,
+                concepts,
+                obs=observations,
+                safety_gate=self.safety_gate,
+            )
+            return safe_action
 
 
     class GateSupervisionLoss:
         """
-        Auxiliary loss that trains the SafeProjectionGate to attenuate
-        actions when safety concepts indicate danger.
+        Auxiliary loss that trains the SafeProjectionGate to encode
+        meaningful concept-conditioned pass-through behavior.
 
         Gate target computation:
           g*_throttle = 1.0 − α · max(cooling_demand_A, cooling_demand_B)
-          g*_pump     = 1.0  (always allow full pump — pumping is safe)
-          g*_hvac     = 1.0  (always allow full HVAC — cooling is safe)
-          g*_bess     = 1.0 − β · (1.0 − bess_headroom)
+          g*_pump     = 1.0 − 0.75·α·cooling_demand_A
+          g*_hvac     = 1.0 − 0.75·α·cooling_demand_B
+          g*_bess     = 1.0 − β · grid_urgency
 
         When cooling demand is high, the gate learns to reduce throttle
         (batch compute), which is the primary heat source.
@@ -213,29 +285,11 @@ if _TORCH_AVAILABLE:
             -------
             loss : scalar tensor
             """
-            # Concept indices (from C2G_CONCEPT_NAMES):
-            # 5 = cooling_demand_A, 6 = cooling_demand_B, 9 = bess_headroom
-            cooling_demand = torch.max(
-                concept_targets[:, 5],
-                concept_targets[:, 6],
-            )  # (batch,)
-            bess_headroom = concept_targets[:, 9]  # (batch,)
-
-            # Per-action gate targets
-            batch_size = gate_values.shape[0]
-            gate_target = torch.ones_like(gate_values)
-
-            # Throttle (action 0): attenuate when cooling demand high
-            gate_target[:, 0] = 1.0 - self.gate_alpha * cooling_demand
-
-            # Pump (action 1): always pass through — more cooling is safe
-            gate_target[:, 1] = 1.0
-
-            # HVAC (action 2): always pass through
-            gate_target[:, 2] = 1.0
-
-            # BESS (action 3): attenuate when headroom is low
-            gate_target[:, 3] = 1.0 - self.gate_beta * (1.0 - bess_headroom)
+            gate_target = build_gate_targets(
+                concept_targets,
+                gate_alpha=self.gate_alpha,
+                gate_beta=self.gate_beta,
+            )
 
             loss = F.mse_loss(gate_values, gate_target) * self.loss_weight
             return loss

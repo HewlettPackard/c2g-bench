@@ -58,7 +58,9 @@ Tier 3 Ablations
   cbm_shield   — PPO + concept bottleneck + physics shield (no gate)
 """
 from __future__ import annotations
-import argparse, csv, json, re, time
+
+import torch
+import argparse, csv, time
 from pathlib import Path
 from typing import Any
 
@@ -80,6 +82,7 @@ from baselines.train_llm_agents import (
     load_prompt_templates,
     validate_llm_model_id,
 )
+from baselines.safety.safe_projection import compute_layer2_action
 
 # ── High-Assurance agents ────────────────────────────────────────
 from baselines.safety.cbf_shield import CBFShield, CBFShieldedAgent
@@ -89,9 +92,17 @@ from baselines.safety_shield import SafetyShield
 
 SCENARIOS    = ["default", "scenario_a", "scenario_b", "scenario_c"]
 T_WARN_NORM  = 33.0 / 35.0   # normalised warning threshold
-_RL_ALGOS = {
+_PPO_LIKE_ALGOS = {
     "ppo",
-    "sac"
+    "ppo_lag",
+    "ppo_lagrangian",
+    "ppo_macro",
+    "cpo",
+    "reward_shaping",
+    "ha_c2g",
+    "cbm_only",
+    "cbm_gate",
+    "cbm_shield",
 }
 _VALID_ACTIONS = ("throttle_batch", "pump_speed_A", "hvac_effort", "bess_dispatch")
 _ACTION_BOUNDS: dict[str, tuple[float, float]] = {
@@ -167,7 +178,7 @@ def _make_inner_controller(
     name: str,
     env: "C2GFastEnv | None" = None,
     scenario: str = "default",
-    seed: int = 42,
+    seed: int = 100,
     model_dir: str | None = None,
 ):
     """Instantiate a low-level controller by name."""
@@ -260,13 +271,36 @@ class SB3Agent:
         return self._model.predict(obs, deterministic=deterministic)
 
 
+class HAC2GAgent(SB3Agent):
+    def __init__(self, model, algo_name: str, concept_encoder, safety_gate, obs_normalizer=None):
+        super().__init__(model, algo_name=algo_name, obs_normalizer=obs_normalizer)
+        self._concept_encoder = concept_encoder
+        self._safety_gate = safety_gate
+
+    def predict(self, obs: np.ndarray, deterministic: bool = True):
+        action, state = super().predict(obs, deterministic=deterministic)
+        raw_obs = np.asarray(obs, dtype=np.float32)
+        with torch.no_grad():
+            device = next(self._concept_encoder.parameters()).device
+            obs_t = torch.as_tensor(raw_obs, dtype=torch.float32, device=device).unsqueeze(0)
+            action_t = torch.as_tensor(action, dtype=torch.float32, device=device).unsqueeze(0)
+            concepts = self._concept_encoder(obs_t)
+            gated_action, _, _ = compute_layer2_action(
+                action_t,
+                concepts,
+                obs=obs_t,
+                safety_gate=self._safety_gate,
+            )
+        return gated_action.squeeze(0).detach().cpu().numpy(), state
+
+
 def _resolve_sb3_spec(algo: str):
     from stable_baselines3 import PPO, SAC
 
     algo_key = algo.lower()
     if algo_key == "sac":
         return SAC, "sac", False
-    if algo_key in _RL_ALGOS:
+    if algo_key in _PPO_LIKE_ALGOS:
         train_key_map = {
             "ppo_lag": "ppo_lagrangian",
             "reward_shaping": "shield_reward_shaping",
@@ -288,6 +322,19 @@ def _maybe_load_obs_normalizer(stats_path: Path, scenario: str):
     return vec_norm
 
 
+def _maybe_load_macro_obs_normalizer(stats_path: Path, scenario: str):
+    if not stats_path.exists():
+        return None
+
+    from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
+
+    vec_env = DummyVecEnv([lambda: C2GMacroEnv(scenario=scenario)])
+    vec_norm = VecNormalize.load(str(stats_path), vec_env)
+    vec_norm.training = False
+    vec_norm.norm_reward = False
+    return vec_norm
+
+
 def load_sb3_agent(algo: str, scenario: str, seed: int, model_dir: str | None):
     cls, train_key, should_restore_norm = _resolve_sb3_spec(algo)
     if model_dir:
@@ -301,7 +348,21 @@ def load_sb3_agent(algo: str, scenario: str, seed: int, model_dir: str | None):
     model = cls.load(str(path))
     obs_normalizer = None
     if should_restore_norm:
-        obs_normalizer = _maybe_load_obs_normalizer(path.parent / "vec_normalize.pkl", scenario)
+        normalizer_loader = (
+            _maybe_load_macro_obs_normalizer
+            if algo.lower() == "ppo_macro"
+            else _maybe_load_obs_normalizer
+        )
+        obs_normalizer = normalizer_loader(path.parent / "vec_normalize.pkl", scenario)
+    if algo.lower() in {"ha_c2g", "cbm_gate"}:
+        fe = model.policy.features_extractor
+        return HAC2GAgent(
+            model,
+            algo_name=algo.lower(),
+            concept_encoder=fe.concept_encoder,
+            safety_gate=fe.safety_gate,
+            obs_normalizer=obs_normalizer,
+        )
     return SB3Agent(model, algo_name=algo.lower(), obs_normalizer=obs_normalizer)
 
 
@@ -501,6 +562,11 @@ def run_macro_episode(
     cool_deltas: list[float] = []
     p_pumps: list[float] = []
     p_hvacs: list[float] = []
+    # Inner (low-level) action means per macro tick
+    inner_throttles: list[float] = []
+    inner_pumps: list[float] = []
+    inner_hvacs: list[float] = []
+    inner_besses: list[float] = []
 
     done = False
     try:
@@ -540,6 +606,11 @@ def run_macro_episode(
         cool_deltas.append(float(info.get("mean_cool_delta_kw", 0.0)))
         p_pumps.append(float(info.get("mean_p_pump_mw", 0.0)))
         p_hvacs.append(float(info.get("mean_p_hvac_mw", 0.0)))
+        inner_throttle.append(float(info.get("mean_inner_throttle", 0.0)))
+        inner_pumps.append(float(info.get("mean_inner_pump", 0.0)))
+        inner_hvacs.append(float(info.get("mean_inner_hvac", 0.0)))
+        inner_besses.append(float(info.get("mean_inner_bess", 0.0)))
+
     finally:
       if transition_logger is not None:
           transition_logger.close()
@@ -566,6 +637,10 @@ def run_macro_episode(
         "mean_cool_delta_kw":   float(np.mean(cool_deltas)) if cool_deltas else 0.0,
         "mean_p_pump_mw":       float(np.mean(p_pumps)) if p_pumps else 0.0,
         "mean_p_hvac_mw":       float(np.mean(p_hvacs)) if p_hvacs else 0.0,
+        "mean_inner_throttle":  float(np.mean(inner_throttles)) if inner_throttles else 0.0,
+        "mean_inner_pump":      float(np.mean(inner_pumps)) if inner_pumps else 0.0,
+        "mean_inner_hvac":      float(np.mean(inner_hvacs)) if inner_hvacs else 0.0,
+        "mean_inner_bess":      float(np.mean(inner_besses)) if inner_besses else 0.0,
     }
 
 
@@ -769,7 +844,11 @@ def benchmark(
                     f"survive={agg['survival_rate']:.2f}  "
                     f"flex={agg['mean_flex_kw']:.0f}kW  "
                     f"bess={agg['mean_bess_kw']:.0f}kW  "
-                    f"cool_d={agg['mean_cool_delta_kw']:.0f}kW"
+                    f"cool_d={agg['mean_cool_delta_kw']:.0f}kW  "
+                    f"inner[thr={agg['mean_inner_throttle']:.2f} "
+                    f"pmp={agg['mean_inner_pump']:.2f} "
+                    f"hvac={agg['mean_inner_hvac']:.2f} "
+                    f"bess={agg['mean_inner_bess']:+.2f}]"
                 )
             else:
                 tqdm.write(

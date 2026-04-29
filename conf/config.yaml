@@ -27,8 +27,8 @@ defaults:
 
 # Experiment identity — used to name output directories
 experiment:
-  name: "${algo.name}_${scenario.name}"
-  seed: 42
+  name: "${algo.name}_nsteps_${algo.n_steps}_${scenario.name}"
+  seed: 100
   market: "${scenario.grid_market}"  # logged for tracking
 
 # Hardware — "auto" uses CUDA when available, otherwise CPU.
