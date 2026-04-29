@@ -90,6 +90,7 @@ hardware_user_prompt: |
   Current normalized system state (18-D, keyed by name):
   {state_json}
 
+  Think concisely — write ONLY what each step specifies. Do NOT restate or summarize observations. Do NOT add prose between steps.
   Reason through these steps, then output JSON:
   Scenario Attributes (pre-computed; do NOT re-derive):
     committed_mw       = {committed_mw} MW
@@ -99,54 +100,89 @@ hardware_user_prompt: |
     backlog_increment  = {backlog_increment}  (= p_flex_nom_norm × 2.78; next-step backlog rise if throttle=0)
     bess_dispatch_base = {bess_dispatch_baseline}  (SOC overrides already applied)
 
+  0. State classification (write each line):
+     thermal_regime  = SAFE if T_max < 0.85, WARM if 0.85–0.943, HOT if 0.943–0.98, CRITICAL if ≥0.98
+     tracking_regime = ACTIVE if |regd_signal| > 0.1 else IDLE
+     backlog_regime  = HIGH if backlog_norm + {backlog_increment} > 0.5 else LOW
+     soc_regime      = LOW if bess_soc < 0.20, HIGH if bess_soc > 0.80, else NORMAL
+     Write one line: "state: thermal=X, tracking=X, backlog=X, soc=X"
   1. Warm-start baseline: apply thermal table row for T_max to get
      (throttle_batch_0, pump_speed_A_0, hvac_effort_0); set bess_dispatch_0 = bess_dispatch_base.
-     These are starting points — the search in Step 3 will improve on them.
-  2. Compute baseline (set δ=0): sum Δr_tracking + Δr_throughput + Δr_backlog + Δr_soc using the formulas in Steps 3a–3c.
-     For thermal/voltage/freq: deduce direction from current state trends — covered in Step 3c.
-  3. Mandatory action search — do NOT skip even if the baseline looks good.
+     These are starting points — the search in Step 2 will improve on them.
+  2. Mandatory action search — do NOT skip even if the baseline looks good.
 
-     Step 3 prelude — rank the four actions by their expected impact on reward given the current state.
-     Write one line: "criticality order: A1, A2, A3, A4" then process in that order.
+     Step 2 prelude — pick the criticality order in ONE step using the FIRST matching row below:
+       Condition                                          Order (A1 → A2 → A3 → A4)
+       tracking=ACTIVE and thermal=HOT/CRITICAL     →    pump_speed_A, hvac_effort, bess_dispatch, throttle_batch
+       tracking=ACTIVE                              →    bess_dispatch, pump_speed_A, hvac_effort, throttle_batch
+       thermal=HOT or CRITICAL                      →    pump_speed_A, hvac_effort, throttle_batch, bess_dispatch
+       backlog=HIGH and thermal=SAFE                →    throttle_batch, pump_speed_A, hvac_effort, bess_dispatch
+       default                                      →    throttle_batch, pump_speed_A, hvac_effort, bess_dispatch
+     Write exactly one line: "criticality order: A1=<name>, A2=<name>, A3=<name>, A4=<name>" — no further reasoning about the order.
 
-     For EACH action in criticality order, use sign-then-magnitude:
-       Sign step:     evaluate δ=+0.05 and δ=−0.05; pick the sign with the higher Δr_total. Sign is fixed after this step — do not re-evaluate it during the magnitude sweep.
-       Magnitude step: in the winning direction only, evaluate δ ∈ {{0.05, 0.10, 0.15, 0.20, 0.25, 0.30}} in order;
-                       stop on first non-improvement OR a safety condition is violated.
-                       The last δ before stopping is the best — keep it even if a larger δ was unsafe.
-     Clip candidate = baseline_action + best_δ to valid bounds:
-       throttle_batch, pump_speed_A, hvac_effort: clip to [0, 1]
-       bess_dispatch: clip to [−1, 1]
-     Step 3a — intermediate quantities (pre-computed values already provided above):
-       For a candidate action (t=throttle_batch, p=pump_speed_A, h=hvac_effort, d=bess_dispatch):
+     # Baseline tuple (from Step 1): b_t=throttle_batch_0, b_p=pump_speed_A_0, b_h=hvac_effort_0, b_d=bess_dispatch_0
+     # Pre-compute baseline intermediates once (used as reference in every eval() call):
+     #   flex_base        = (1 − b_t) × {p_flex_nom_kw}
+     #   bess_base        = b_d × {bess_p_max_mw} × 1000
+     #   cool_base        = (50.0×b_h + 1.5×max(0.15,b_p) − 36.5) × 1000
+     #   delta_p_actual_kw_base = flex_base + bess_base − cool_base
+     #   bess_soc_base′   = bess_soc − b_d × {bess_p_max_mw} × 9.54×10⁻⁵
+
+     remaining = [A1, A2, A3, A4]               # criticality order from prelude
+     while remaining is not empty:
+       action = remaining.pop(0)
+
+       # eval(v, δ): score one candidate value v for the current action.
+       # For the action being evaluated, v replaces the baseline; all others stay at baseline.
+       # δ = signed step size (used only for qualitative scaling).
+       def eval(v, δ):
+         # Resolve full action tuple — only the current action changes:
+         t = v   if action==throttle_batch  else b_t
+         p = v   if action==pump_speed_A    else b_p
+         h = v   if action==hvac_effort     else b_h
+         d = v   if action==bess_dispatch   else b_d
+         # Step 2a — intermediate quantities:
          flex_reduction_kw = (1 − t) × {p_flex_nom_kw}
          bess_actual_kw    = d × {bess_p_max_mw} × 1000
          cool_delta_kw     = (50.0×h + 1.5×max(0.15,p) − 36.5) × 1000
          delta_p_actual_kw = flex_reduction_kw + bess_actual_kw − cool_delta_kw
+         # Step 2b — EXACT computable deltas vs baseline:
+         Δr_tracking   = −2.0 × (|{target_kw} − delta_p_actual_kw| − |{target_kw} − delta_p_actual_kw_base|) / ({committed_mw} × 1000)
+         Δr_throughput = +1.0 × (t − b_t)
+         Δr_backlog    = −2.0 × (max(0, backlog_norm + {backlog_increment} − t) − max(0, backlog_norm + {backlog_increment} − b_t))
+         Δr_comp       = Δr_tracking + Δr_throughput + Δr_backlog
+         # Step 2c — APPROXIMATE SOC penalty:
+         bess_soc′     = bess_soc − d × {bess_p_max_mw} × 9.54×10⁻⁵
+         Δr_soc        = −0.5 × [1(bess_soc′ < 0.12) − 1(bess_soc_base′ < 0.12)]
+         # Qualitative — action-specific, δ in scope:
+         if action == throttle_batch:
+           Δr_qual = −99                                      if T_max ≥ 0.98 and δ > 0   # VETO
+                   = 0                                        if T_max < 0.85
+                   = −5 × max(0, T_max−0.943)/0.037 × |δ|   otherwise
+         elif action == pump_speed_A or action == hvac_effort:
+           Δr_qual = (+0.3 if T_max > 0.943 else 0) × |δ| − (0.1 if regd_signal > 0 else 0) × |δ|
+         else:   # bess_dispatch
+           Δr_qual = 0
+         return Δr_comp + Δr_soc + Δr_qual
 
-     Step 3b — EXACT computable reward deltas vs baseline:
-       Δr_tracking   = −2.0 × (|{target_kw} − delta_p_actual(candidate)| − |{target_kw} − delta_p_actual(baseline)|) / ({committed_mw} × 1000)
-       Δr_throughput = +1.0 × (candidate_t − baseline_t)
-       Δr_backlog    = −2.0 × (max(0, backlog_norm + {backlog_increment} − candidate_t) − max(0, backlog_norm + {backlog_increment} − baseline_t))
+       # (1) Sign detection — evaluate both directions:
+       r_plus  = eval(clip(b_action + 0.05, bounds), +0.05)
+       r_minus = eval(clip(b_action − 0.05, bounds), −0.05)
+       sign = +1 if r_plus >= r_minus else −1
+       best_v = clip(b_action + sign×0.05, bounds) ;  best_r = max(r_plus, r_minus)
 
-     Step 3c — APPROXIMATE computable reward delta (SOC penalty):
-       bess_soc′ ≈ bess_soc − bess_dispatch × {bess_p_max_mw} × 9.54×10⁻⁵   [E_nom=15 MWh, η=0.97, dt=5 s; delta_soc = P_MW×dt/(η×E_nom×3600)]
-       Δr_soc = −0.5 × [1(bess_soc′_candidate < 0.12) − 1(bess_soc′_baseline < 0.12)]
+       # (2) Magnitude sweep:
+       for δ_mag in [0.10, 0.15, 0.20]:
+         v_cand = clip(b_action + sign × δ_mag, bounds)
+         r_cand = eval(v_cand, sign × δ_mag)
+         if r_cand <= best_r: break
+         best_v = v_cand ;  best_r = r_cand
+       done
+       # bounds: throttle_batch/pump_speed_A/hvac_effort → [0,1]; bess_dispatch → [−1,1]
+       # b_action = baseline value for the current action (b_t / b_p / b_h / b_d)
 
-     Step 3c — qualitative deduction for thermal/voltage/freq (penalty rates: −5/unit T above 0.943; −5/unit v_pcc outside [0.95,1.05]; −2/unit |freq| above 0.4; FATAL if T≥1.0, v_pcc<0.90, |freq|≥1.0):
-       Deduce likely next-state direction from current obs trends, then favour the action that moves away from penalty thresholds:
-       throttle_batch ↑ : heat rises → bad if T_max already > 0.85; backlog/tracking improve (exact in 3b)
-       throttle_batch ↓ : heat falls → good if T_max > 0.85; backlog/tracking worsen (exact in 3b)
-       pump_speed_A ↑   : temp falls → avoids −5/unit thermal; power rises → v_pcc may drop toward 0.95; cooling above nominal reduces tracking headroom when regd_signal > 0
-       pump_speed_A ↓   : saves power, tracking headroom improves; temp trends upward
-       hvac_effort ↑    : temp falls → avoids −5/unit thermal; power rises → v_pcc may drop toward 0.95; cooling above nominal reduces tracking headroom when regd_signal > 0
-       hvac_effort ↓    : saves power, tracking headroom improves; temp trends upward
-       bess_dispatch ↑  : tracks regd_signal > 0 better (exact in 3b); SOC depletes faster
-       bess_dispatch ↓  : tracks regd_signal < 0 better (exact in 3b); SOC recovers
-     For each action (in criticality order), write one line:
-       "ACTION best_δ → candidate  Δr=X  [LOCKED]"
-       The best_δ is the last δ that improved reward without violating safety — NOT necessarily the largest tried.
-       Once written as [LOCKED], that action is final. Process all four, then output JSON immediately.
+       write: "action best_v  Δr_comp=X Δr_soc=X Δr_qual≈X Δr_total≈X  [LOCKED]"
+     done   # all 4 actions locked → emit JSON immediately
 
   Then output ONLY a valid JSON object — no explanation, no markdown, no extra text.
   Use EXACTLY these four key names (copy them verbatim):
@@ -227,52 +263,76 @@ macro_user_prompt: |
   Current normalized system state (19-D, keyed by name):
   {state_json}
 
+  Think concisely — write ONLY what each step specifies. Do NOT restate or summarize observations. Do NOT add prose between steps.
   Reason through these steps, then output JSON:
   Scenario Attributes (pre-computed; do NOT re-derive):
-    rmcp_usd       = {rmcp_usd} USD/MWh  (= 100 × rmcp_norm)
-    T_max          = {T_max}  (= max(temp_A_norm, temp_B_norm))
-    commit_norm_0  = {commit_norm_0}  (grid_load_norm baseline + safety overrides already applied)
-    bid_price_0    = {bid_price_0}  (= clip(40×rmcp_norm, 0, 100))
+    rmcp_usd         = {rmcp_usd} USD/MWh  (= 100 × rmcp_norm)
+    T_max            = {T_max}  (= max(temp_A_norm, temp_B_norm))
+    commit_norm_0    = {commit_norm_0}  (grid_load_norm baseline + safety overrides already applied)
+    commit_norm_prev = {commit_norm_prev}  (commit_norm submitted last interval)
+    bid_price_0      = {bid_price_0}  (= clip(40×rmcp_norm, 0, 100))
 
+  0. State classification (write each line):
+     hardware_headroom = TIGHT if T_max > 0.85 or backlog_norm > 1.0 or bess_soc < 0.2, else AMPLE
+     market_regime     = RICH if rmcp_norm > 1.0 else NORMAL; STRESSED if reg_need_norm > 2.0 else OK
+     Write one line: "state: headroom=X, market=X/X"
   1. Warm-start baseline: commit_norm_0={commit_norm_0}, bid_price_0={bid_price_0}.
-     These are starting points — the search in Step 3 will improve on them.
-  2. Compute baseline churn: Δchurn_baseline = −0.05 × |commit_norm_0 − commit_norm_prev|
-     For revenue/cost/sub-reward: deduce direction from current state trends — covered in Step 3c.
-  3. Mandatory grid search — do NOT skip even if the baseline looks good.
+     These are starting points — the search in Step 2 will improve on them.
+  2. Mandatory grid search — do NOT skip even if the baseline looks good.
 
-     Step 3 prelude — rank the two actions by their expected impact on reward given the current state.
-     Write one line: "criticality order: A1, A2" then process in that order.
+     Step 2 prelude — pick the criticality order in ONE step using the FIRST matching rule below:
+       • market=RICH or headroom=TIGHT          → commit_norm, bid_price
+       • market=STRESSED                        → bid_price, commit_norm
+       • (none of the above / default)          → commit_norm, bid_price
+     Write exactly one line: "criticality order: A1=<name>, A2=<name>" — no further reasoning about the order.
 
-     Step 3a — intermediate quantities (pre-computed values already provided above):
-       committed_mw(c)   = c × {committed_mw_max}              [if bid accepted]
-       committed_mw_lose = {dr_baseline_mw}                     [if bid rejected; always charged]
+     remaining = [A1, A2]                        # criticality order from prelude
+     while remaining is not empty:
+       action = remaining.pop(0)
 
-     Step 3b — EXACT computable reward deltas vs baseline:
-       Δchurn(c)          = −0.05 × (|c − commit_norm_prev| − |commit_norm_0 − commit_norm_prev|)
-       acceptance_prob(p) = 1 / (1 + exp(−0.30 × (rmcp_usd / 2 − p)))
-                            [env converts LLM bid_price p → actual_bid = 2p; rmcp_usd = {rmcp_usd} USD/MWh]
-       commit_norm search (in criticality order): use sign-then-magnitude.
-         Sign step:     evaluate δ=+0.05 and δ=−0.05; pick the sign with higher Δchurn.
-         Magnitude step: in the winning direction only, evaluate δ ∈ {{0.05, 0.10, 0.15, 0.20, 0.25, 0.30}} in order;
-                         stop on first non-improvement OR perf_score collapse becomes likely.
-                         The last δ before stopping is the best — keep it even if a larger δ was unsafe.
-         candidate = clip(commit_norm_0 + best_δ, 0, 1)
-       bid_price search (in criticality order): evaluate p ∈ {{bid_price_0 − 10, bid_price_0, bid_price_0 + 10}} clipped to [0, 100];
-         pick p with highest acceptance_prob × expected_revenue.
+       if action == commit_norm:
+         # eval(c): ALL reward components for one candidate commit_norm value c.
+         def eval(c):
+           # Step 2a: committed_mw(c) = c × {committed_mw_max}
+           # Step 2b — EXACT churn penalty:
+           Δr_comp = −0.05 × (|c − {commit_norm_prev}| − |{commit_norm_0} − {commit_norm_prev}|)
+           # Qualitative — revenue direction and headroom VETO:
+           Δr_qual = −99                                                                    if headroom=TIGHT and c > 0.6
+                   = +{rmcp_usd} × (c − {commit_norm_0}) × {committed_mw_max} × 2.5e-4   otherwise
+           return Δr_comp + Δr_qual
 
-     Step 3c — qualitative deduction for revenue/cost/sub-reward:
-       [rates: reg_revenue ≈ {rmcp_usd}×committed_mw×perf_score×2.5e-4; elec_cost −0.5/unit lmp×p_facility; mean_sub_reward −2/breach +1/throttle]
-       Deduce likely next-interval outcome from current state trends, then favour the action that improves expected total:
-       commit_norm ↑ : revenue rises with committed_mw; mean_sub_reward rises if hardware has headroom;
-                       if T_max > 0.85, backlog > 1, or SOC < 0.2 → perf_score likely collapses → revenue lost, cost still charged
-       commit_norm ↓ : revenue falls; perf_score safer; hardware tracking penalty reduced
-       bid_price ↑   : acceptance less likely; revenue unchanged if won; if lost → committed_mw falls to dr_baseline_mw
-       bid_price ↓   : acceptance more likely; reg_revenue earned; risk of under-pricing
-       Favour lower bid_price when reg_need_norm < 1 (market competitive); higher when reg_need_norm > 2 (grid short).
+         # (1) Sign detection:
+         sign = +1 if (headroom=AMPLE and rmcp_norm > 0.5) else −1
+         best_c = clip(commit_norm_0 + sign×0.05, 0, 1)
+         best_r = eval(best_c)
 
-     For each action (in criticality order), write one line:
-       "ACTION best_δ → candidate  ΔR=X  [LOCKED]"
-       Once written as [LOCKED], that action is final. Process both, then output JSON immediately.
+         # (2) Magnitude sweep:
+         for δ_mag in [0.10, 0.20, 0.30]:
+           c_cand = clip(commit_norm_0 + sign × δ_mag, 0, 1)
+           r_cand = eval(c_cand)
+           if r_cand <= best_r: break
+           best_c = c_cand ;  best_r = r_cand
+         done
+
+       else:   # bid_price
+         # eval(p): ALL reward components for one candidate bid_price value p.
+         def eval(p):
+           # Step 2b — EXACT acceptance probability:
+           Δr_comp = 1 / (1 + exp(−0.30 × ({rmcp_usd}/2 − p))) × {rmcp_usd}
+           #         [env converts LLM bid_price p → actual_bid = 2p]
+           # Qualitative — market stress adjustment (additive tie-break ±1):
+           Δr_qual = −1   if reg_need_norm < 1 and p > bid_price_0   # penalise overbid in soft market
+                   = +1   if reg_need_norm > 2 and p > bid_price_0   # reward higher bid in stressed market
+                   = 0    otherwise
+           return Δr_comp + Δr_qual
+
+         # Enumerate 3 candidates (sign+magnitude collapsed — only 3 points):
+         best_p = argmax over {{bid_price_0−10, bid_price_0, bid_price_0+10}} ∩ [0,100]
+                  of eval(p)
+       done
+
+       write: "action best_v  Δr_comp=X Δr_qual≈X Δr_total≈X  [LOCKED]"
+     done   # both actions locked → emit JSON immediately
 
   Then output ONLY a valid JSON object — no explanation, no markdown, no extra text.
   Use EXACTLY these two key names (copy them verbatim):

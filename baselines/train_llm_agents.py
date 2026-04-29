@@ -147,7 +147,7 @@ def generate_structured(
             extra_body={
                 "chat_template_kwargs": {
                     "enable_thinking": enable_thinking,
-                    "thinking_budget": 8000,
+                    "thinking_budget": 12000,
                 }
             },
         )
@@ -283,7 +283,7 @@ class _BaseLLMPolicyAgent:
         model_id: str,
         prompts: dict[str, dict[str, str]],
         state_names: list[str],
-        max_new_tokens: int = 16000,
+        max_new_tokens: int = 12000,
         temperature: float = 0.0,
         api_base: str = "http://localhost:8000/v1",
         enable_thinking: bool = True,
@@ -515,7 +515,7 @@ class LLMPolicyAgent:
         mode: str,
         prompts: dict[str, dict[str, str]],
         state_names: list[str],
-        max_new_tokens: int = 16000,
+        max_new_tokens: int = 12000,
         temperature: float = 0.0,
         api_base: str = "http://localhost:8000/v1",
         enable_thinking: bool = True,
