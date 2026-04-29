@@ -359,9 +359,30 @@ class HardwareLLMPolicyAgent(_BaseLLMPolicyAgent):
         env_context: dict[str, Any] | None = None
         if env is not None:
             bess_p_max = float(getattr(env._bess, "P_MAX_MW", 5.0))
+            committed_mw_max = float(env._scfg.get("committed_mw_max", 30.0))
+            obs_dict = obs_to_dict(obs, self._state_names)
+            committed_mw_norm = obs_dict.get("committed_mw_norm", 0.0)
+            committed_mw = round(committed_mw_norm * committed_mw_max, 3)
+            regd_signal = obs_dict.get("regd_signal", 0.0)
+            p_flex_nom_norm = obs_dict.get("p_flex_nom_norm", 0.0)
+            T_max = round(max(obs_dict.get("temp_A_norm", 0.0), obs_dict.get("temp_B_norm", 0.0)), 4)
+            target_kw = round(regd_signal * committed_mw * 1000, 1)
+            p_flex_nom_kw = round(p_flex_nom_norm * 250000, 1)
+            d_baseline = float(np.clip(regd_signal * committed_mw / bess_p_max if bess_p_max > 0 else 0.0, -1.0, 1.0))
+            bess_soc = obs_dict.get("bess_soc", 0.5)
+            if bess_soc < 0.15 and d_baseline > 0:
+                d_baseline = 0.0
+            if bess_soc > 0.80 and d_baseline < 0:
+                d_baseline = 0.0
             env_context = {
-                "committed_mw_max": float(env._scfg.get("committed_mw_max", 30.0)),
-                "bess_p_max_mw": bess_p_max,
+                "committed_mw_max":       committed_mw_max,
+                "bess_p_max_mw":          bess_p_max,
+                "committed_mw":           committed_mw,
+                "T_max":                  T_max,
+                "target_kw":              target_kw,
+                "p_flex_nom_kw":          p_flex_nom_kw,
+                "backlog_increment":      round(p_flex_nom_norm * 2.78, 4),
+                "bess_dispatch_baseline": round(d_baseline, 4),
             }
 
         try:
@@ -415,11 +436,41 @@ class MacroLLMPolicyAgent(_BaseLLMPolicyAgent):
         env_context: dict[str, Any] | None = None
         if env is not None:
             bess_p_max = float(getattr(env._bess, "P_MAX_MW", 5.0))
+            committed_mw_max = float(getattr(env, "_committed_max_mw", 30.0))
+            dr_baseline_mw = float(getattr(env, "_dr_baseline_mw", 5.0))
+            obs_dict = obs_to_dict(obs, self._state_names)
+            rmcp_norm = obs_dict.get("rmcp_norm", 0.0)
+            grid_load_norm = obs_dict.get("grid_load_norm", 0.0)
+            rmcp_usd = round(100.0 * rmcp_norm, 2)
+            T_max_macro = round(max(obs_dict.get("temp_A_norm", 0.0), obs_dict.get("temp_B_norm", 0.0)), 4)
+            freq_dev_norm = obs_dict.get("freq_dev_norm", 0.0)
+            v_pcc_pu = obs_dict.get("v_pcc_pu", 1.0)
+            # Warm-start baseline (mirrors WARM-START rules in system prompt)
+            if grid_load_norm > 0.7:
+                c0 = 0.80
+            elif grid_load_norm > 0.4:
+                c0 = 0.50
+            else:
+                c0 = 0.20
+            # Safety overrides
+            headroom = 1.0 - T_max_macro
+            if headroom < 0.10:
+                c0 = min(c0, 0.30)
+            if freq_dev_norm < -0.3:
+                c0 = min(1.0, c0 + 0.2)
+            if v_pcc_pu < 0.96:
+                c0 = min(c0, 0.40)
+            p0 = float(np.clip(40.0 * rmcp_norm, 0.0, 100.0))
+            commit_norm_prev = float(self._previous_action[0]) if self._previous_action is not None else 0.0
             env_context = {
-                "committed_mw_max":  float(getattr(env, "_committed_max_mw", 30.0)),
-                "dr_baseline_mw":    float(getattr(env, "_dr_baseline_mw", 5.0)),
+                "committed_mw_max":  committed_mw_max,
+                "dr_baseline_mw":    dr_baseline_mw,
                 "bess_p_max_mw":     bess_p_max,
-                "commit_norm_prev":  float(self._previous_action[0]) if self._previous_action is not None else 0.0,
+                "commit_norm_prev":  commit_norm_prev,
+                "rmcp_usd":          rmcp_usd,
+                "T_max":             T_max_macro,
+                "commit_norm_0":     round(c0, 2),
+                "bid_price_0":       round(p0, 1),
             }
 
         try:
