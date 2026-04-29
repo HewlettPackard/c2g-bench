@@ -147,7 +147,7 @@ def generate_structured(
             extra_body={
                 "chat_template_kwargs": {
                     "enable_thinking": enable_thinking,
-                    "thinking_budget": 12000,
+                    "thinking_budget": 8000,
                 }
             },
         )
@@ -283,7 +283,7 @@ class _BaseLLMPolicyAgent:
         model_id: str,
         prompts: dict[str, dict[str, str]],
         state_names: list[str],
-        max_new_tokens: int = 12000,
+        max_new_tokens: int = 16000,
         temperature: float = 0.0,
         api_base: str = "http://localhost:8000/v1",
         enable_thinking: bool = True,
@@ -423,7 +423,7 @@ class MacroLLMPolicyAgent(_BaseLLMPolicyAgent):
         self,
         obs: np.ndarray,
         deterministic: bool = True,
-        env: C2GFastEnv | None = None,
+        static_env_info: dict[str, Any] | None = None,
         scenario: str = "default",
     ):
         previous_by_field = None
@@ -434,10 +434,10 @@ class MacroLLMPolicyAgent(_BaseLLMPolicyAgent):
             }
 
         env_context: dict[str, Any] | None = None
-        if env is not None:
-            bess_p_max = float(getattr(env._bess, "P_MAX_MW", 5.0))
-            committed_mw_max = float(getattr(env, "_committed_max_mw", 30.0))
-            dr_baseline_mw = float(getattr(env, "_dr_baseline_mw", 5.0))
+        if static_env_info is not None:
+            bess_p_max = float(static_env_info.get("bess_p_max_mw", 5.0))
+            committed_mw_max = float(static_env_info.get("committed_mw_max", 30.0))
+            dr_baseline_mw = float(static_env_info.get("dr_baseline_mw", 5.0))
             obs_dict = obs_to_dict(obs, self._state_names)
             rmcp_norm = obs_dict.get("rmcp_norm", 0.0)
             grid_load_norm = obs_dict.get("grid_load_norm", 0.0)
@@ -495,10 +495,6 @@ class MacroLLMPolicyAgent(_BaseLLMPolicyAgent):
         commit_norm = float(payload["commit_norm"])
         bid_price_norm = float(payload["bid_price"]) / 100.0
 
-        if env is not None:
-            max_commit_mw = float(getattr(env, "_committed_max_mw", 15.0))
-            env.committed_mw = commit_norm * max_commit_mw
-
         action = np.array([commit_norm, bid_price_norm], dtype=np.float32)
         self._previous_action = action
         return action, None
@@ -515,7 +511,7 @@ class LLMPolicyAgent:
         mode: str,
         prompts: dict[str, dict[str, str]],
         state_names: list[str],
-        max_new_tokens: int = 12000,
+        max_new_tokens: int = 16000,
         temperature: float = 0.0,
         api_base: str = "http://localhost:8000/v1",
         enable_thinking: bool = True,
@@ -549,5 +545,9 @@ class LLMPolicyAgent:
         deterministic: bool = True,
         env: C2GFastEnv | None = None,
         scenario: str = "default",
+        static_env_info: dict[str, Any] | None = None,
     ):
+        if isinstance(self._delegate, MacroLLMPolicyAgent):
+            return self._delegate.predict(obs, deterministic=deterministic,
+                                          static_env_info=static_env_info, scenario=scenario)
         return self._delegate.predict(obs, deterministic=deterministic, env=env, scenario=scenario)
