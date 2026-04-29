@@ -57,36 +57,29 @@ from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig, OmegaConf
 
 from stable_baselines3 import PPO
-from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback
+from stable_baselines3.common.callbacks import CheckpointCallback
 from stable_baselines3.common.env_util import make_vec_env
-from stable_baselines3.common.vec_env import VecNormalize, sync_envs_normalization
+from stable_baselines3.common.vec_env import VecNormalize
 
 from c2g_env import C2GFastEnv
-from c2g_env.train_envs import RuleMacroWrappedEnv
-from baselines.metrics_callback import C2GMetricsCallback
-
-
-# ======================================================================
-# SyncNormEvalCallback (shared with train_ppo.py)
-# ======================================================================
-
-class SyncNormEvalCallback(EvalCallback):
-    """EvalCallback that syncs VecNormalize stats before evaluation."""
-
-    def _on_step(self) -> bool:
-        if self.eval_freq > 0 and self.n_calls % self.eval_freq == 0:
-            sync_envs_normalization(self.training_env, self.eval_env)
-        return super()._on_step()
+from c2g_env.train_envs import RuleMacroWrappedEnv, FixedCoolingWrapper
+from baselines.metrics_callback import (
+    C2GMetricsCallback, C2GEvalMetricsWrapper, SyncNormEvalCallback,
+)
 
 
 # ======================================================================
 # Env factory
 # ======================================================================
 
-def make_env_fn(scenario: str, seed: int):
+def make_env_fn(scenario: str, seed: int, fix_cooling: bool = False,
+                pump_speed: float = 1.0, hvac_effort: float = 0.7):
     def _init():
         fast_env = C2GFastEnv(scenario=scenario)
         env = RuleMacroWrappedEnv(fast_env)
+        if fix_cooling:
+            env = FixedCoolingWrapper(env, pump_speed=pump_speed,
+                                     hvac_effort=hvac_effort)
         env.reset(seed=seed)
         return env
     return _init
@@ -109,8 +102,14 @@ def train(cfg: DictConfig) -> None:
     print(f"[RuleMacro+PPO] scenario={scenario}  seed={seed}  "
           f"timesteps={algo_cfg.timesteps:,}  n_envs={algo_cfg.n_envs}")
 
+    fix_cooling = bool(algo_cfg.get("fix_cooling", False))
+    pump_speed  = float(algo_cfg.get("fixed_pump_speed", 1.0))
+    hvac_effort = float(algo_cfg.get("fixed_hvac_effort", 0.7))
+    if fix_cooling:
+        print(f"[RuleMacro+PPO] fix_cooling=True  pump={pump_speed}  hvac={hvac_effort}  (2-D action space)")
+
     # ── Environments ──────────────────────────────────────────────────
-    vec_env = make_vec_env(make_env_fn(scenario, seed),
+    vec_env = make_vec_env(make_env_fn(scenario, seed, fix_cooling, pump_speed, hvac_effort),
                            n_envs=algo_cfg.n_envs, seed=seed)
     vec_env = VecNormalize(
         vec_env,
@@ -120,8 +119,20 @@ def train(cfg: DictConfig) -> None:
         clip_reward=algo_cfg.clip_reward,
     )
 
-    eval_env = make_vec_env(make_env_fn(scenario, seed),
-                            n_envs=1, seed=seed)
+    _eval_metric_wrappers = []
+
+    def _make_eval_env():
+        fast_env = C2GFastEnv(scenario=scenario)
+        env = RuleMacroWrappedEnv(fast_env)
+        if fix_cooling:
+            env = FixedCoolingWrapper(env, pump_speed=pump_speed,
+                                     hvac_effort=hvac_effort)
+        wrapper = C2GEvalMetricsWrapper(env)
+        _eval_metric_wrappers.append(wrapper)
+        wrapper.reset(seed=seed)
+        return wrapper
+
+    eval_env = make_vec_env(_make_eval_env, n_envs=1, seed=seed)
     eval_env = VecNormalize(eval_env, norm_obs=True, norm_reward=False,
                             clip_obs=algo_cfg.clip_obs, training=False)
 
@@ -133,6 +144,7 @@ def train(cfg: DictConfig) -> None:
     )
     eval_cb = SyncNormEvalCallback(
         eval_env,
+        eval_metrics_wrappers=_eval_metric_wrappers,
         best_model_save_path=str(out_dir / "best_model"),
         log_path=str(out_dir / "tensorboard"),
         eval_freq=algo_cfg.eval_freq,
