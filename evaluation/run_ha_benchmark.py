@@ -62,6 +62,7 @@ T_SAFE = 35.0
 SOC_MIN = 0.10
 SOC_MAX = 0.95
 _PPO_LIKE_AGENT_KEYS = {
+    "ppo",
     "shielded_ppo",
     "cbf_ppo",
     "hj_ppo",
@@ -180,7 +181,9 @@ class NoShield:
 
 def get_shield(agent_name: str) -> ShieldEvaluator:
     """Get the appropriate shield for the agent type."""
-    if agent_name == "simplex_ppo":
+    if agent_name in ("ppo", "sac"):
+        return ShieldEvaluator("none", NoShield())
+    elif agent_name == "simplex_ppo":
         return ShieldEvaluator("simplex", SafetyShield())
     elif agent_name == "cbf_ppo":
         return ShieldEvaluator("cbf", CBFShield())
@@ -307,8 +310,10 @@ def load_agent(agent_name: str, scenario: str, seed: int, model_dir: str | None)
         return RandomAgent(), False
 
     # For RL-based agents, try to load from trained_models/
-    from stable_baselines3 import PPO
+    import stable_baselines3 as sb3
     algo_map = {
+        "ppo": "ppo",
+        "sac": "sac",
         "simplex_ppo": "shielded_ppo",
         "cbf_ppo": "cbf_ppo",
         "hj_ppo": "hj_ppo",
@@ -325,7 +330,8 @@ def load_agent(agent_name: str, scenario: str, seed: int, model_dir: str | None)
         path = Path("trained_models") / f"{algo_key}_{scenario}_s{seed}" / "final_model"
 
     if path.with_suffix(".zip").exists():
-        model = PPO.load(str(path))
+        model_cls = getattr(sb3, "SAC") if agent_name == "sac" else getattr(sb3, "PPO")
+        model = model_cls.load(str(path))
         obs_normalizer = None
         if algo_key in _PPO_LIKE_AGENT_KEYS:
             obs_normalizer = _maybe_load_obs_normalizer(path.parent / "vec_normalize.pkl", scenario)
@@ -489,6 +495,8 @@ def run_ha_episode(
 # ── Main benchmark loop ──────────────────────────────────────────
 
 HA_AGENTS = [
+    "ppo",
+    "sac",
     "simplex_ppo",
     "cbf_ppo",
     "hj_ppo",
