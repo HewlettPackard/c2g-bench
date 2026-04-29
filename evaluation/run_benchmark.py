@@ -606,7 +606,7 @@ def run_macro_episode(
         cool_deltas.append(float(info.get("mean_cool_delta_kw", 0.0)))
         p_pumps.append(float(info.get("mean_p_pump_mw", 0.0)))
         p_hvacs.append(float(info.get("mean_p_hvac_mw", 0.0)))
-        inner_throttle.append(float(info.get("mean_inner_throttle", 0.0)))
+        inner_throttles.append(float(info.get("mean_inner_throttle", 0.0)))
         inner_pumps.append(float(info.get("mean_inner_pump", 0.0)))
         inner_hvacs.append(float(info.get("mean_inner_hvac", 0.0)))
         inner_besses.append(float(info.get("mean_inner_bess", 0.0)))

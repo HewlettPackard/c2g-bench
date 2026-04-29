@@ -117,7 +117,9 @@ hardware_user_prompt: |
        tracking=ACTIVE                              →    bess_dispatch, pump_speed_A, hvac_effort, throttle_batch
        thermal=HOT or CRITICAL                      →    pump_speed_A, hvac_effort, throttle_batch, bess_dispatch
        backlog=HIGH and thermal=SAFE                →    throttle_batch, pump_speed_A, hvac_effort, bess_dispatch
-       default                                      →    throttle_batch, pump_speed_A, hvac_effort, bess_dispatch
+       default (none of the above): choose ONE of:
+         throttle_batch, bess_dispatch, pump_speed_A, hvac_effort  ← use when bess_dispatch_base ≠ 0 (regulation fired but signal weak)
+         bess_dispatch, throttle_batch, pump_speed_A, hvac_effort  ← use when bess_dispatch_base = 0 and backlog_norm > 0
      Write exactly one line: "criticality order: A1=<name>, A2=<name>, A3=<name>, A4=<name>" — no further reasoning about the order.
 
      # Baseline tuple (from Step 1): b_t=throttle_batch_0, b_p=pump_speed_A_0, b_h=hvac_effort_0, b_d=bess_dispatch_0
