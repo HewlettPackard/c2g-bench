@@ -82,7 +82,6 @@ from c2g_env.physics.thermal    import ThermalTwin
 from c2g_env.physics.electrical import DatacenterElectrical
 from c2g_env.physics.bess       import BESSModel
 from c2g_env.physics.macro_grid import MacroGridSignal
-from c2g_env.physics.renewable  import RenewableGen
 from c2g_env.physics.weather    import WeatherLoader
 
 # ---------------------------------------------------------------------------
@@ -165,7 +164,7 @@ class C2GFastEnv(gym.Env):
         super().__init__()
 
         cfg_path = Path(config_path) if config_path else _CONFIG_PATH
-        with open(cfg_path) as fh:
+        with open(cfg_path, encoding="utf-8") as fh:
             full_cfg = yaml.safe_load(fh)
 
         self._gcfg   = full_cfg["global"]
@@ -186,7 +185,6 @@ class C2GFastEnv(gym.Env):
         self._elec      = None
         self._bess      = None
         self._grid      = None
-        self._renewable = None
         self._weather   = None
 
         # Episode state
@@ -243,7 +241,7 @@ class C2GFastEnv(gym.Env):
         # Allow per-episode scenario override
         if options and "scenario" in options:
             cfg_path = _CONFIG_PATH
-            with open(cfg_path) as fh:
+            with open(cfg_path, encoding="utf-8") as fh:
                 full_cfg = yaml.safe_load(fh)
             self._scfg     = full_cfg[options["scenario"]]
             self._scenario = options["scenario"]
@@ -276,7 +274,6 @@ class C2GFastEnv(gym.Env):
             seed=rng_seed,
             market=gcfg.get("grid_market", "nyiso_nyc"),
         )
-        self._renewable = RenewableGen(renewable_dir=gcfg["renewable_dir"])
         self._weather_driven = bool(scfg.get("weather_driven", True))
         _weather_market = scfg.get(
             "weather_market",
@@ -531,6 +528,9 @@ class C2GFastEnv(gym.Env):
             "avg_delay_steps":       w.avg_delay_steps,
             "is_spike":              w.is_spike_active,
             "pump_speed_A":          pump_speed_A,
+            "throttle_batch":        throttle_batch,
+            "hvac_effort":           hvac_effort,
+            "bess_dispatch":         bess_dispatch,
             "p_hvac_mw":             p_hvac_mw,
             "p_pump_mw":             p_pump_mw,
             "T_amb":                  self._thermal.T_amb,

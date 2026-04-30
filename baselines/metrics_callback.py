@@ -70,8 +70,10 @@ import csv
 from pathlib import Path
 from typing import Any
 
+import gymnasium as gym
 import numpy as np
-from stable_baselines3.common.callbacks import BaseCallback
+from stable_baselines3.common.callbacks import BaseCallback, EvalCallback
+from stable_baselines3.common.vec_env import sync_envs_normalization
 
 T_WARN = 33.0   # °C — thermal warning threshold (mirrors config.yaml)
 
@@ -202,6 +204,153 @@ def build_ablation_suffix(
     return f"_{'_'.join(tags)}" if tags else ""
 
 
+# ======================================================================
+# Shared episode-buffer helpers (used by callback *and* eval wrapper)
+# ======================================================================
+
+def _make_episode_buffer() -> dict:
+    """Return a fresh per-episode accumulator dict."""
+    return {
+        "rewards": [], "temp_A": [], "temp_B": [], "bess_soc": [],
+        "pue": [], "lmp": [], "tracking_err_kw": [], "delta_p_actual_kw": [],
+        "delta_p_demanded_kw": [], "flex_reduction_kw": [],
+        "bess_actual_kw": [], "p_facility_mw": [],
+        "spike": [], "thermal_viol": [],
+        "tick": 0, "terminated": 0,
+        "actions": [],  # list of (4,) arrays
+        "r_throughput": [], "r_tracking": [], "r_thermal": [],
+        "r_soc": [], "r_freq": [], "r_volt": [], "r_backlog": [],
+        "freq_dev_hz": [], "v_pcc_pu": [], "backlog_kw": [],
+        "T_amb": [], "cool_delta_kw": [],
+        "freq_fault": 0, "voltage_fault": 0,
+    }
+
+
+def _accumulate_step(buf: dict, reward: float, info: dict) -> None:
+    """Append one timestep's data to *buf* from the env info dict."""
+    buf["rewards"].append(reward)
+    for key in ("temp_A", "temp_B", "bess_soc", "pue", "lmp",
+                "tracking_err_kw", "delta_p_actual_kw",
+                "delta_p_demanded_kw", "flex_reduction_kw",
+                "bess_actual_kw", "p_facility_mw"):
+        if key in info:
+            buf[key].append(float(info[key]))
+
+    buf["spike"].append(1.0 if info.get("is_spike", False) else 0.0)
+    buf["thermal_viol"].append(
+        1.0 if (info.get("temp_A", 0) > T_WARN
+                or info.get("temp_B", 0) > T_WARN) else 0.0
+    )
+    buf["tick"] = info.get("tick", 0)
+    if info.get("thermal_fault", False):
+        buf["terminated"] = 1
+
+    # Actions (executed by env, always 4-D even with wrappers)
+    act_vals = [info.get(k) for k in ACTION_NAMES]
+    if all(v is not None for v in act_vals):
+        buf["actions"].append(np.array(act_vals, dtype=np.float32))
+
+    # Reward components
+    for rkey in ("reward_throughput", "reward_tracking",
+                 "reward_thermal", "reward_soc", "reward_freq",
+                 "reward_volt", "reward_backlog"):
+        if rkey in info:
+            buf[rkey.replace("reward_", "r_")].append(float(info[rkey]))
+
+    # Safety / SLA diagnostics
+    for skey in ("freq_dev_hz", "v_pcc_pu", "backlog_kw",
+                 "T_amb", "cool_delta_kw"):
+        if skey in info:
+            buf[skey].append(float(info[skey]))
+
+    # Termination breakdown
+    if info.get("freq_fault", False):
+        buf["freq_fault"] = 1
+    if info.get("voltage_fault", False):
+        buf["voltage_fault"] = 1
+
+
+def _compute_episode_metrics(buf: dict) -> dict[str, float]:
+    """Compute episode-aggregate metrics from an accumulated buffer."""
+    def _mean(lst):
+        return float(np.mean(lst)) if len(lst) > 0 else 0.0
+    def _max(lst):
+        return float(np.max(lst)) if len(lst) > 0 else 0.0
+    def _min(lst):
+        return float(np.min(lst)) if len(lst) > 0 else 0.0
+    def _std(lst):
+        return float(np.std(lst)) if len(lst) > 0 else 0.0
+    def _rmse(lst):
+        return float(np.sqrt(np.mean(np.square(lst)))) if len(lst) > 0 else 0.0
+
+    ep_len   = buf["tick"]
+    survived = 1.0 if ep_len >= 287 else 0.0
+    total_r  = float(np.sum(buf["rewards"]))
+    mean_r   = _mean(buf["rewards"])
+
+    m: dict[str, float] = {
+        "ep/mean_reward":              mean_r,
+        "ep/total_reward":             total_r,
+        "ep/length":                   float(ep_len),
+        "ep/survived":                 survived,
+        "thermal/mean_temp_A":         _mean(buf["temp_A"]),
+        "thermal/mean_temp_B":         _mean(buf["temp_B"]),
+        "thermal/max_temp_A":          _max(buf["temp_A"]),
+        "thermal/max_temp_B":          _max(buf["temp_B"]),
+        "thermal/viol_rate":           _mean(buf["thermal_viol"]),
+        "thermal/terminated":          float(buf["terminated"]),
+        "bess/mean_soc":               _mean(buf["bess_soc"]),
+        "bess/min_soc":                _min(buf["bess_soc"]),
+        "bess/mean_dispatch_kw":       _mean([abs(v) for v in buf["bess_actual_kw"]]),
+        "grid/tracking_rmse_kw":       _rmse(buf["tracking_err_kw"]),
+        "grid/mean_lmp":               _mean(buf["lmp"]),
+        "grid/spike_fraction":         _mean(buf["spike"]),
+        "facility/mean_pue":           _mean(buf["pue"]),
+        "facility/mean_p_facility_mw": _mean(buf["p_facility_mw"]),
+        "facility/mean_flex_reduction_kw": _mean(buf["flex_reduction_kw"]),
+    }
+
+    # Action distribution
+    if buf["actions"]:
+        act_arr = np.array(buf["actions"])
+    else:
+        act_arr = np.empty((0, len(ACTION_NAMES)))
+    for i, key in enumerate(ACTION_NAMES):
+        name = ACTION_SHORT_NAMES[key].lower()
+        col = act_arr[:, i] if act_arr.shape[0] > 0 else []
+        m[f"actions/mean_{name}"] = _mean(col)
+        m[f"actions/std_{name}"]  = _std(col)
+
+    # Reward components
+    for rkey in ("r_throughput", "r_tracking", "r_thermal",
+                 "r_soc", "r_freq", "r_volt", "r_backlog"):
+        m[f"reward/mean_{rkey[2:]}"] = _mean(buf[rkey])
+
+    # Safety / SLA
+    m["safety/mean_freq_dev_hz"]    = _mean(buf["freq_dev_hz"])
+    m["safety/max_abs_freq_dev_hz"] = (
+        _max([abs(v) for v in buf["freq_dev_hz"]])
+        if len(buf["freq_dev_hz"]) > 0 else 0.0
+    )
+    m["safety/mean_v_pcc_pu"]  = _mean(buf["v_pcc_pu"])
+    m["safety/min_v_pcc_pu"]   = _min(buf["v_pcc_pu"])
+    m["env/mean_T_amb"]        = _mean(buf["T_amb"])
+    m["sla/mean_backlog_kw"]   = _mean(buf["backlog_kw"])
+    m["sla/max_backlog_kw"]    = _max(buf["backlog_kw"])
+
+    # Tracking decomposition
+    m["tracking/mean_demanded_kw"]   = _mean(buf["delta_p_demanded_kw"])
+    m["tracking/mean_actual_kw"]     = _mean(buf["delta_p_actual_kw"])
+    m["tracking/mean_cool_delta_kw"] = _mean(buf["cool_delta_kw"])
+
+    # Termination breakdown
+    m["termination/thermal"]  = float(buf["terminated"])
+    m["termination/freq"]     = float(buf["freq_fault"])
+    m["termination/voltage"]  = float(buf["voltage_fault"])
+
+    return m
+
+
 class C2GMetricsCallback(BaseCallback):
     """
     SB3 callback that aggregates per-step info dicts into episode metrics
@@ -231,6 +380,10 @@ class C2GMetricsCallback(BaseCallback):
 
         # Per-step accumulators (one list per parallel env, keyed by env idx)
         self._reset_buffers()
+        # Episodes completed during the current rollout (for TB averaging)
+        self._rollout_episodes: list[dict[str, float]] = []
+        self._rollout_count = 0
+        self._rollout_ep_idx = 0  # episode index within current rollout
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -263,27 +416,11 @@ class C2GMetricsCallback(BaseCallback):
         for env_idx, (info, done) in enumerate(zip(infos, dones)):
             if env_idx not in self._bufs:
                 self._reset_buf(env_idx)
-            buf = self._bufs[env_idx]
-
-            # Accumulate step-level quantities
-            buf["rewards"].append(float(self.locals["rewards"][env_idx]))
-            for key in ("temp_A", "temp_B", "bess_soc", "pue", "lmp",
-                        "tracking_err_kw", "delta_p_actual_kw",
-                        "delta_p_demanded_kw", "flex_reduction_kw",
-                        "bess_actual_kw", "p_facility_mw"):
-                if key in info:
-                    buf[key].append(float(info[key]))
-
-            buf["spike"].append(1.0 if info.get("is_spike", False) else 0.0)
-            buf["thermal_viol"].append(
-                1.0 if (info.get("temp_A", 0) > T_WARN or
-                         info.get("temp_B", 0) > T_WARN) else 0.0
+            _accumulate_step(
+                self._bufs[env_idx],
+                float(self.locals["rewards"][env_idx]),
+                info,
             )
-            buf["tick"] = info.get("tick", 0)
-            if info.get("thermal_fault", False):
-                buf["terminated"] = 1
-
-            # Episode ended → log aggregates
             if done:
                 self._log_episode(env_idx, info)
                 self._reset_buf(env_idx)
@@ -297,73 +434,77 @@ class C2GMetricsCallback(BaseCallback):
     def _log_episode(self, env_idx: int, last_info: dict[str, Any]) -> None:
         buf  = self._bufs[env_idx]
         self._ep_count += 1
+        self._rollout_ep_idx += 1
         n    = self.num_timesteps
 
-        def _mean(lst):
-            return float(np.mean(lst)) if lst else 0.0
+        metrics = _compute_episode_metrics(buf)
 
-        def _max(lst):
-            return float(np.max(lst)) if lst else 0.0
+        # Buffer for rollout-averaged TensorBoard logging
+        self._rollout_episodes.append(metrics)
 
-        def _rmse(lst):
-            return float(np.sqrt(np.mean(np.square(lst)))) if lst else 0.0
+        # Console summary (per-episode with rollout:ep label)
+        if self.verbose >= 1 and self._ep_count % self._print_freq == 0:
+            act_arr = (np.array(buf["actions"]) if buf["actions"]
+                       else np.empty((0, 4)))
+            a_means = np.mean(act_arr, axis=0) if act_arr.shape[0] > 0 else np.zeros(4)
+            print(
+                f"  R{self._rollout_count}:E{self._rollout_ep_idx} "
+                f"(ep {self._ep_count:5d}) | steps {n:8d} | "
+                f"r={metrics['ep/mean_reward']:8.2f} | "
+                f"T_A={metrics['thermal/mean_temp_A']:5.1f}°C "
+                f"T_B={metrics['thermal/mean_temp_B']:5.1f}°C | "
+                f"viol={metrics['thermal/viol_rate']:.3f} | "
+                f"SOC={metrics['bess/mean_soc']:.2f} | "
+                f"RMSE={metrics['grid/tracking_rmse_kw']:7.0f}kW | "
+                f"PUE={metrics['facility/mean_pue']:.3f} | "
+                f"thr={a_means[0]:.2f} pmp={a_means[1]:.2f} "
+                f"hvac={a_means[2]:.2f} bess={a_means[3]:+.2f}"
+            )
 
-        ep_len      = buf["tick"]
-        survived    = 1.0 if ep_len >= 287 else 0.0   # 288 ticks = full ep
-        total_r     = float(np.sum(buf["rewards"]))
-        mean_r      = _mean(buf["rewards"])
+    def _on_rollout_end(self) -> None:
+        """Log mean of all episodes completed during this rollout to TB + CSV."""
+        self._rollout_count += 1
+        if not self._rollout_episodes:
+            self._rollout_ep_idx = 0
+            return
 
-        metrics: dict[str, float] = {
-            # episode
-            "ep/mean_reward"            : mean_r,
-            "ep/total_reward"           : total_r,
-            "ep/length"                 : float(ep_len),
-            "ep/survived"               : survived,
-            # thermal
-            "thermal/mean_temp_A"       : _mean(buf["temp_A"]),
-            "thermal/mean_temp_B"       : _mean(buf["temp_B"]),
-            "thermal/max_temp_A"        : _max(buf["temp_A"]),
-            "thermal/max_temp_B"        : _max(buf["temp_B"]),
-            "thermal/viol_rate"         : _mean(buf["thermal_viol"]),
-            "thermal/terminated"        : float(buf["terminated"]),
-            # BESS
-            "bess/mean_soc"             : _mean(buf["bess_soc"]),
-            "bess/min_soc"              : float(np.min(buf["bess_soc"])) if buf["bess_soc"] else 0.0,
-            "bess/mean_dispatch_kw"     : _mean([abs(v) for v in buf["bess_actual_kw"]]),
-            # grid
-            "grid/tracking_rmse_kw"     : _rmse(buf["tracking_err_kw"]),
-            "grid/mean_lmp"             : _mean(buf["lmp"]),
-            "grid/spike_fraction"       : _mean(buf["spike"]),
-            # facility
-            "facility/mean_pue"         : _mean(buf["pue"]),
-            "facility/mean_p_facility_mw": _mean(buf["p_facility_mw"]),
-            "facility/mean_flex_reduction_kw": _mean(buf["flex_reduction_kw"]),
-        }
+        n_eps = len(self._rollout_episodes)
+        keys = self._rollout_episodes[0].keys()
+        mean_metrics: dict[str, float] = {}
+        for key in keys:
+            vals = [ep[key] for ep in self._rollout_episodes]
+            mean_metrics[key] = float(np.mean(vals))
 
-        # Write to TensorBoard via SB3 logger
-        for tag, val in metrics.items():
+        # TensorBoard (one averaged data point per rollout)
+        for tag, val in mean_metrics.items():
             self.logger.record(tag, val)
-        self.logger.dump(step=n)
+        self.logger.record("ep/rollout_n_episodes", n_eps)
 
-        # CSV row
+        # CSV (rollout-mean row only)
         if self._csv_writer:
-            row = {"timestep": n, "episode": self._ep_count,
-                   "env_idx": env_idx, **metrics}
+            row = {"timestep": self.num_timesteps,
+                   "rollout": self._rollout_count,
+                   "n_episodes": n_eps, **mean_metrics}
             self._csv_writer.writerow(row)
             self._csv_file.flush()
 
-        # Console summary
-        if self.verbose >= 1 and self._ep_count % self._print_freq == 0:
+        # Console rollout summary
+        if self.verbose >= 1:
+            m = mean_metrics
             print(
-                f"  ep {self._ep_count:5d} | steps {n:8d} | "
-                f"r={mean_r:8.2f} | "
-                f"T_A={_mean(buf['temp_A']):5.1f}°C "
-                f"T_B={_mean(buf['temp_B']):5.1f}°C | "
-                f"viol={_mean(buf['thermal_viol']):.3f} | "
-                f"SOC={_mean(buf['bess_soc']):.2f} | "
-                f"RMSE={_rmse(buf['tracking_err_kw']):7.0f}kW | "
-                f"PUE={_mean(buf['pue']):.3f}"
+                f"  R{self._rollout_count} MEAN ({n_eps} eps) | "
+                f"steps {self.num_timesteps:8d} | "
+                f"r={m['ep/mean_reward']:8.2f} | "
+                f"T_A={m['thermal/mean_temp_A']:5.1f}°C "
+                f"T_B={m['thermal/mean_temp_B']:5.1f}°C | "
+                f"viol={m['thermal/viol_rate']:.3f} | "
+                f"SOC={m['bess/mean_soc']:.2f} | "
+                f"RMSE={m['grid/tracking_rmse_kw']:7.0f}kW | "
+                f"PUE={m['facility/mean_pue']:.3f}"
             )
+
+        self._rollout_episodes.clear()
+        self._rollout_ep_idx = 0
 
     # ------------------------------------------------------------------
     # Buffer helpers
@@ -375,14 +516,7 @@ class C2GMetricsCallback(BaseCallback):
         # Initialised lazily on first step; we don't know n_envs here yet
 
     def _reset_buf(self, env_idx: int) -> None:
-        self._bufs[env_idx] = {
-            "rewards": [], "temp_A": [], "temp_B": [], "bess_soc": [],
-            "pue": [], "lmp": [], "tracking_err_kw": [], "delta_p_actual_kw": [],
-            "delta_p_demanded_kw": [], "flex_reduction_kw": [],
-            "bess_actual_kw": [], "p_facility_mw": [],
-            "spike": [], "thermal_viol": [],
-            "tick": 0, "terminated": 0,
-        }
+        self._bufs[env_idx] = _make_episode_buffer()
 
     def __getitem__(self, env_idx: int):
         if env_idx not in self._bufs:
@@ -401,7 +535,7 @@ class C2GMetricsCallback(BaseCallback):
 
     def _csv_columns(self) -> list[str]:
         return [
-            "timestep", "episode", "env_idx",
+            "timestep", "rollout", "n_episodes",
             "ep/mean_reward", "ep/total_reward", "ep/length", "ep/survived",
             "thermal/mean_temp_A", "thermal/mean_temp_B",
             "thermal/max_temp_A", "thermal/max_temp_B",
@@ -410,7 +544,131 @@ class C2GMetricsCallback(BaseCallback):
             "grid/tracking_rmse_kw", "grid/mean_lmp", "grid/spike_fraction",
             "facility/mean_pue", "facility/mean_p_facility_mw",
             "facility/mean_flex_reduction_kw",
+            # actions
+            "actions/mean_throttle", "actions/std_throttle",
+            "actions/mean_pump", "actions/std_pump",
+            "actions/mean_hvac", "actions/std_hvac",
+            "actions/mean_bess", "actions/std_bess",
+            # reward components
+            "reward/mean_throughput", "reward/mean_tracking",
+            "reward/mean_thermal", "reward/mean_soc",
+            "reward/mean_freq", "reward/mean_volt", "reward/mean_backlog",
+            # safety / SLA
+            "safety/mean_freq_dev_hz", "safety/max_abs_freq_dev_hz",
+            "safety/mean_v_pcc_pu", "safety/min_v_pcc_pu",
+            "env/mean_T_amb",
+            "sla/mean_backlog_kw", "sla/max_backlog_kw",
+            # tracking decomposition
+            "tracking/mean_demanded_kw", "tracking/mean_actual_kw",
+            "tracking/mean_cool_delta_kw",
+            # termination breakdown
+            "termination/thermal", "termination/freq", "termination/voltage",
         ]
+
+
+# ======================================================================
+# Eval-env wrapper + callback  (mirrors training-side C2GMetricsCallback)
+# ======================================================================
+
+class C2GEvalMetricsWrapper(gym.Wrapper):
+    """
+    Gymnasium wrapper that accumulates per-step C2G env metrics and
+    computes episode aggregates identical to C2GMetricsCallback.
+
+    Wrap the eval env with this **before** vectorisation so that
+    ``SyncNormEvalCallback`` can log detailed eval metrics to
+    TensorBoard with an ``eval/`` prefix.
+    """
+
+    def __init__(self, env: gym.Env):
+        super().__init__(env)
+        self.completed_episodes: list[dict[str, float]] = []
+        self._buf = _make_episode_buffer()
+
+    def reset(self, **kwargs):
+        self._buf = _make_episode_buffer()
+        return self.env.reset(**kwargs)
+
+    def step(self, action):
+        obs, reward, terminated, truncated, info = self.env.step(action)
+        _accumulate_step(self._buf, float(reward), info)
+        if terminated or truncated:
+            self.completed_episodes.append(_compute_episode_metrics(self._buf))
+        return obs, reward, terminated, truncated, info
+
+    def pop_episodes(self) -> list[dict[str, float]]:
+        """Return and clear accumulated episode metrics."""
+        eps = self.completed_episodes[:]
+        self.completed_episodes.clear()
+        return eps
+
+
+class SyncNormEvalCallback(EvalCallback):
+    """
+    EvalCallback that syncs VecNormalize obs/reward running statistics
+    from the training env to the eval env before each evaluation round,
+    then logs detailed C2G episode metrics with an ``eval/`` prefix.
+
+    Parameters
+    ----------
+    eval_metrics_wrappers : list[C2GEvalMetricsWrapper] | None
+        References to the C2GEvalMetricsWrapper(s) inside the eval
+        VecEnv.  After each evaluation round the callback pops their
+        completed-episode dicts and records the per-key mean to
+        TensorBoard as ``eval/<original_tag>``.
+    """
+
+    def __init__(self, *args, eval_metrics_wrappers=None,
+                 csv_path: str | Path | None = None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._eval_metrics_wrappers: list[C2GEvalMetricsWrapper] = (
+            eval_metrics_wrappers or []
+        )
+        self._eval_csv_path = Path(csv_path) if csv_path else None
+        self._eval_csv_writer: csv.DictWriter | None = None
+        self._eval_csv_file = None
+        self._eval_rollout_count = 0
+
+    def _on_step(self) -> bool:
+        if self.eval_freq > 0 and self.n_calls % self.eval_freq == 0:
+            sync_envs_normalization(self.training_env, self.eval_env)
+
+        result = super()._on_step()
+
+        # After evaluate_policy() finishes, harvest episode metrics
+        if self._eval_metrics_wrappers:
+            all_episodes: list[dict[str, float]] = []
+            for w in self._eval_metrics_wrappers:
+                all_episodes.extend(w.pop_episodes())
+            if all_episodes:
+                self._eval_rollout_count += 1
+                n_eps = len(all_episodes)
+                keys = all_episodes[0].keys()
+                mean_metrics: dict[str, float] = {}
+                for key in keys:
+                    vals = [ep[key] for ep in all_episodes]
+                    mean_metrics[key] = float(np.mean(vals))
+                for key, val in mean_metrics.items():
+                    self.logger.record(f"eval/{key}", val)
+                self.logger.record("eval/n_episodes", n_eps)
+
+                # Eval CSV (rollout-mean only)
+                if self._eval_csv_path:
+                    if self._eval_csv_writer is None:
+                        self._eval_csv_path.parent.mkdir(parents=True, exist_ok=True)
+                        write_header = not self._eval_csv_path.exists()
+                        self._eval_csv_file = open(self._eval_csv_path, "a", newline="")  # noqa: SIM115
+                        cols = ["timestep", "eval_rollout", "n_episodes"] + sorted(mean_metrics.keys())
+                        self._eval_csv_writer = csv.DictWriter(self._eval_csv_file, fieldnames=cols)
+                        if write_header:
+                            self._eval_csv_writer.writeheader()
+                    row = {"timestep": self.num_timesteps,
+                           "eval_rollout": self._eval_rollout_count,
+                           "n_episodes": n_eps, **mean_metrics}
+                    self._eval_csv_writer.writerow(row)
+                    self._eval_csv_file.flush()
+
+        return result
 
 
 class C2GTransitionLoggerCallback(BaseCallback):

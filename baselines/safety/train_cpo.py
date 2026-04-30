@@ -1,5 +1,5 @@
 """
-baselines/train_cpo.py  —  Constrained Policy Optimisation (CPO)
+baselines/safety/train_cpo.py  —  Constrained Policy Optimisation (CPO)
 =================================================================
 Implements CPO [Achiam et al., ICML 2017] on top of SB3 PPO.
 
@@ -24,8 +24,8 @@ Constraint costs (same as PPO-Lagrangian):
 
 Usage
 -----
-  uv run python baselines/train_cpo.py algo=cpo
-  uv run python baselines/train_cpo.py algo=cpo scenario=scenario_b
+  uv run python baselines/safety/train_cpo.py algo=cpo
+  uv run python baselines/safety/train_cpo.py algo=cpo scenario=scenario_b
 """
 from __future__ import annotations
 
@@ -35,6 +35,7 @@ from pathlib import Path
 import baselines._hydra_compat  # noqa: F401
 
 import hydra
+from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig
 
 import numpy as np
@@ -189,7 +190,7 @@ def train(cfg: DictConfig) -> None:
     scenario = cfg.scenario.name
     algo_cfg = cfg.algo
     seed     = cfg.experiment.seed
-    out_dir  = Path(".")
+    out_dir  = Path(HydraConfig.get().runtime.output_dir)
 
     log.info(f"CPO: scenario={scenario}, seed={seed}")
 
@@ -249,7 +250,7 @@ def train(cfg: DictConfig) -> None:
                      n_eval_episodes=int(getattr(algo_cfg, "n_eval_episodes", 5)),
                      best_model_save_path=str(out_dir / "best_model"),
                      deterministic=True),
-        C2GMetricsCallback(log_dir=str(out_dir)),
+        C2GMetricsCallback(csv_path=out_dir / "metrics.csv"),
     ]
 
     model.learn(total_timesteps=timesteps, callback=callbacks)

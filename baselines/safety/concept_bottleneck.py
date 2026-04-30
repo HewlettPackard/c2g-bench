@@ -61,25 +61,7 @@ try:
 except ImportError:
     _TORCH_AVAILABLE = False
 
-
-# ─── C2G observation indices ──────────────────────────────────────
-_I_TEMP_A   = 0   # T_A / T_safe
-_I_TEMP_B   = 1   # T_B / T_safe
-_I_SOC      = 2
-_I_P_BASE   = 3
-_I_P_FLEX   = 4
-_I_P_FAC    = 5
-_I_REGD     = 6   # ∈ [-1, 1]
-_I_LMP      = 7
-_I_GLOAD    = 8
-_I_SPIKE    = 9
-_I_PREV_THR = 10
-_I_PREV_PMP = 11
-_I_PUE      = 12
-_I_T_AMB    = 13
-_I_FREQ_DEV = 14
-_I_VPCC     = 15
-_I_BACKLOG  = 16  # may not exist in 16-D obs
+from c2g_env.obs_indices import Fast as _F
 
 _T_SAFE = 35.0
 _T_WARN = 33.0
@@ -140,14 +122,14 @@ class C2GConcepts:
         obs : ndarray, shape (16,) or (17,)
             Raw (normalised) observation from C2GFastEnv.
         """
-        T_A = float(obs[_I_TEMP_A]) * _T_SAFE
-        T_B = float(obs[_I_TEMP_B]) * _T_SAFE
-        soc = float(obs[_I_SOC])
-        freq_dev = abs(float(obs[_I_FREQ_DEV])) * 0.5  # Hz
-        v_pcc = float(obs[_I_VPCC])
-        regd = float(obs[_I_REGD])
-        is_spike = float(obs[_I_SPIKE]) if len(obs) > _I_SPIKE else 0.0
-        backlog = float(obs[_I_BACKLOG]) if len(obs) > _I_BACKLOG else 0.0
+        T_A = float(obs[_F.TEMP_A]) * _T_SAFE
+        T_B = float(obs[_F.TEMP_B]) * _T_SAFE
+        soc = float(obs[_F.SOC])
+        freq_dev = abs(float(obs[_F.FREQ_DEV])) * 0.5  # Hz
+        v_pcc = float(obs[_F.VPCC])
+        regd = float(obs[_F.REGD])
+        is_spike = float(obs[_F.IS_SPIKE]) if len(obs) > _F.IS_SPIKE else 0.0
+        backlog = float(obs[_F.BACKLOG]) if len(obs) > _F.BACKLOG else 0.0
 
         # Thermal margins: 1 at 25°C, 0 at T_safe
         thermal_margin_A = np.clip((_T_SAFE - T_A) / (_T_SAFE - 20.0), 0.0, 1.0)

@@ -338,6 +338,44 @@ class TestSafeProjection:
         assert loss.ndim == 0  # scalar
         assert loss.item() >= 0
 
+    def test_gate_targets_are_not_all_passthrough(self):
+        from baselines.safety.safe_projection import build_gate_targets
+
+        concepts = torch.tensor([[0.2, 0.3, 0.7, 0.9, 0.9, 0.9, 0.8, 1.0, 0.1, 0.6]])
+        gate_targets = build_gate_targets(concepts, gate_alpha=0.5, gate_beta=0.3)
+
+        assert gate_targets.shape == (1, 4)
+        assert torch.all(gate_targets < 1.0)
+        assert gate_targets[0, 0] < gate_targets[0, 2]
+        assert gate_targets[0, 3] < 1.0
+
+    def test_layer2_blends_toward_priors_not_pure_attenuation(self):
+        from baselines.safety.safe_projection import compute_layer2_action
+
+        class HalfGate(torch.nn.Module):
+            def forward(self, concepts):
+                return torch.full((concepts.shape[0], 4), 0.5, dtype=concepts.dtype, device=concepts.device)
+
+        obs = torch.tensor([[34.5 / 35.0, 33.8 / 35.0, 0.5, 0.0, 0.0, 0.0, 0.8,
+                             0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.2, 0.0]], dtype=torch.float32)
+        concepts = torch.tensor([[0.1, 0.1, 0.8, 1.0, 1.0, 0.9, 0.7, 0.8, 0.2, 0.4]], dtype=torch.float32)
+        policy_action = torch.tensor([[0.05, 0.10, 0.10, 0.0]], dtype=torch.float32)
+
+        blended, gate_values, priors = compute_layer2_action(
+            policy_action,
+            concepts,
+            obs=obs,
+            safety_gate=HalfGate(),
+        )
+        attenuated = policy_action * 0.5
+
+        assert torch.allclose(gate_values, torch.full_like(gate_values, 0.5))
+        assert blended.shape == policy_action.shape
+        assert torch.any(torch.abs(blended - attenuated) > 1e-6)
+        assert blended[0, 0] > policy_action[0, 0]
+        assert blended[0, 1] > attenuated[0, 1]
+        assert blended[0, 2] > attenuated[0, 2]
+
 
 # =========================================================================
 # F. Concept Encoder Tests (require torch)
@@ -451,7 +489,7 @@ class TestCrossShieldConsistency:
     @pytest.fixture(params=["simplex", "cbf", "hj", "mpc"])
     def shield(self, request):
         if request.param == "simplex":
-            from baselines.safety_shield import SafetyShield
+            from baselines.safety.safety_shield import SafetyShield
             return SafetyShield()
         elif request.param == "cbf":
             return CBFShield()
@@ -610,7 +648,7 @@ class TestGateBehavioral:
         if not hasattr(sys.modules["hydra.core.hydra_config"], "HydraConfig"):
             sys.modules["hydra.core.hydra_config"].HydraConfig = type("HydraConfig", (), {})
 
-        from baselines.train_ha_c2g import HAC2GShieldWrapper
+        from baselines.safety.train_ha_c2g import HAC2GShieldWrapper
 
         # Build a tiny 4-action dummy env with 17-D obs
         base_env = gym.make("MountainCarContinuous-v0")

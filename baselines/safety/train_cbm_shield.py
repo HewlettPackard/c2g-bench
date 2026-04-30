@@ -1,19 +1,23 @@
 """
-baselines/train_cbm_gate.py  —  CBM+Gate Ablation (Tier 3 Ablation)
-=====================================================================
-PPO with Concept Bottleneck + actively trained Safe Projection Gate,
-but NO physics shield.  The concept encoder and gate are jointly
-trained with supervision losses, and the gate attenuates actions
-based on safety concepts.  However, there is no hard guarantee —
-the gate is a soft learned filter.
+baselines/safety/train_cbm_shield.py  —  CBM+Shield Ablation (Tier 3 Ablation)
+=========================================================================
+PPO with Concept Bottleneck feature extractor AND the Simplex physics
+shield (shield-in-the-loop with reward penalty), but NO trained safety
+gate.  The concept encoder is trained with decaying supervision loss.
 
-This ablation answers: "Does the trained gate reduce violations
-without a hard shield?"
+This ablation answers: "Does the trained gate add value when the hard
+shield is already present?"
+
+Comparison ladder:
+  cbm_only    → CBM, no gate, no shield
+  cbm_gate    → CBM + gate, no shield
+  cbm_shield  → CBM + shield, no gate   ← THIS
+  ha_c2g      → CBM + gate + shield
 
 Usage
 -----
-  python baselines/train_cbm_gate.py algo=cbm_gate
-  python baselines/train_cbm_gate.py algo=cbm_gate scenario=scenario_b
+  python baselines/safety/train_cbm_shield.py algo=cbm_shield
+  python baselines/safety/train_cbm_shield.py algo=cbm_shield scenario=scenario_b
 """
 from __future__ import annotations
 
@@ -27,7 +31,6 @@ from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig, OmegaConf
 
 import numpy as np
-
 import torch
 
 from stable_baselines3 import PPO
@@ -39,43 +42,50 @@ from stable_baselines3.common.vec_env import VecNormalize
 
 from c2g_env import C2GFastEnv
 from baselines.safety.concept_bottleneck import (
-    C2GGatedConceptFeatureExtractor,
+    C2GConceptFeatureExtractor,
 )
-from baselines.safety.safe_projection import SafeProjectionGate
-
-# Re-use the concept+gate supervision callback from HA-C2G
-from baselines.train_ha_c2g import ConceptGateSupervisionCallback
+from baselines.safety.train_ha_c2g import HAC2GShieldWrapper
+from baselines.safety.train_cbm_only import ConceptSupervisionCallback
 from baselines.metrics_callback import C2GMetricsCallback
 
 log = logging.getLogger(__name__)
 
 
-# ═══════════════════════════════════════════════════════════════════
-# TRAINING ENTRY POINT
-# ═══════════════════════════════════════════════════════════════════
+def make_cbm_shield_env_fn(scenario: str, seed: int, shield_penalty: float = 0.5):
+    def _init():
+        from baselines.safety.safety_shield import SafetyShield
+        base_env = C2GFastEnv(scenario=scenario)
+        env = HAC2GShieldWrapper(
+            base_env,
+            shield=SafetyShield(),
+            shield_penalty=shield_penalty,
+            generate_proof_trees=False,
+        )
+        env.reset(seed=seed)
+        return env
+    return _init
+
 
 @hydra.main(config_path="../conf", config_name="config", version_base="1.3")
 def train(cfg: DictConfig) -> None:
     out_dir = Path(HydraConfig.get().runtime.output_dir)
     print(OmegaConf.to_yaml(cfg))
 
-    scenario = cfg.scenario.env_id
-    seed     = cfg.experiment.seed
-    algo_cfg = cfg.algo
-    log_cfg  = cfg.logging
+    scenario  = cfg.scenario.env_id
+    seed      = cfg.experiment.seed
+    algo_cfg  = cfg.algo
+    log_cfg   = cfg.logging
 
-    n_concepts  = int(getattr(algo_cfg, "n_concepts", 10))
-    gate_alpha  = float(getattr(algo_cfg, "gate_alpha", 0.5))
-    gate_beta   = float(getattr(algo_cfg, "gate_beta", 0.3))
-    gate_weight = float(getattr(algo_cfg, "gate_loss_weight", 0.1))
+    n_concepts = int(getattr(algo_cfg, "n_concepts", 10))
+    shield_pen = float(getattr(algo_cfg, "shield_penalty", 0.5))
 
-    print(f"[CBM+Gate] scenario={scenario}  seed={seed}  "
-          f"concepts={n_concepts}  gate_α={gate_alpha}  "
+    print(f"[CBM+Shield] scenario={scenario}  seed={seed}  "
+          f"concepts={n_concepts}  shield_penalty={shield_pen}  "
           f"timesteps={algo_cfg.timesteps:,}")
 
-    # ── Environments (NO shield wrapper) ─────────────────────────
+    # ── Environments (WITH shield, NO gate) ──────────────────────
     vec_env = make_vec_env(
-        lambda: C2GFastEnv(scenario=scenario),
+        make_cbm_shield_env_fn(scenario, seed, shield_pen),
         n_envs=algo_cfg.n_envs, seed=seed)
     vec_env = VecNormalize(
         vec_env,
@@ -83,20 +93,19 @@ def train(cfg: DictConfig) -> None:
         clip_obs=algo_cfg.clip_obs, clip_reward=algo_cfg.clip_reward)
 
     eval_env = make_vec_env(
-        lambda: C2GFastEnv(scenario=scenario),
+        make_cbm_shield_env_fn(scenario, seed + 999, shield_penalty=0.0),
         n_envs=1, seed=seed + 999)
     eval_env = VecNormalize(
         eval_env, norm_obs=True, norm_reward=False,
         clip_obs=algo_cfg.clip_obs, training=False)
 
-    # ── Model with Gated Concept Feature Extractor ───────────────
+    # ── Model with Concept Feature Extractor (no gate) ───────────
     net_arch = OmegaConf.to_container(algo_cfg.net_arch, resolve=True)
 
     policy_kwargs = dict(
-        features_extractor_class=C2GGatedConceptFeatureExtractor,
+        features_extractor_class=C2GConceptFeatureExtractor,
         features_extractor_kwargs=dict(
             n_concepts=n_concepts,
-            action_dim=4,
             hidden=64,
         ),
         net_arch=net_arch,
@@ -121,9 +130,7 @@ def train(cfg: DictConfig) -> None:
         seed=seed,
     )
 
-    fe = model.policy.features_extractor
-    concept_encoder = fe.concept_encoder
-    safety_gate = fe.safety_gate
+    concept_encoder = model.policy.features_extractor.concept_encoder
 
     # ── Callbacks ────────────────────────────────────────────────
     checkpoint_cb = CheckpointCallback(
@@ -142,16 +149,10 @@ def train(cfg: DictConfig) -> None:
         csv_path=out_dir / "episode_metrics.csv" if log_cfg.csv else None,
         verbose=1)
 
-    concept_gate_cb = ConceptGateSupervisionCallback(
+    concept_cb = ConceptSupervisionCallback(
         concept_encoder=concept_encoder,
-        safety_gate=safety_gate,
         total_timesteps=algo_cfg.timesteps,
-        gate_alpha=gate_alpha,
-        gate_beta=gate_beta,
-        gate_loss_weight=gate_weight,
-        concept_initial_weight=1.0,
-        concept_decay_to=0.1,
-        supervision_freq=2048,
+        supervision_freq=int(getattr(algo_cfg, "supervision_freq", 2048)),
         batch_size=256,
         lr=1e-3,
         verbose=1,
@@ -160,7 +161,7 @@ def train(cfg: DictConfig) -> None:
     # ── Train ────────────────────────────────────────────────────
     model.learn(
         total_timesteps=algo_cfg.timesteps,
-        callback=[checkpoint_cb, eval_cb, metrics_cb, concept_gate_cb],
+        callback=[checkpoint_cb, eval_cb, metrics_cb, concept_cb],
         tb_log_name=cfg.experiment.name,
         reset_num_timesteps=True,
     )
@@ -170,16 +171,12 @@ def train(cfg: DictConfig) -> None:
     vec_env.save(str(out_dir / "vec_normalize.pkl"))
     torch.save(concept_encoder.state_dict(),
                str(out_dir / "concept_encoder.pt"))
-    torch.save(safety_gate.state_dict(),
-               str(out_dir / "safety_gate.pt"))
 
-    if concept_gate_cb.concept_losses:
-        final_cl = np.mean(concept_gate_cb.concept_losses[-10:])
-        final_gl = np.mean(concept_gate_cb.gate_losses[-10:])
-        print(f"\n[CBM+Gate] Final concept_loss={final_cl:.6f}, "
-              f"gate_loss={final_gl:.6f}")
+    if concept_cb.concept_losses:
+        final_cl = np.mean(concept_cb.concept_losses[-10:])
+        print(f"\n[CBM+Shield] Final concept_loss={final_cl:.6f}")
 
-    print(f"\n[CBM+Gate] Training complete → {out_dir.resolve()}")
+    print(f"\n[CBM+Shield] Training complete → {out_dir.resolve()}")
 
 
 if __name__ == "__main__":

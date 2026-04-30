@@ -57,36 +57,29 @@ from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig, OmegaConf
 
 from stable_baselines3 import PPO
-from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback
+from stable_baselines3.common.callbacks import CheckpointCallback
 from stable_baselines3.common.env_util import make_vec_env
-from stable_baselines3.common.vec_env import VecNormalize, sync_envs_normalization
+from stable_baselines3.common.vec_env import VecNormalize
 
 from c2g_env import C2GFastEnv
-from c2g_env.train_envs import RuleMacroWrappedEnv
-from baselines.metrics_callback import C2GMetricsCallback
-
-
-# ======================================================================
-# SyncNormEvalCallback (shared with train_ppo.py)
-# ======================================================================
-
-class SyncNormEvalCallback(EvalCallback):
-    """EvalCallback that syncs VecNormalize stats before evaluation."""
-
-    def _on_step(self) -> bool:
-        if self.eval_freq > 0 and self.n_calls % self.eval_freq == 0:
-            sync_envs_normalization(self.training_env, self.eval_env)
-        return super()._on_step()
+from c2g_env.train_envs import RuleMacroWrappedEnv, FixedActionWrapper
+from baselines.metrics_callback import (
+    C2GMetricsCallback, C2GEvalMetricsWrapper, SyncNormEvalCallback,
+)
+from baselines.resume import maybe_load_vecnormalize, maybe_load_model
 
 
 # ======================================================================
 # Env factory
 # ======================================================================
 
-def make_env_fn(scenario: str, seed: int):
+def make_env_fn(scenario: str, seed: int,
+                fixed_actions: dict[int, float] | None = None):
     def _init():
         fast_env = C2GFastEnv(scenario=scenario)
         env = RuleMacroWrappedEnv(fast_env)
+        if fixed_actions:
+            env = FixedActionWrapper(env, fixed_actions=fixed_actions)
         env.reset(seed=seed)
         return env
     return _init
@@ -109,19 +102,31 @@ def train(cfg: DictConfig) -> None:
     print(f"[RuleMacro+PPO] scenario={scenario}  seed={seed}  "
           f"timesteps={algo_cfg.timesteps:,}  n_envs={algo_cfg.n_envs}")
 
-    # ── Environments ──────────────────────────────────────────────────
-    vec_env = make_vec_env(make_env_fn(scenario, seed),
-                           n_envs=algo_cfg.n_envs, seed=seed)
-    vec_env = VecNormalize(
-        vec_env,
-        norm_obs=algo_cfg.norm_obs,
-        norm_reward=algo_cfg.norm_reward,
-        clip_obs=algo_cfg.clip_obs,
-        clip_reward=algo_cfg.clip_reward,
-    )
+    fixed_actions: dict[int, float] | None = None
+    raw_fixed = algo_cfg.get("fixed_actions", None)
+    if raw_fixed is not None:
+        fixed_actions = {int(k): float(v) for k, v in raw_fixed.items()}
+        print(f"[RuleMacro+PPO] fixed_actions={fixed_actions}")
 
-    eval_env = make_vec_env(make_env_fn(scenario, seed + 999),
-                            n_envs=1, seed=seed + 999)
+    # ── Environments ──────────────────────────────────────────────────
+    raw_vec_env = make_vec_env(make_env_fn(scenario, seed, fixed_actions),
+                               n_envs=algo_cfg.n_envs, seed=seed)
+    vec_env, resume_from = maybe_load_vecnormalize(
+        raw_vec_env, algo_cfg, label="RuleMacro+PPO")
+
+    _eval_metric_wrappers = []
+
+    def _make_eval_env():
+        fast_env = C2GFastEnv(scenario=scenario)
+        env = RuleMacroWrappedEnv(fast_env)
+        if fixed_actions:
+            env = FixedActionWrapper(env, fixed_actions=fixed_actions)
+        wrapper = C2GEvalMetricsWrapper(env)
+        _eval_metric_wrappers.append(wrapper)
+        wrapper.reset(seed=seed)
+        return wrapper
+
+    eval_env = make_vec_env(_make_eval_env, n_envs=1, seed=seed)
     eval_env = VecNormalize(eval_env, norm_obs=True, norm_reward=False,
                             clip_obs=algo_cfg.clip_obs, training=False)
 
@@ -133,6 +138,8 @@ def train(cfg: DictConfig) -> None:
     )
     eval_cb = SyncNormEvalCallback(
         eval_env,
+        eval_metrics_wrappers=_eval_metric_wrappers,
+        csv_path=out_dir / "eval_metrics.csv" if log_cfg.csv else None,
         best_model_save_path=str(out_dir / "best_model"),
         log_path=str(out_dir / "tensorboard"),
         eval_freq=algo_cfg.eval_freq,
@@ -148,10 +155,15 @@ def train(cfg: DictConfig) -> None:
 
     # ── Model ─────────────────────────────────────────────────────────
     net_arch = OmegaConf.to_container(algo_cfg.net_arch, resolve=True)
+    tb_log = str(out_dir / "tensorboard") if log_cfg.tensorboard else None
 
-    model = PPO(
+    model, reset_timesteps = maybe_load_model(
+        PPO, resume_from, vec_env,
+        device=cfg.device,
+        tensorboard_log=tb_log,
+        label="RuleMacro+PPO",
+        # fresh-model kwargs:
         policy="MlpPolicy",
-        env=vec_env,
         learning_rate=algo_cfg.learning_rate,
         n_steps=algo_cfg.n_steps,
         batch_size=algo_cfg.batch_size,
@@ -163,10 +175,8 @@ def train(cfg: DictConfig) -> None:
         vf_coef=algo_cfg.vf_coef,
         max_grad_norm=algo_cfg.max_grad_norm,
         policy_kwargs=dict(net_arch=net_arch),
-        tensorboard_log=str(out_dir / "tensorboard") if log_cfg.tensorboard else None,
         verbose=0,
         seed=seed,
-        device=cfg.device,
     )
 
     # ── Train ─────────────────────────────────────────────────────────
@@ -174,7 +184,7 @@ def train(cfg: DictConfig) -> None:
         total_timesteps=algo_cfg.timesteps,
         callback=[checkpoint_cb, eval_cb, metrics_cb],
         tb_log_name=cfg.experiment.name,
-        reset_num_timesteps=True,
+        reset_num_timesteps=reset_timesteps,
     )
 
     model.save(str(out_dir / "final_model"))

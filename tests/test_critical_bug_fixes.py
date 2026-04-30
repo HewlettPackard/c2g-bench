@@ -192,7 +192,7 @@ class TestShieldedEnvFirstStep:
         After reset(), _last_obs must be the real reset observation,
         not a zero vector.
         """
-        from baselines.safety_shield import ShieldedEnv
+        from baselines.safety.safety_shield import ShieldedEnv
         env = ShieldedEnv(C2GFastEnv(scenario="default"))
         obs, _ = env.reset(seed=0)
         assert hasattr(env, "_last_obs"), "_last_obs not set after reset()"
@@ -208,7 +208,7 @@ class TestShieldedEnvFirstStep:
         BESS dispatch on the very first step. Previously it always did because
         obs[2]=0 (zero vector) triggered the SOC-low branch.
         """
-        from baselines.safety_shield import ShieldedEnv
+        from baselines.safety.safety_shield import ShieldedEnv
         env = ShieldedEnv(C2GFastEnv(scenario="default"))
         env.reset(seed=0)
 
@@ -227,7 +227,7 @@ class TestShieldedEnvFirstStep:
         With nominal initial state (V_pcc≈1.0 pu), the shield must NOT fire a
         voltage override on the first step. Previously obs[15]=0 caused this.
         """
-        from baselines.safety_shield import ShieldedEnv
+        from baselines.safety.safety_shield import ShieldedEnv
         env = ShieldedEnv(C2GFastEnv(scenario="default"))
         env.reset(seed=0)
 
@@ -243,7 +243,7 @@ class TestShieldedEnvFirstStep:
 
     def test_shielded_env_last_obs_updates_each_step(self):
         """_last_obs must be updated to the current obs after every step."""
-        from baselines.safety_shield import ShieldedEnv
+        from baselines.safety.safety_shield import ShieldedEnv
         env = ShieldedEnv(C2GFastEnv(scenario="default"))
         env.reset(seed=0)
         action = np.array([1.0, 0.7, 0.7, 0.0], dtype=np.float32)

@@ -1,5 +1,5 @@
 """
-baselines/train_shielded_ppo.py  —  PPO with Safety Shield (High-Assurance)
+baselines/safety/train_shielded_ppo.py  —  PPO with Safety Shield (High-Assurance)
 =============================================================================
 Trains PPO inside a ShieldedEnv: every action the agent takes is filtered
 through the Simplex safety shield before reaching the physics simulator.
@@ -15,11 +15,11 @@ achieves near-zero intervention rate while maintaining full safety.
 
 Usage
 -----
-  python baselines/train_shielded_ppo.py algo=ppo
+  python baselines/safety/train_shielded_ppo.py algo=ppo
 
   # Compare shielded vs unshielded:
   python baselines/train_ppo.py              # unshielded
-  python baselines/train_shielded_ppo.py     # shielded
+  python baselines/safety/train_shielded_ppo.py     # shielded
 """
 from __future__ import annotations
 from pathlib import Path
@@ -36,7 +36,7 @@ from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.vec_env import VecNormalize
 
 from c2g_env import C2GFastEnv
-from baselines.safety_shield import SafetyShield, ShieldedEnv
+from baselines.safety.safety_shield import SafetyShield, ShieldedEnv
 from baselines.metrics_callback import C2GMetricsCallback
 
 

@@ -1,5 +1,5 @@
 """
-baselines/train_ppo_lagrangian.py  —  PPO-Lagrangian (Constrained RL)
+baselines/safety/train_ppo_lagrangian.py  —  PPO-Lagrangian (Constrained RL)
 ======================================================================
 Augments standard SB3 PPO with Lagrange multipliers for hard-constraint
 satisfaction.  Three constraint costs are tracked:
@@ -20,8 +20,8 @@ adjusts the reward at each step:  r' = r - Σ λ_j · c_j.
 
 Usage
 -----
-  uv run python baselines/train_ppo_lagrangian.py algo=ppo_lagrangian
-  uv run python baselines/train_ppo_lagrangian.py algo=ppo_lagrangian scenario=scenario_b
+  uv run python baselines/safety/train_ppo_lagrangian.py algo=ppo_lagrangian
+  uv run python baselines/safety/train_ppo_lagrangian.py algo=ppo_lagrangian scenario=scenario_b
 """
 from __future__ import annotations
 
@@ -31,6 +31,7 @@ from pathlib import Path
 import baselines._hydra_compat  # noqa: F401
 
 import hydra
+from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig
 
 import numpy as np
@@ -156,7 +157,7 @@ def train(cfg: DictConfig) -> None:
     scenario = cfg.scenario.name
     algo_cfg = cfg.algo
     seed     = cfg.experiment.seed
-    out_dir  = Path(".")
+    out_dir  = Path(HydraConfig.get().runtime.output_dir)
 
     log.info(f"PPO-Lagrangian: scenario={scenario}, seed={seed}")
 
@@ -224,7 +225,7 @@ def train(cfg: DictConfig) -> None:
             best_model_save_path=str(out_dir / "best_model"),
             deterministic=True,
         ),
-        C2GMetricsCallback(log_dir=str(out_dir)),
+        C2GMetricsCallback(csv_path=out_dir / "metrics.csv"),
     ]
 
     model.learn(total_timesteps=timesteps, callback=callbacks)

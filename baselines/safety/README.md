@@ -306,7 +306,7 @@ This is the flagship method, porting the 3-layer architecture from our SC'26 pap
 
 **File:** `baselines/safety/safe_projection.py`
 
-**Description:**  A concept-conditioned gate that attenuates each action dimension based on the current safety concepts.  **This gate is actively trained** with an auxiliary supervision loss — it is NOT a pass-through or hand-coded rule.
+**Description:**  Layer 2 is a concept-guided projection module that learns **how much of the policy action to keep** and **which safe action prior to blend toward**.  It is not a pure attenuator.  For gate-based methods (`ha_c2g`, `cbm_gate`), the same Layer-2 logic is applied on the action path during training and during evaluation/runtime.
 
 **Gate architecture:**
 - Input: 10 concepts
@@ -314,17 +314,31 @@ This is the flagship method, porting the 3-layer architecture from our SC'26 pap
 - Output: 4 gate values ∈ (0, 1) via Sigmoid
 - Init bias = 2.0 → Sigmoid(2.0) ≈ 0.88 at init (near pass-through, avoids early training collapse)
 
-**Gate supervision targets:**
+**Gate supervision targets (`build_gate_targets`)**
 | Action | Gate target `g*` | Meaning |
 |--------|------------------|---------|
-| `throttle_batch` | `1 − α · max(cooling_demand_A, cooling_demand_B)` | Reduce batch when cooling is strained |
-| `pump_speed_A` | `1.0` (always allow) | Pumps are always safe |
-| `hvac_effort` | `1.0` (always allow) | HVAC is always safe |
-| `bess_dispatch` | `1 − β · (1 − bess_headroom)` | Restrict BESS when near SOC bounds |
+| `throttle_batch` | `1 − α · max(cooling_demand_A, cooling_demand_B)` | Keep less of the policy throttle when cooling is strained |
+| `pump_speed_A` | `1 − 0.75·α·cooling_demand_A` | Push toward stronger pumping when Zone A needs cooling |
+| `hvac_effort` | `1 − 0.75·α·cooling_demand_B` | Push toward stronger HVAC when Zone B needs cooling |
+| `bess_dispatch` | `1 − β · grid_urgency` | Keep less of the raw BESS action when the grid is demanding a stronger response |
 
 Where `α=0.5` (gate_alpha) and `β=0.3` (gate_beta) are configurable.
 
-**Action attenuation:** `gated_action = raw_action × gate(concepts)` (applied in `HAC2GShieldWrapper._apply_gate()` before shielding)
+**Concept-guided action prior (`build_action_priors`)**
+- `throttle_batch`: higher prior when cooling demand dominates batch pressure
+- `pump_speed_A`: higher prior when `cooling_demand_A` is high
+- `hvac_effort`: higher prior when `cooling_demand_B` is high
+- `bess_dispatch`: signed prior toward the RegD direction, scaled by `grid_urgency × bess_headroom`
+
+**Layer-2 runtime blend:**
+`layer2_action = gate(concepts) ⊙ policy_action + (1 − gate(concepts)) ⊙ action_prior(concepts, obs)`
+
+This blend is applied in:
+- `baselines/train_ha_c2g.py` via `HAC2GShieldWrapper._apply_gate()`
+- `baselines/train_cbm_gate.py` via the same wrapper with a passthrough shield
+- `evaluation/run_ha_benchmark.py` for `ha_c2g` and `cbm_gate`
+- `evaluation/run_benchmark.py` for `ha_c2g` and `cbm_gate`
+- `scripts/run_sweep.sh` during sweep-time evaluation of `ha_c2g` and `cbm_gate`
 
 **Joint training:** `ConceptAndGateSupervisionCallback` runs every `train_freq` steps:
 1. Sample mini-batch from rollout buffer
@@ -338,11 +352,12 @@ Where `α=0.5` (gate_alpha) and `β=0.3` (gate_beta) are configurable.
 - [ ] `SafeProjectionGate(concept_dim=10, action_dim=4)` outputs gate ∈ (0,1)⁴
 - [ ] Gate init bias = 2.0 → near pass-through at start of training
 - [ ] `GateSupervisionLoss.compute(gate_values, concept_targets)` returns scalar loss
-- [ ] Gate targets for throttle use `α·max(cooling_demand_A, cooling_demand_B)`
-- [ ] Gate targets for BESS use `β·(1 − bess_headroom)`
-- [ ] `HAC2GShieldWrapper._apply_gate()` multiplies raw action by gate values
+- [ ] `build_gate_targets()` produces non-trivial per-action pass-through targets from environment concepts
+- [ ] `build_action_priors()` produces concept-guided safe priors for all 4 action dimensions
+- [ ] `HAC2GShieldWrapper._apply_gate()` blends policy action toward action priors, not just `raw_action × gate`
 - [ ] `ConceptAndGateSupervisionCallback` jointly trains encoder AND gate
 - [ ] Auxiliary loss = concept_loss × decaying_weight + gate_loss
+- [ ] Evaluation/runtime uses the same Layer-2 blend for `ha_c2g` and `cbm_gate`
 
 ---
 
@@ -354,7 +369,11 @@ Where `α=0.5` (gate_alpha) and `β=0.3` (gate_beta) are configurable.
 
 **Shield-in-the-loop training flow:**
 ```
-obs → encoder → concepts → gate(concepts) × raw_action → shield.filter() → env.step()
+obs → encoder → concepts → gate(concepts), action_prior(concepts, obs)
+                    ↓
+            layer2_action = gate ⊙ raw_action + (1−gate) ⊙ action_prior
+                    ↓
+                shield.filter() → env.step()
                                                                ↓
                                                        if modified: reward -= 0.5
 ```

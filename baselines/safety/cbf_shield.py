@@ -66,6 +66,8 @@ try:
 except ImportError:
     minimize = None  # graceful fallback
 
+from c2g_env.obs_indices import Fast as _F
+
 
 # ─── Physical constants (from C2GFastEnv / config.yaml) ───────────
 _T_SAFE     = 35.0       # °C — Silicon thermal limit
@@ -88,17 +90,6 @@ _P_PUMP_MAX = 5_000.0    # kW — max CDU pump cooling effect
 _P_HVAC_MAX = 8_000.0    # kW — max HVAC cooling effect
 _E_BESS_CAP = 150_000.0  # kWh — BESS energy capacity
 _P_BESS_MAX = 50_000.0   # kW — BESS max power
-
-# Observation indices (C2GFastEnv, 16-D + backlog at 16)
-_I_TEMP_A   = 0
-_I_TEMP_B   = 1
-_I_SOC      = 2
-_I_P_BASE   = 3
-_I_P_FLEX   = 4
-_I_REGD     = 6
-_I_T_AMB    = 13
-_I_FREQ_DEV = 14
-_I_VPCC     = 15
 
 # Default CBF class-K parameters (higher = more conservative)
 _DEFAULT_ALPHA = {
@@ -201,14 +192,14 @@ class CBFShield:
     def _decode_obs(self, obs: NDArray) -> dict:
         """Extract physical states from normalised observation."""
         return {
-            "T_A":     float(obs[_I_TEMP_A]) * self.T_safe,
-            "T_B":     float(obs[_I_TEMP_B]) * self.T_safe,
-            "SOC":     float(obs[_I_SOC]),
-            "p_base":  float(obs[_I_P_BASE]) * 250_000.0,   # kW
-            "p_flex":  float(obs[_I_P_FLEX]) * 250_000.0,   # kW
-            "T_amb":   float(obs[_I_T_AMB]) * 50.0,         # approx denorm
-            "freq_dev": float(obs[_I_FREQ_DEV]) * 0.5,      # Hz
-            "v_pcc":   float(obs[_I_VPCC]),
+            "T_A":     float(obs[_F.TEMP_A]) * self.T_safe,
+            "T_B":     float(obs[_F.TEMP_B]) * self.T_safe,
+            "SOC":     float(obs[_F.SOC]),
+            "p_base":  float(obs[_F.P_BASE]) * 250_000.0,   # kW
+            "p_flex":  float(obs[_F.P_FLEX]) * 250_000.0,   # kW
+            "T_amb":   float(obs[_F.T_AMB]) * 50.0,         # approx denorm
+            "freq_dev": float(obs[_F.FREQ_DEV]) * 0.5,      # Hz
+            "v_pcc":   float(obs[_F.VPCC]),
         }
 
     def _barrier_values(self, s: dict) -> dict:

@@ -310,7 +310,7 @@ Episode truncates at 17,280 ticks (24 hours at 5 s).
 
 ### 5.4. Environment Architecture & Data Flow
 
-> 📖 **Full technical reference** — equations, parameters, and API for all 7 physics engines and both environments: [`c2g_env/ENVIRONMENTS.md`](c2g_env/ENVIRONMENTS.md)
+> 📖 **Full technical reference** — equations, parameters, and API for all 6 physics engines and both environments: [`c2g_env/ENVIRONMENTS.md`](c2g_env/ENVIRONMENTS.md)
 
 The diagrams below describe (0) a high-level system overview, (1) the full hierarchical control loop, (2) the internal step function of `C2GFastEnv`, and (3) the Simplex safety shield that can wrap any agent.
 
@@ -392,14 +392,13 @@ flowchart TD
         direction TB
         FA["Lower-Level Agent\n(Hardware Controller)\nobs: 17-D normalised\nact: 4-D continuous"]
 
-        subgraph SIM["Seven Physics Engines"]
+        subgraph SIM["Six Physics Engines"]
             S1["🖥️ Workload\nP_base + P_flex (queue)"]
             S2["🌡️ Thermal Twin\nZone A (liquid) · Zone B (air)"]
             S3["⚡ Electrical Chain\nUPS · PDU · XFMR · PUE"]
             S4["🔋 BESS\n150 MWh / 50 MW NMC"]
             S5["📡 Macro-Grid\nAR(1) RegD · LMP proxy"]
-            S6["🌬️ Renewable\n100 MW wind · 75 MW solar"]
-            S7["🌤️ Weather\nNOAA ISD / synthetic"]
+            S6["️ Weather\nNOAA ISD / synthetic"]
         end
 
         FR["Fast Reward\nα·throughput − β·tracking_error\n− γ·thermal − δ_soc − δ_f·freq − δ_v·volt"]
@@ -428,7 +427,7 @@ flowchart TD
 
 #### Diagram 2 — C2GFastEnv Step Function
 
-A single 5-second `env.step(action)` call flows through all seven physics engines in this order:
+A single 5-second `env.step(action)` call flows through all six physics engines in this order:
 
 ```mermaid
 flowchart LR
@@ -445,7 +444,6 @@ flowchart LR
         EL["Electrical Chain\nUPS+PDU+XFMR losses\n→ P_facility, PUE"]
         BS["BESS\nSOC update, η(C-rate)\n→ P_BESS_actual"]
         MG["Macro-Grid\nAR(1) RegD step\n→ ΔP_demanded, LMP"]
-        RN["Renewable\nwind + solar\n→ P_renewable"]
         WE["Weather\nNOAA ISD or synthetic\n→ T_amb update"]
         FV["Freq + Voltage\nswing eq → Δf\nThévenin → V_pcc"]
         RW["Reward\nα·thr − β·err − γ·T\n− δ_soc − δ_f·Δf − δ_v·V − δ_q·backlog"]
@@ -455,7 +453,6 @@ flowchart LR
 
     WL --> EL
     BS --> EL
-    RN --> MG
     WE --> TH
     EL --> FV
     EL --> RW
@@ -675,7 +672,7 @@ A 24-hour episode consists of **17,280 × 5-second ticks** (or 96 × 15-minute m
 flowchart TD
     START(["env.reset(seed, options)"])
 
-    START --> R1["🔧 Rebuild all 7 physics engines"]
+    START --> R1["🔧 Rebuild all 6 physics engines"]
     R1 --> R2["📋 Apply scenario params
 T_amb · SOC_init · cooling_fault"]
     R2 --> R3["👁️ _build_obs_at_reset()
@@ -688,9 +685,9 @@ peek real tick-0 state"]
         STEP["env.step(action)"]
         SHIELD["🛡️ SafetyShield.filter(action, obs)
 check C1–C5 constraints"]
-        SIMS["🏭 7 Physics Engines
+        SIMS["🏭 6 Physics Engines
 Workload · Thermal · Electrical
-BESS · Grid · Renewable · Weather"]
+BESS · Grid · Weather"]
         REW["⚖️ Compute r_t
 α·thr − β·track − γ·thermal
 − soc_pen − freq_pen − volt_pen − δ_q·backlog"]
@@ -720,10 +717,10 @@ truncated = True"]
 
 ## 6. Physics Engines
 
-> **C2G-Bench exposes exactly two Gymnasium environments** — `C2GFastEnv` and `C2GMacroEnv` — both registered under `gym.make()`. Everything below is *not* an environment: the seven physics engines are internal simulation components with no `reset()/step()` or `observation_space/action_space` API. They are called exclusively by the two environments and are never exposed to an RL agent directly. If you want to interact with a physics engine in isolation (e.g. for unit testing or analysis), instantiate it directly from `c2g_env.physics.*`.
+> **C2G-Bench exposes exactly two Gymnasium environments** — `C2GFastEnv` and `C2GMacroEnv` — both registered under `gym.make()`. Everything below is *not* an environment: the six physics engines are internal simulation components with no `reset()/step()` or `observation_space/action_space` API. They are called exclusively by the two environments and are never exposed to an RL agent directly. If you want to interact with a physics engine in isolation (e.g. for unit testing or analysis), instantiate it directly from `c2g_env.physics.*`.
 
 
-Seven independent physics/data modules, all with exact-exponential or analytical solutions (unconditionally stable):
+Six independent physics/data modules, all with exact-exponential or analytical solutions (unconditionally stable):
 
 | Simulator | File | Description |
 |-----------|------|-------------|
@@ -732,7 +729,6 @@ Seven independent physics/data modules, all with exact-exponential or analytical
 | **Electrical Chain** | `electrical.py` | Non-linear UPS/PDU/XFMR loss curves + PUE calculation |
 | **BESS** | `bess.py` | 150 MWh / 50 MW Li-ion NMC (pure-Python backend + optional PySAM) with C-rate η, SOC derating, capacity fade |
 | **Macro-Grid** | `macro_grid.py` | AR(1) RegD signal + LMP proxy; calibrated for 6 global markets |
-| **Renewable** | `renewable.py` | IEC wind power curve (100 MW) + solar PV (75 MW) with degradation |
 | **Weather** | `weather.py` | NOAA ISD-Lite real data or calibrated synthetic (6 climate profiles) |
 
 ---
@@ -746,7 +742,6 @@ Seven independent physics/data modules, all with exact-exponential or analytical
 | **Workload traces** | Alibaba cluster traces | batch, DLRM, GenAI, spot | 5-min | 4 CSVs |
 | **Energy load** | EIA, SMARD.de, AEMO | NYISO (11 zones), PJM, CAISO, ERCOT, ENTSO-E DE, AEMO NSW | 5-min (resampled) | 16 CSVs |
 | **Weather** | NOAA ISD-Lite | NYC, DCA, SJC, DFW, FRA, BKT | Hourly | 7 CSVs |
-| **Renewable** | Synthetic (IEC/PVUSA calibrated) | Wind + Solar | 5-min | 4 CSVs |
 
 
 ### 7.1. Workload Traces — Deep Dive
@@ -1050,21 +1045,19 @@ C2G-Macro/
 │       ├── electrical.py                # Non-linear UPS/PDU/XFMR loss + PUE
 │       ├── bess.py                      # 150 MWh NMC BESS (pure-Python + PySAM)
 │       ├── macro_grid.py                # AR(1) RegD + LMP proxy, 6 market presets
-│       ├── renewable.py                 # IEC wind + solar PV (100 MW + 75 MW)
 │       └── weather.py                   # NOAA ISD real data + synthetic climate, 6 presets
 │
 ├── data/
 │   └── processed/
 │       ├── workload_traces/             # batch_v2023, dlrm_v2025, genai_v2026, spot_v2026
 │       ├── energy/                      # 16 CSVs: 11 NYISO zones + PJM/CAISO/ERCOT/ENTSO-E/AEMO
-│       ├── weather/                     # 7 station CSVs: NYC, DCA, SJC, DFW, FRA, BKT, LONGIL + merged
-│       └── renewable/                   # wind_5min, solar_5min, wind_hourly, solar_hourly
+│       └── weather/                     # 7 station CSVs: NYC, DCA, SJC, DFW, FRA, BKT, LONGIL + merged
 │
 ├── conf/                                # Hydra configuration tree
 │   ├── config.yaml                      # Top-level defaults (scenario, algo, market, logging)
-│   ├── algo/                            # 19 algo configs: ppo, sac, ppo_macro, cpo, ppo_lagrangian,
+│   ├── algo/                            # 17 algo configs: ppo, sac, ppo_macro, cpo, ppo_lagrangian,
 │   │                                    #   cbf_ppo, hj_ppo, mpcsf_ppo, ha_c2g, cbm_only, cbm_gate,
-│   │                                    #   cbm_shield, cmaes, pso, pid, mpc_fast, mpc_macro, milp,
+│   │                                    #   cbm_shield, pid, mpc_fast, mpc_macro, milp,
 │   │                                    #   shield_reward_shaping
 │   ├── scenario/                        # default, scenario_a, scenario_b, scenario_c
 │   ├── market/                          # nyiso_nyc, pjm_dom, caiso_pgae, ercot_north, entso_de, aemo_nsw
@@ -1105,10 +1098,6 @@ C2G-Macro/
 │   ├── train_cbm_gate.py                # Ablation: PPO + CBM + safe projection gate
 │   ├── train_cbm_shield.py              # Ablation: PPO + CBM + Simplex shield (no gate)
 │   │
-│   │  # ── Gradient-Free Search ────────────────────────────────────────────
-│   ├── train_cmaes.py                   # CMA-ES linear policy search
-│   ├── train_pso.py                     # PSO linear policy search
-│   │
 │   └── safety/                          # HA safety method implementations
 │       ├── README.md                    # 3-tier HA safety benchmark documentation
 │       ├── cbf_shield.py                # Control Barrier Function safety filter (QP)
@@ -1138,7 +1127,6 @@ C2G-Macro/
 ├── preprocessing/                       # Raw → processed data pipelines
 │   ├── workload_traces/                 # process_v2023.py, process_v2025.py, process_v2026_genai.py
 │   ├── energy/                          # process_energy.py (NYISO zone load)
-│   ├── renewable/                       # process_renewable.py, download_renewable.py
 │   └── weather/                         # download_noaa_isd.py
 │
 ├── notebooks/                           # 12 Jupyter notebooks for exploration & visualisation
@@ -1146,7 +1134,6 @@ C2G-Macro/
 │   ├── 02_thermal.ipynb                 # Thermal model step response & steady-state
 │   ├── 03_electrical_bess.ipynb         # Electrical chain + BESS cycling
 │   ├── 04_macro_grid.ipynb              # RegD signal + LMP proxy
-│   ├── 05_renewable.ipynb               # Wind/solar generation profiles
 │   ├── 06_environments.ipynb            # Gym API demo, scenario comparison
 │   ├── 07_weather.ipynb                 # Weather data: 6 markets, real vs. synthetic
 │   ├── 08_energy_markets.ipynb          # Energy load: 6 markets, LDC, diurnal patterns
@@ -1167,7 +1154,6 @@ C2G-Macro/
 │   ├── test_thermal.py                  # 32 tests
 │   ├── test_electrical.py               # 27 tests
 │   ├── test_macro_grid.py               # 30 tests
-│   ├── test_renewable.py                # 25 tests
 │   ├── test_weather.py                  # 23 tests
 │   ├── test_gym_api.py                  # 72 tests (API compliance both envs)
 │   ├── test_baselines.py                # 18 tests
@@ -1237,25 +1223,19 @@ uv run python baselines/train_ppo.py --multirun \
 uv run python baselines/train_hierarchical.py
 
 # Safety-shielded PPO (provable constraint satisfaction)
-uv run python baselines/train_shielded_ppo.py scenario=default
+uv run python baselines/safety/train_shielded_ppo.py scenario=default
 
 # Constrained RL — PPO-Lagrangian
-uv run python baselines/train_ppo_lagrangian.py scenario=default
+uv run python baselines/safety/train_ppo_lagrangian.py scenario=default
 
 # CPO — Constrained Policy Optimization
-uv run python baselines/train_cpo.py scenario=default
+uv run python baselines/safety/train_cpo.py scenario=default
 
 # CBF-shielded PPO (QP-based action projection)
-uv run python baselines/train_cbf_ppo.py scenario=default
+uv run python baselines/safety/train_cbf_ppo.py scenario=default
 
 # Full HA-C2G neuro-symbolic 3-layer architecture
-uv run python baselines/train_ha_c2g.py scenario=default
-
-# CMA-ES gradient-free policy search
-uv run python baselines/train_cmaes.py scenario=default
-
-# PSO gradient-free policy search
-uv run python baselines/train_pso.py scenario=default
+uv run python baselines/safety/train_ha_c2g.py scenario=default
 ```
 
 ### Run the full benchmark sweep
@@ -1283,16 +1263,14 @@ The sweep runs in 25 phases:
 | 6 | 12 | HRL sequential training (300k + 100k) + evaluation |
 | 7 | 36 | Bang-Bang, PID, MPC evaluation (no training) |
 | 8 | 24 | MPC-Macro & MILP evaluation (no training) |
-| 9 | 12 | CMA-ES training (200 gens) + evaluation |
-| 10 | 12 | PSO training (200 gens) + evaluation |
-| 11 | 12 | PPO-Lagrangian training (300k) + evaluation |
-| 12 | 12 | CBF-PPO training (300k) + evaluation |
-| 13 | 12 | HJ-PPO training (300k) + evaluation |
-| 14 | 12 | MPC-SF-PPO training (300k) + evaluation |
-| 15 | 12 | CPO training (300k) + evaluation |
-| 16 | 12 | Shield-Reward-Shaping training (300k) + evaluation |
-| 17 | 12 | HA-C2G neuro-symbolic training (300k) + evaluation |
-| 18 | 12 | CBM-Only ablation training (300k) |
+| 9 | 12 | PPO-Lagrangian training (300k) + evaluation |
+| 10 | 12 | CBF-PPO training (300k) + evaluation |
+| 11 | 12 | HJ-PPO training (300k) + evaluation |
+| 12 | 12 | MPC-SF-PPO training (300k) + evaluation |
+| 13 | 12 | CPO training (300k) + evaluation |
+| 14 | 12 | Shield-Reward-Shaping training (300k) + evaluation |
+| 15 | 12 | HA-C2G neuro-symbolic training (300k) + evaluation |
+| 16 | 12 | CBM-Only ablation training (300k) |
 | 19 | 12 | CBM+Gate ablation training (300k) |
 | 20 | 12 | CBM+Shield ablation training (300k) |
 | 21 | 1 | HA Benchmark evaluation (11 metrics, 5 episodes) |
@@ -1479,7 +1457,7 @@ C2G-Bench provides a comprehensive **3-tier high-assurance (HA) safety framework
 
 | Method | Shield | Permissiveness | Cost | File |
 |--------|--------|---------------|------|------|
-| **Simplex** [Sha 2001] | O(1) analytic worst-case bounds | Conservative | Negligible | `baselines/safety_shield.py` |
+| **Simplex** [Sha 2001] | O(1) analytic worst-case bounds | Conservative | Negligible | `baselines/safety/safety_shield.py` |
 | **CBF** [Ames 2019] | QP projection into barrier-safe set | Moderate | Low | `baselines/safety/cbf_shield.py` |
 | **HJ Reachability** | Offline BRS + runtime override | Moderate | Offline high, runtime low | `baselines/safety/hj_shield.py` |
 | **MPC Safety Filter** | Receding-horizon constrained NLP | Most permissive | Highest online | `baselines/safety/mpc_safety_filter.py` |
@@ -1488,16 +1466,16 @@ C2G-Bench provides a comprehensive **3-tier high-assurance (HA) safety framework
 
 ```python
 # 1. Standalone filter — works with ANY agent
-from baselines.safety_shield import SafetyShield
+from baselines.safety.safety_shield import SafetyShield
 shield = SafetyShield()
 safe_action, was_modified, info = shield.filter(raw_action, obs)
 
 # 2. Gymnasium wrapper — agent trains inside safe manifold
-from baselines.safety_shield import ShieldedEnv
+from baselines.safety.safety_shield import ShieldedEnv
 env = ShieldedEnv(C2GFastEnv(scenario="default"))
 
 # 3. SB3-compatible agent wrapper — for evaluation
-from baselines.safety_shield import ShieldedAgent
+from baselines.safety.safety_shield import ShieldedAgent
 safe_agent = ShieldedAgent(trained_agent, env)
 ```
 
@@ -1505,42 +1483,42 @@ safe_agent = ShieldedAgent(trained_agent, env)
 
 ```bash
 # Simplex-shielded PPO
-uv run python baselines/train_shielded_ppo.py scenario=default experiment.seed=42
+uv run python baselines/safety/train_shielded_ppo.py scenario=default experiment.seed=42
 
 # CBF-shielded PPO (QP-based, more permissive than Simplex)
-uv run python baselines/train_cbf_ppo.py scenario=default
+uv run python baselines/safety/train_cbf_ppo.py scenario=default
 
 # HJ reachability-shielded PPO (offline BRS computation)
-uv run python baselines/train_hj_ppo.py scenario=default
+uv run python baselines/safety/train_hj_ppo.py scenario=default
 
 # MPC safety filter PPO (receding-horizon, most permissive)
-uv run python baselines/train_mpcsf_ppo.py scenario=default
+uv run python baselines/safety/train_mpcsf_ppo.py scenario=default
 ```
 
 ### Tier 2 — Constrained RL (soft constraint satisfaction during training)
 
 | Method | Mechanism | File |
 |--------|-----------|------|
-| **PPO-Lagrangian** | Adaptive Lagrange multipliers for 3 cost types | `baselines/train_ppo_lagrangian.py` |
-| **CPO** [Achiam 2017] | Trust-region with conjugate gradient + line search | `baselines/train_cpo.py` |
-| **Shield Reward Shaping** | Fixed quadratic distance-to-boundary penalties | `baselines/train_shield_reward_shaping.py` |
+| **PPO-Lagrangian** | Adaptive Lagrange multipliers for 3 cost types | `baselines/safety/train_ppo_lagrangian.py` |
+| **CPO** [Achiam 2017] | Trust-region with conjugate gradient + line search | `baselines/safety/train_cpo.py` |
+| **Shield Reward Shaping** | Fixed quadratic distance-to-boundary penalties | `baselines/safety/train_shield_reward_shaping.py` |
 
 ### Tier 3 — Neuro-Symbolic HA-C2G Architecture
 
 The full **HA-C2G** pipeline is a 3-layer neuro-symbolic architecture:
 
 1. **Layer 1 — Concept Bottleneck Model** (`baselines/safety/concept_bottleneck.py`): Maps raw 17-D obs → ~10 interpretable safety concepts (thermal margins, SOC health, etc.)
-2. **Layer 2 — Safe Projection Gate** (`baselines/safety/safe_projection.py`): Concept-conditioned differentiable gate that attenuates actions based on safety concepts
+2. **Layer 2 — Safe Projection Gate** (`baselines/safety/safe_projection.py`): Concept-guided differentiable projection that blends policy actions toward safe priors based on learned pass-through gates; applied consistently during training and evaluation for `ha_c2g` and `cbm_gate`
 3. **Layer 3 — Physics Rule Shield**: In-the-loop Simplex shield with shield-penalty reward
 
 **Ablation studies** isolate each layer's contribution:
 
 | Variant | CBM | Gate | Shield | File |
 |---------|:---:|:----:|:------:|------|
-| **HA-C2G (full)** | ✅ | ✅ | ✅ | `baselines/train_ha_c2g.py` |
-| CBM-Only | ✅ | ❌ | ❌ | `baselines/train_cbm_only.py` |
-| CBM+Gate | ✅ | ✅ | ❌ | `baselines/train_cbm_gate.py` |
-| CBM+Shield | ✅ | ❌ | ✅ | `baselines/train_cbm_shield.py` |
+| **HA-C2G (full)** | ✅ | ✅ | ✅ | `baselines/safety/train_ha_c2g.py` |
+| CBM-Only | ✅ | ❌ | ❌ | `baselines/safety/train_cbm_only.py` |
+| CBM+Gate | ✅ | ✅ | ❌ | `baselines/safety/train_cbm_gate.py` |
+| CBM+Shield | ✅ | ❌ | ✅ | `baselines/safety/train_cbm_shield.py` |
 
 **Proof trees** (`baselines/safety/proof_tree.py`) generate per-timestep hierarchical audit logs documenting which safety rules passed/failed and the sensor readings grounding each decision.
 
@@ -1682,21 +1660,6 @@ All figures are generated by the notebooks in `notebooks/` and can be reproduced
 
 ---
 
-### Renewable Generation (`05_renewable.ipynb`)
-
-<p align="center">
-  <img src="notebooks/fig_ren_timeseries.png"     width="49%" alt="Renewable generation time-series: wind and solar at 5-min resolution"/>
-  <img src="notebooks/fig_ren_cf.png"             width="49%" alt="Capacity factor distribution: wind vs. solar by season"/>
-</p>
-<p align="center">
-  <img src="notebooks/fig_ren_wind_curve.png"     width="49%" alt="IEC wind power curve: cut-in, rated, cut-out"/>
-  <img src="notebooks/fig_ren_solar_diurnal.png"  width="49%" alt="Solar PV diurnal profile by season and market"/>
-</p>
-
-**Wind + solar generation time-series** (100 MW wind + 75 MW solar PV); **capacity factor distributions** by season; **IEC wind power curve** (cut-in 3 m/s, rated 12 m/s, cut-out 25 m/s); **solar diurnal profiles** across markets and seasons.
-
----
-
 ### Environment API & Rollouts (`06_environments.ipynb`)
 
 <p align="center">
@@ -1749,11 +1712,10 @@ All figures are generated by the notebooks in `notebooks/` and can be reproduced
   <img src="notebooks/fig_energy_macrogrid.png"     width="49%" alt="Macro-grid load stress indicator calibration"/>
 </p>
 <p align="center">
-  <img src="notebooks/fig_energy_renewable.png"     width="49%" alt="Renewable penetration vs. grid load by market"/>
   <img src="notebooks/fig_energy_weather_joint.png" width="49%" alt="Joint weather-energy distribution: COP vs. LMP"/>
 </p>
 
-**Annual grid load** (NYISO 11-zone, PJM DOM, CAISO PG&E, ERCOT North, ENTSO-E DE, AEMO NSW); **diurnal patterns**; **load duration curves + LMP distribution**; **grid stress indicator calibration** used by `macro_grid.py`; **renewable penetration** vs. load; **joint weather–energy distribution** (ambient temperature vs. LMP — key for thermal-economic co-optimisation).
+**Annual grid load** (NYISO 11-zone, PJM DOM, CAISO PG&E, ERCOT North, ENTSO-E DE, AEMO NSW); **diurnal patterns**; **load duration curves + LMP distribution**; **grid stress indicator calibration** used by `macro_grid.py`; **joint weather–energy distribution** (ambient temperature vs. LMP — key for thermal-economic co-optimisation).
 
 ---
 
