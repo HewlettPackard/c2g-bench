@@ -53,20 +53,14 @@ import numpy as np
 from numpy.typing import NDArray
 import gymnasium as gym
 
+from c2g_env.obs_indices import Fast as _F
 
-# ─── Physical constants ───────────────────────────────────────────
+
+# ─── Physical constants ───────────────────────────────────────
 _T_SAFE     = 35.0
 _T_MIN      = 15.0
 _SOC_MIN    = 0.10
 _SOC_MAX    = 0.95
-
-# Observation indices
-_I_TEMP_A   = 0
-_I_TEMP_B   = 1
-_I_SOC      = 2
-_I_T_AMB    = 13
-_I_FREQ_DEV = 14
-_I_VPCC     = 15
 
 # Grid parameters for offline computation
 _N_GRID     = 100    # grid points per dimension
@@ -326,9 +320,9 @@ class HJShield:
         reasons = []
 
         # Decode observation
-        T_A = float(obs[_I_TEMP_A]) * self.T_safe
-        T_B = float(obs[_I_TEMP_B]) * self.T_safe
-        soc = float(obs[_I_SOC])
+        T_A = float(obs[_F.TEMP_A]) * self.T_safe
+        T_B = float(obs[_F.TEMP_B]) * self.T_safe
+        soc = float(obs[_F.SOC])
 
         # ── Thermal subsystem ────────────────────────────────────
         v_th_A, u_thr_A, u_pump_A = self._lookup_thermal(T_A)

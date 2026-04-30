@@ -48,6 +48,8 @@ from typing import Any, Optional
 import numpy as np
 from numpy.typing import NDArray
 
+from c2g_env.obs_indices import Fast as _F
+
 
 class RuleStatus(Enum):
     PASS = "PASS"
@@ -122,17 +124,11 @@ class ProofNode:
         return lines
 
 
-# ─── C2G observation indices ──────────────────────────────────────
+# ─── C2G observation indices ──────────────────────────────────
 _T_SAFE     = 35.0
 _T_WARN     = 33.0
 _SOC_MIN    = 0.10
 _SOC_MAX    = 0.95
-
-_I_TEMP_A   = 0
-_I_TEMP_B   = 1
-_I_SOC      = 2
-_I_FREQ_DEV = 14
-_I_VPCC     = 15
 
 
 class ProofTree:
@@ -175,11 +171,11 @@ class ProofTree:
             Info dict from the safety shield's filter() call.
         """
         # Decode physical values
-        T_A = float(obs[_I_TEMP_A]) * _T_SAFE
-        T_B = float(obs[_I_TEMP_B]) * _T_SAFE
-        soc = float(obs[_I_SOC])
-        freq_dev = float(obs[_I_FREQ_DEV]) * 0.5
-        v_pcc = float(obs[_I_VPCC])
+        T_A = float(obs[_F.TEMP_A]) * _T_SAFE
+        T_B = float(obs[_F.TEMP_B]) * _T_SAFE
+        soc = float(obs[_F.SOC])
+        freq_dev = float(obs[_F.FREQ_DEV]) * 0.5
+        v_pcc = float(obs[_F.VPCC])
 
         was_modified = not np.allclose(raw_action, safe_action, atol=1e-4)
 

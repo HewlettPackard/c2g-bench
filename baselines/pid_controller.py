@@ -38,12 +38,7 @@ from __future__ import annotations
 import numpy as np
 from numpy.typing import NDArray
 
-# Observation indices
-_I_TEMP_A = 0
-_I_TEMP_B = 1
-_I_SOC    = 2
-_I_REGD   = 6
-_I_COMMITTED = 17
+from c2g_env.obs_indices import Fast as _F
 
 # Normalisation constant
 _T_SAFE = 35.0
@@ -154,11 +149,11 @@ class PIDController:
         return (actions[0] if single else actions), None
 
     def _action_for(self, obs: NDArray[np.float32]) -> NDArray[np.float32]:
-        temp_A_n = float(obs[_I_TEMP_A])
-        temp_B_n = float(obs[_I_TEMP_B])
-        soc      = float(obs[_I_SOC])
-        regd     = float(obs[_I_REGD])
-        committed = float(obs[_I_COMMITTED]) if len(obs) > _I_COMMITTED else 0.1
+        temp_A_n = float(obs[_F.TEMP_A])
+        temp_B_n = float(obs[_F.TEMP_B])
+        soc      = float(obs[_F.SOC])
+        regd     = float(obs[_F.REGD])
+        committed = float(obs[_F.COMMITTED]) if len(obs) > _F.COMMITTED else 0.1
 
         # ── BESS: proportional response scaled by commitment ─────────
         ideal_bess = self.bess_gain * committed * regd

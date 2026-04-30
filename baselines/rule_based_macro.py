@@ -37,15 +37,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 
-# Observation indices
-_I_SOC       = 2
-_I_LMP       = 6
-_I_LOAD      = 7
-_I_HEADROOM_A = 10
-_I_HEADROOM_B = 11
-_I_FREQ_DEV  = 14
-_I_VPCC      = 15
-_I_RMCP      = 17
+from c2g_env.obs_indices import Macro as _M
 
 
 class RuleBasedMacroController:
@@ -71,12 +63,12 @@ class RuleBasedMacroController:
         return (actions[0] if single else actions), None
 
     def _action_for(self, obs: NDArray[np.float32]) -> NDArray[np.float32]:
-        load_norm = float(obs[_I_LOAD])
-        hroom_A   = float(obs[_I_HEADROOM_A])
-        hroom_B   = float(obs[_I_HEADROOM_B])
-        freq_dev  = float(obs[_I_FREQ_DEV])
-        v_pcc     = float(obs[_I_VPCC])
-        rmcp_norm = float(obs[_I_RMCP]) if len(obs) > _I_RMCP else 0.25
+        load_norm = float(obs[_M.GRID_LOAD])
+        hroom_A   = float(obs[_M.HEADROOM_A])
+        hroom_B   = float(obs[_M.HEADROOM_B])
+        freq_dev  = float(obs[_M.FREQ_DEV])
+        v_pcc     = float(obs[_M.VPCC])
+        rmcp_norm = float(obs[_M.RMCP]) if len(obs) > _M.RMCP else 0.25
 
         # ── Bid sizing (proportional to grid load) ────────────────
         if load_norm > 0.7:

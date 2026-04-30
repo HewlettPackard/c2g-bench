@@ -75,6 +75,8 @@ import numpy as np
 from numpy.typing import NDArray
 import gymnasium as gym
 
+from c2g_env.obs_indices import Fast as _F
+
 
 # ─── Safety limit constants (from physics models / config.yaml) ───────────
 _T_SAFE     = 35.0      # °C — Silicon thermal limit (C1, C2)
@@ -85,14 +87,6 @@ _SOC_MAX    = 0.95      # BESS maximum SOC (C3)
 _SOC_GUARD  = 0.03      # Extra SOC margin for shield
 _FREQ_MAX   = 0.4       # Hz — Shield activates before 0.5 Hz UFLS (C4)
 _V_MIN      = 0.92      # pu — Shield activates before 0.90 relay (C5)
-
-# Observation indices (C2GFastEnv, 16-D)
-_I_TEMP_A   = 0
-_I_TEMP_B   = 1
-_I_SOC      = 2
-_I_REGD     = 6
-_I_FREQ_DEV = 14
-_I_VPCC     = 15
 
 
 @dataclass
@@ -202,11 +196,11 @@ class SafetyShield:
 
         # ── Read state from observation ───────────────────────────────
         # obs is normalised: temp_A_norm = T_A / T_safe
-        temp_A = float(obs[_I_TEMP_A]) * self.T_safe
-        temp_B = float(obs[_I_TEMP_B]) * self.T_safe
-        soc    = float(obs[_I_SOC])
-        freq_dev = float(obs[_I_FREQ_DEV]) * 0.5   # freq_dev_norm × 0.5 → Hz
-        v_pcc  = float(obs[_I_VPCC])
+        temp_A = float(obs[_F.TEMP_A]) * self.T_safe
+        temp_B = float(obs[_F.TEMP_B]) * self.T_safe
+        soc    = float(obs[_F.SOC])
+        freq_dev = float(obs[_F.FREQ_DEV]) * 0.5   # freq_dev_norm × 0.5 → Hz
+        v_pcc  = float(obs[_F.VPCC])
 
         # ── C1/C2: Thermal protection ────────────────────────────────
         # If approaching thermal limit, force: max cooling, reduce batch

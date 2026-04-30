@@ -45,6 +45,8 @@ try:
 except ImportError:
     scipy_minimize = None
 
+from c2g_env.obs_indices import Fast as _F
+
 
 # ─── Physical constants ───────────────────────────────────────────
 _T_SAFE     = 35.0
@@ -65,16 +67,6 @@ _P_PUMP_MAX = 5_000.0
 _P_HVAC_MAX = 8_000.0
 _E_BESS_CAP = 150_000.0
 _P_BESS_MAX = 50_000.0
-
-# Obs indices
-_I_TEMP_A   = 0
-_I_TEMP_B   = 1
-_I_SOC      = 2
-_I_P_BASE   = 3
-_I_P_FLEX   = 4
-_I_T_AMB    = 13
-_I_FREQ_DEV = 14
-_I_VPCC     = 15
 
 
 @dataclass
@@ -147,14 +139,14 @@ class MPCSafetyFilter:
 
     def _decode_obs(self, obs: NDArray) -> dict:
         return {
-            "T_A":    float(obs[_I_TEMP_A]) * self.T_safe,
-            "T_B":    float(obs[_I_TEMP_B]) * self.T_safe,
-            "SOC":    float(obs[_I_SOC]),
-            "p_base": float(obs[_I_P_BASE]) * 250_000.0,
-            "p_flex": float(obs[_I_P_FLEX]) * 250_000.0,
-            "T_amb":  float(obs[_I_T_AMB]) * 50.0,
-            "freq_dev": float(obs[_I_FREQ_DEV]) * 0.5,
-            "v_pcc":  float(obs[_I_VPCC]),
+            "T_A":    float(obs[_F.TEMP_A]) * self.T_safe,
+            "T_B":    float(obs[_F.TEMP_B]) * self.T_safe,
+            "SOC":    float(obs[_F.SOC]),
+            "p_base": float(obs[_F.P_BASE]) * 250_000.0,
+            "p_flex": float(obs[_F.P_FLEX]) * 250_000.0,
+            "T_amb":  float(obs[_F.T_AMB]) * 50.0,
+            "freq_dev": float(obs[_F.FREQ_DEV]) * 0.5,
+            "v_pcc":  float(obs[_F.VPCC]),
         }
 
     def _predict_state(self, s: dict, u: NDArray) -> dict:

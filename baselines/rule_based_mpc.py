@@ -61,13 +61,7 @@ _REGD_THRESH   = 0.10           # minimum regd_signal magnitude to act on
 _BESS_GAIN     = 6.0            # committed_mw_max / P_MAX_MW = 30/5
 _DEFAULT_HVAC  = 0.7            # nominal HVAC (matches MacroEnv default)
 
-# Observation dimension indices
-_I_TEMP_A   = 0
-_I_TEMP_B   = 1
-_I_SOC      = 2
-_I_REGD     = 6
-_I_IS_SPIKE = 9
-_I_COMMITTED = 17
+from c2g_env.obs_indices import Fast as _F
 
 
 class RuleBasedController:
@@ -130,12 +124,12 @@ class RuleBasedController:
     # ------------------------------------------------------------------
 
     def _action_for(self, obs: NDArray[np.float32]) -> NDArray[np.float32]:
-        temp_A_n = float(obs[_I_TEMP_A])
-        temp_B_n = float(obs[_I_TEMP_B])
-        soc      = float(obs[_I_SOC])
-        regd     = float(obs[_I_REGD])
-        is_spike = float(obs[_I_IS_SPIKE]) > 0.5
-        committed = float(obs[_I_COMMITTED]) if len(obs) > _I_COMMITTED else 0.1
+        temp_A_n = float(obs[_F.TEMP_A])
+        temp_B_n = float(obs[_F.TEMP_B])
+        soc      = float(obs[_F.SOC])
+        regd     = float(obs[_F.REGD])
+        is_spike = float(obs[_F.IS_SPIKE]) > 0.5
+        committed = float(obs[_F.COMMITTED]) if len(obs) > _F.COMMITTED else 0.1
 
         # ── Defaults ──────────────────────────────────────────────────
         throttle      = 1.0
