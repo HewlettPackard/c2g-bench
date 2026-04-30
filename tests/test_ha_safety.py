@@ -489,7 +489,7 @@ class TestCrossShieldConsistency:
     @pytest.fixture(params=["simplex", "cbf", "hj", "mpc"])
     def shield(self, request):
         if request.param == "simplex":
-            from baselines.safety_shield import SafetyShield
+            from baselines.safety.safety_shield import SafetyShield
             return SafetyShield()
         elif request.param == "cbf":
             return CBFShield()
@@ -648,7 +648,7 @@ class TestGateBehavioral:
         if not hasattr(sys.modules["hydra.core.hydra_config"], "HydraConfig"):
             sys.modules["hydra.core.hydra_config"].HydraConfig = type("HydraConfig", (), {})
 
-        from baselines.train_ha_c2g import HAC2GShieldWrapper
+        from baselines.safety.train_ha_c2g import HAC2GShieldWrapper
 
         # Build a tiny 4-action dummy env with 17-D obs
         base_env = gym.make("MountainCarContinuous-v0")

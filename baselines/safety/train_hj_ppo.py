@@ -1,13 +1,13 @@
 """
-baselines/train_hj_ppo.py  —  PPO with Hamilton-Jacobi Reachability Shield
+baselines/safety/train_hj_ppo.py  —  PPO with Hamilton-Jacobi Reachability Shield
 ============================================================================
 Trains PPO inside an HJShieldedEnv: the HJ value function is precomputed
 offline, and at runtime the shield overrides actions near the BRS boundary.
 
 Usage
 -----
-  uv run python baselines/train_hj_ppo.py
-  uv run python baselines/train_hj_ppo.py scenario=scenario_b
+  uv run python baselines/safety/train_hj_ppo.py
+  uv run python baselines/safety/train_hj_ppo.py scenario=scenario_b
 """
 from __future__ import annotations
 from pathlib import Path

@@ -38,8 +38,6 @@ Agents
   ppo          — loads trained_models/ppo_<scenario>_s42/final_model
   sac          — loads trained_models/sac_<scenario>_s42/final_model
   ppo_lag      — loads trained PPO-Lagrangian model
-  cmaes        — loads CMA-ES trained linear policy
-  pso          — loads PSO trained linear policy
   random       — np.random uniform (lower bound)
   random_macro — np.random uniform over macro action space (bid MW + price)
 
@@ -82,7 +80,7 @@ from baselines.safety.safe_projection import compute_layer2_action
 from baselines.safety.cbf_shield import CBFShield, CBFShieldedAgent
 from baselines.safety.hj_shield import HJShield
 from baselines.safety.mpc_safety_filter import MPCSafetyFilter
-from baselines.safety_shield import SafetyShield
+from baselines.safety.safety_shield import SafetyShield
 
 SCENARIOS    = ["default", "scenario_a", "scenario_b", "scenario_c"]
 T_WARN_NORM  = 33.0 / 35.0   # normalised warning threshold
@@ -358,24 +356,6 @@ def load_sb3_agent(algo: str, scenario: str, seed: int, model_dir: str | None):
             obs_normalizer=obs_normalizer,
         )
     return SB3Agent(model, algo_name=algo.lower(), obs_normalizer=obs_normalizer)
-
-
-class EvolutionaryAgent:
-    """Wraps a CMA-ES or PSO linear policy loaded from .npz."""
-    def __init__(self, npz_path: str | Path, algo_name: str):
-        data = np.load(npz_path)
-        self.W = data["W"]
-        self.b = data["b"]
-        self.act_low = data["act_low"]
-        self.act_high = data["act_high"]
-        self.algo_name = algo_name
-
-    def predict(self, obs: np.ndarray, deterministic: bool = True):
-        if obs.ndim == 1:
-            action = np.clip(self.W @ obs + self.b, self.act_low, self.act_high)
-        else:
-            action = np.clip(obs @ self.W.T + self.b, self.act_low, self.act_high)
-        return action.astype(np.float32), None
 
 
 class ShieldedSB3Agent:
@@ -694,14 +674,6 @@ def benchmark(
                 agent = MILPDispatchController()
             elif agent_name == "random":
                 agent = RandomAgent(env_for_space, algo_name=agent_name)
-            elif agent_name in ("cmaes", "pso"):
-                npz_name = f"{agent_name}_policy.npz"
-                npz_dir = Path(model_dir) if model_dir else Path("trained_models") / f"{agent_name}_{scenario}_s{seed_start}"
-                npz_path = npz_dir / npz_name
-                if not npz_path.exists():
-                    print(f"    SKIP: No trained policy at {npz_path}")
-                    continue
-                agent = EvolutionaryAgent(npz_path, algo_name=agent_name)
             # ── High-Assurance shielded agents ─────────────────
             elif agent_name == "simplex_ppo":
                 try:
@@ -863,7 +835,7 @@ if __name__ == "__main__":
         "--agents", nargs="+",
         default=["rule_based", "bang_bang", "pid", "random"],
         help="Agents to evaluate: rule_based rule_macro random_macro bang_bang pid mpc_fast "
-             "mpc_macro milp ppo sac ppo_lag cmaes pso random "
+             "mpc_macro milp ppo sac ppo_lag random "
              "simplex_ppo cbf_ppo hj_ppo mpcsf_ppo cpo reward_shaping ha_c2g "
              "cbm_only cbm_gate cbm_shield",
     )

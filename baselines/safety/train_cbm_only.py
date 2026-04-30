@@ -1,5 +1,5 @@
 """
-baselines/train_cbm_only.py  —  CBM-Only Ablation (Tier 3 Ablation)
+baselines/safety/train_cbm_only.py  —  CBM-Only Ablation (Tier 3 Ablation)
 =====================================================================
 PPO with Concept Bottleneck feature extractor but NO safety gate
 and NO physics shield.  The concept encoder is trained with decaying
@@ -10,8 +10,8 @@ This ablation answers: "Does interpretability alone improve safety?"
 
 Usage
 -----
-  python baselines/train_cbm_only.py algo=cbm_only
-  python baselines/train_cbm_only.py algo=cbm_only scenario=scenario_b
+  python baselines/safety/train_cbm_only.py algo=cbm_only
+  python baselines/safety/train_cbm_only.py algo=cbm_only scenario=scenario_b
 """
 from __future__ import annotations
 

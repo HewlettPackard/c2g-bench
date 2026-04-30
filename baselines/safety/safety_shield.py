@@ -1,5 +1,5 @@
 """
-baselines/safety_shield.py  —  High-Assurance Safety Shield
+baselines/safety/safety_shield.py  —  High-Assurance Safety Shield
 =============================================================
 A runtime safety wrapper that intercepts RL agent actions and projects
 them into a **provably safe** subset of the action space before they
@@ -40,7 +40,7 @@ Researchers may replace this with more permissive shields using:
 
 Usage
 -----
-  from baselines.safety_shield import SafetyShield
+  from baselines.safety.safety_shield import SafetyShield
 
   # Wrap any agent
   agent = PPO.load("my_model")
@@ -53,7 +53,7 @@ Usage
       obs, rew, term, trunc, _ = env.step(safe_action)
 
   # Or use as a Gymnasium wrapper
-  from baselines.safety_shield import ShieldedEnv
+  from baselines.safety.safety_shield import ShieldedEnv
   env = ShieldedEnv(C2GFastEnv(scenario="default"))
   obs, _ = env.reset()
   obs, rew, term, trunc, info = env.step(raw_action)  # auto-filtered

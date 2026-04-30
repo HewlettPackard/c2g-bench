@@ -1062,9 +1062,9 @@ C2G-Macro/
 │
 ├── conf/                                # Hydra configuration tree
 │   ├── config.yaml                      # Top-level defaults (scenario, algo, market, logging)
-│   ├── algo/                            # 19 algo configs: ppo, sac, ppo_macro, cpo, ppo_lagrangian,
+│   ├── algo/                            # 17 algo configs: ppo, sac, ppo_macro, cpo, ppo_lagrangian,
 │   │                                    #   cbf_ppo, hj_ppo, mpcsf_ppo, ha_c2g, cbm_only, cbm_gate,
-│   │                                    #   cbm_shield, cmaes, pso, pid, mpc_fast, mpc_macro, milp,
+│   │                                    #   cbm_shield, pid, mpc_fast, mpc_macro, milp,
 │   │                                    #   shield_reward_shaping
 │   ├── scenario/                        # default, scenario_a, scenario_b, scenario_c
 │   ├── market/                          # nyiso_nyc, pjm_dom, caiso_pgae, ercot_north, entso_de, aemo_nsw
@@ -1104,10 +1104,6 @@ C2G-Macro/
 │   ├── train_cbm_only.py                # Ablation: PPO + Concept Bottleneck only
 │   ├── train_cbm_gate.py                # Ablation: PPO + CBM + safe projection gate
 │   ├── train_cbm_shield.py              # Ablation: PPO + CBM + Simplex shield (no gate)
-│   │
-│   │  # ── Gradient-Free Search ────────────────────────────────────────────
-│   ├── train_cmaes.py                   # CMA-ES linear policy search
-│   ├── train_pso.py                     # PSO linear policy search
 │   │
 │   └── safety/                          # HA safety method implementations
 │       ├── README.md                    # 3-tier HA safety benchmark documentation
@@ -1237,25 +1233,19 @@ uv run python baselines/train_ppo.py --multirun \
 uv run python baselines/train_hierarchical.py
 
 # Safety-shielded PPO (provable constraint satisfaction)
-uv run python baselines/train_shielded_ppo.py scenario=default
+uv run python baselines/safety/train_shielded_ppo.py scenario=default
 
 # Constrained RL — PPO-Lagrangian
-uv run python baselines/train_ppo_lagrangian.py scenario=default
+uv run python baselines/safety/train_ppo_lagrangian.py scenario=default
 
 # CPO — Constrained Policy Optimization
-uv run python baselines/train_cpo.py scenario=default
+uv run python baselines/safety/train_cpo.py scenario=default
 
 # CBF-shielded PPO (QP-based action projection)
-uv run python baselines/train_cbf_ppo.py scenario=default
+uv run python baselines/safety/train_cbf_ppo.py scenario=default
 
 # Full HA-C2G neuro-symbolic 3-layer architecture
-uv run python baselines/train_ha_c2g.py scenario=default
-
-# CMA-ES gradient-free policy search
-uv run python baselines/train_cmaes.py scenario=default
-
-# PSO gradient-free policy search
-uv run python baselines/train_pso.py scenario=default
+uv run python baselines/safety/train_ha_c2g.py scenario=default
 ```
 
 ### Run the full benchmark sweep
@@ -1283,16 +1273,14 @@ The sweep runs in 25 phases:
 | 6 | 12 | HRL sequential training (300k + 100k) + evaluation |
 | 7 | 36 | Bang-Bang, PID, MPC evaluation (no training) |
 | 8 | 24 | MPC-Macro & MILP evaluation (no training) |
-| 9 | 12 | CMA-ES training (200 gens) + evaluation |
-| 10 | 12 | PSO training (200 gens) + evaluation |
-| 11 | 12 | PPO-Lagrangian training (300k) + evaluation |
-| 12 | 12 | CBF-PPO training (300k) + evaluation |
-| 13 | 12 | HJ-PPO training (300k) + evaluation |
-| 14 | 12 | MPC-SF-PPO training (300k) + evaluation |
-| 15 | 12 | CPO training (300k) + evaluation |
-| 16 | 12 | Shield-Reward-Shaping training (300k) + evaluation |
-| 17 | 12 | HA-C2G neuro-symbolic training (300k) + evaluation |
-| 18 | 12 | CBM-Only ablation training (300k) |
+| 9 | 12 | PPO-Lagrangian training (300k) + evaluation |
+| 10 | 12 | CBF-PPO training (300k) + evaluation |
+| 11 | 12 | HJ-PPO training (300k) + evaluation |
+| 12 | 12 | MPC-SF-PPO training (300k) + evaluation |
+| 13 | 12 | CPO training (300k) + evaluation |
+| 14 | 12 | Shield-Reward-Shaping training (300k) + evaluation |
+| 15 | 12 | HA-C2G neuro-symbolic training (300k) + evaluation |
+| 16 | 12 | CBM-Only ablation training (300k) |
 | 19 | 12 | CBM+Gate ablation training (300k) |
 | 20 | 12 | CBM+Shield ablation training (300k) |
 | 21 | 1 | HA Benchmark evaluation (11 metrics, 5 episodes) |
@@ -1479,7 +1467,7 @@ C2G-Bench provides a comprehensive **3-tier high-assurance (HA) safety framework
 
 | Method | Shield | Permissiveness | Cost | File |
 |--------|--------|---------------|------|------|
-| **Simplex** [Sha 2001] | O(1) analytic worst-case bounds | Conservative | Negligible | `baselines/safety_shield.py` |
+| **Simplex** [Sha 2001] | O(1) analytic worst-case bounds | Conservative | Negligible | `baselines/safety/safety_shield.py` |
 | **CBF** [Ames 2019] | QP projection into barrier-safe set | Moderate | Low | `baselines/safety/cbf_shield.py` |
 | **HJ Reachability** | Offline BRS + runtime override | Moderate | Offline high, runtime low | `baselines/safety/hj_shield.py` |
 | **MPC Safety Filter** | Receding-horizon constrained NLP | Most permissive | Highest online | `baselines/safety/mpc_safety_filter.py` |
@@ -1488,16 +1476,16 @@ C2G-Bench provides a comprehensive **3-tier high-assurance (HA) safety framework
 
 ```python
 # 1. Standalone filter — works with ANY agent
-from baselines.safety_shield import SafetyShield
+from baselines.safety.safety_shield import SafetyShield
 shield = SafetyShield()
 safe_action, was_modified, info = shield.filter(raw_action, obs)
 
 # 2. Gymnasium wrapper — agent trains inside safe manifold
-from baselines.safety_shield import ShieldedEnv
+from baselines.safety.safety_shield import ShieldedEnv
 env = ShieldedEnv(C2GFastEnv(scenario="default"))
 
 # 3. SB3-compatible agent wrapper — for evaluation
-from baselines.safety_shield import ShieldedAgent
+from baselines.safety.safety_shield import ShieldedAgent
 safe_agent = ShieldedAgent(trained_agent, env)
 ```
 
@@ -1505,25 +1493,25 @@ safe_agent = ShieldedAgent(trained_agent, env)
 
 ```bash
 # Simplex-shielded PPO
-uv run python baselines/train_shielded_ppo.py scenario=default experiment.seed=42
+uv run python baselines/safety/train_shielded_ppo.py scenario=default experiment.seed=42
 
 # CBF-shielded PPO (QP-based, more permissive than Simplex)
-uv run python baselines/train_cbf_ppo.py scenario=default
+uv run python baselines/safety/train_cbf_ppo.py scenario=default
 
 # HJ reachability-shielded PPO (offline BRS computation)
-uv run python baselines/train_hj_ppo.py scenario=default
+uv run python baselines/safety/train_hj_ppo.py scenario=default
 
 # MPC safety filter PPO (receding-horizon, most permissive)
-uv run python baselines/train_mpcsf_ppo.py scenario=default
+uv run python baselines/safety/train_mpcsf_ppo.py scenario=default
 ```
 
 ### Tier 2 — Constrained RL (soft constraint satisfaction during training)
 
 | Method | Mechanism | File |
 |--------|-----------|------|
-| **PPO-Lagrangian** | Adaptive Lagrange multipliers for 3 cost types | `baselines/train_ppo_lagrangian.py` |
-| **CPO** [Achiam 2017] | Trust-region with conjugate gradient + line search | `baselines/train_cpo.py` |
-| **Shield Reward Shaping** | Fixed quadratic distance-to-boundary penalties | `baselines/train_shield_reward_shaping.py` |
+| **PPO-Lagrangian** | Adaptive Lagrange multipliers for 3 cost types | `baselines/safety/train_ppo_lagrangian.py` |
+| **CPO** [Achiam 2017] | Trust-region with conjugate gradient + line search | `baselines/safety/train_cpo.py` |
+| **Shield Reward Shaping** | Fixed quadratic distance-to-boundary penalties | `baselines/safety/train_shield_reward_shaping.py` |
 
 ### Tier 3 — Neuro-Symbolic HA-C2G Architecture
 
@@ -1537,10 +1525,10 @@ The full **HA-C2G** pipeline is a 3-layer neuro-symbolic architecture:
 
 | Variant | CBM | Gate | Shield | File |
 |---------|:---:|:----:|:------:|------|
-| **HA-C2G (full)** | ✅ | ✅ | ✅ | `baselines/train_ha_c2g.py` |
-| CBM-Only | ✅ | ❌ | ❌ | `baselines/train_cbm_only.py` |
-| CBM+Gate | ✅ | ✅ | ❌ | `baselines/train_cbm_gate.py` |
-| CBM+Shield | ✅ | ❌ | ✅ | `baselines/train_cbm_shield.py` |
+| **HA-C2G (full)** | ✅ | ✅ | ✅ | `baselines/safety/train_ha_c2g.py` |
+| CBM-Only | ✅ | ❌ | ❌ | `baselines/safety/train_cbm_only.py` |
+| CBM+Gate | ✅ | ✅ | ❌ | `baselines/safety/train_cbm_gate.py` |
+| CBM+Shield | ✅ | ❌ | ✅ | `baselines/safety/train_cbm_shield.py` |
 
 **Proof trees** (`baselines/safety/proof_tree.py`) generate per-timestep hierarchical audit logs documenting which safety rules passed/failed and the sensor readings grounding each decision.
 

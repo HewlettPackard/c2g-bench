@@ -1,5 +1,5 @@
 """
-baselines/train_cpo.py  —  Constrained Policy Optimisation (CPO)
+baselines/safety/train_cpo.py  —  Constrained Policy Optimisation (CPO)
 =================================================================
 Implements CPO [Achiam et al., ICML 2017] on top of SB3 PPO.
 
@@ -24,8 +24,8 @@ Constraint costs (same as PPO-Lagrangian):
 
 Usage
 -----
-  uv run python baselines/train_cpo.py algo=cpo
-  uv run python baselines/train_cpo.py algo=cpo scenario=scenario_b
+  uv run python baselines/safety/train_cpo.py algo=cpo
+  uv run python baselines/safety/train_cpo.py algo=cpo scenario=scenario_b
 """
 from __future__ import annotations
 

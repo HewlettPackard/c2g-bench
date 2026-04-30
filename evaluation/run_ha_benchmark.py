@@ -50,7 +50,7 @@ from tqdm import tqdm
 
 from c2g_env import C2GFastEnv
 from baselines.metrics_callback import C2GTransitionLoggerCallback, build_ablation_suffix
-from baselines.safety_shield import SafetyShield
+from baselines.safety.safety_shield import SafetyShield
 from baselines.safety.cbf_shield import CBFShield
 from baselines.safety.hj_shield import HJShield
 from baselines.safety.mpc_safety_filter import MPCSafetyFilter

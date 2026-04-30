@@ -1,16 +1,16 @@
 """
-baselines/train_cbf_ppo.py  —  PPO with CBF Safety Filter
-==========================================================
-Trains PPO inside a CBFShieldedEnv: every action is projected into the
-CBF-safe set via a QP solver before reaching the physics simulator.
+baselines/safety/train_mpcsf_ppo.py  —  PPO with MPC Safety Filter
+==============================================================
+Trains PPO inside an MPCSFShieldedEnv: every action is filtered through
+a receding-horizon constrained optimisation before reaching the simulator.
 
-The CBF filter is more permissive than the Simplex shield because it
-exploits the system dynamics model (barrier function derivatives).
+The MPC-SF is the most permissive online filter (considers future control
+authority) but also the most computationally expensive.
 
 Usage
 -----
-  uv run python baselines/train_cbf_ppo.py
-  uv run python baselines/train_cbf_ppo.py scenario=scenario_b
+  uv run python baselines/safety/train_mpcsf_ppo.py
+  uv run python baselines/safety/train_mpcsf_ppo.py scenario=scenario_b
 """
 from __future__ import annotations
 from pathlib import Path
@@ -27,15 +27,15 @@ from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.vec_env import VecNormalize
 
 from c2g_env import C2GFastEnv
-from baselines.safety.cbf_shield import CBFShield, CBFShieldedEnv
+from baselines.safety.mpc_safety_filter import MPCSafetyFilter, MPCSFShieldedEnv
 from baselines.metrics_callback import C2GMetricsCallback
 
 
-def make_cbf_env_fn(scenario: str, seed: int, margin: float = 0.5):
+def make_mpcsf_env_fn(scenario: str, seed: int, horizon: int, margin: float):
     def _init():
         base_env = C2GFastEnv(scenario=scenario)
-        shield = CBFShield(margin=margin)
-        env = CBFShieldedEnv(base_env, shield=shield)
+        shield = MPCSafetyFilter(horizon=horizon, margin=margin)
+        env = MPCSFShieldedEnv(base_env, shield=shield)
         env.reset(seed=seed)
         return env
     return _init
@@ -46,19 +46,20 @@ def train(cfg: DictConfig) -> None:
     out_dir = Path(HydraConfig.get().runtime.output_dir)
     print(OmegaConf.to_yaml(cfg))
 
-    scenario  = cfg.scenario.env_id
-    seed      = cfg.experiment.seed
-    algo_cfg  = cfg.algo
-    log_cfg   = cfg.logging
+    scenario = cfg.scenario.env_id
+    seed     = cfg.experiment.seed
+    algo_cfg = cfg.algo
+    log_cfg  = cfg.logging
 
-    margin = float(getattr(algo_cfg, "cbf_margin", 0.5))
+    horizon = int(getattr(algo_cfg, "mpcsf_horizon", 5))
+    margin  = float(getattr(algo_cfg, "mpcsf_margin", 0.5))
 
-    print(f"[CBF-PPO] scenario={scenario}  seed={seed}  "
-          f"margin={margin}  timesteps={algo_cfg.timesteps:,}")
+    print(f"[MPC-SF-PPO] scenario={scenario}  seed={seed}  "
+          f"horizon={horizon}  margin={margin}  "
+          f"timesteps={algo_cfg.timesteps:,}")
 
-    # ── Environments (all CBF-shielded) ──────────────────────────
     vec_env = make_vec_env(
-        make_cbf_env_fn(scenario, seed, margin),
+        make_mpcsf_env_fn(scenario, seed, horizon, margin),
         n_envs=algo_cfg.n_envs, seed=seed)
     vec_env = VecNormalize(
         vec_env,
@@ -66,17 +67,15 @@ def train(cfg: DictConfig) -> None:
         clip_obs=algo_cfg.clip_obs, clip_reward=algo_cfg.clip_reward)
 
     eval_env = make_vec_env(
-        make_cbf_env_fn(scenario, seed + 999, margin),
+        make_mpcsf_env_fn(scenario, seed + 999, horizon, margin),
         n_envs=1, seed=seed + 999)
     eval_env = VecNormalize(
         eval_env, norm_obs=True, norm_reward=False,
         clip_obs=algo_cfg.clip_obs, training=False)
 
-    # ── Callbacks ────────────────────────────────────────────────
     checkpoint_cb = CheckpointCallback(
         save_freq=max(algo_cfg.eval_freq, 1),
-        save_path=str(out_dir / "checkpoints"),
-        name_prefix="ckpt")
+        save_path=str(out_dir / "checkpoints"), name_prefix="ckpt")
     eval_cb = EvalCallback(
         eval_env,
         best_model_save_path=str(out_dir / "best_model"),
@@ -89,7 +88,6 @@ def train(cfg: DictConfig) -> None:
         csv_path=out_dir / "episode_metrics.csv" if log_cfg.csv else None,
         verbose=1)
 
-    # ── Model ────────────────────────────────────────────────────
     net_arch = OmegaConf.to_container(algo_cfg.net_arch, resolve=True)
 
     model = PPO(
@@ -108,7 +106,6 @@ def train(cfg: DictConfig) -> None:
         tensorboard_log=str(out_dir / "tensorboard") if log_cfg.tensorboard else None,
         verbose=0, seed=seed)
 
-    # ── Train ────────────────────────────────────────────────────
     model.learn(
         total_timesteps=algo_cfg.timesteps,
         callback=[checkpoint_cb, eval_cb, metrics_cb],
@@ -117,7 +114,7 @@ def train(cfg: DictConfig) -> None:
 
     model.save(str(out_dir / "final_model"))
     vec_env.save(str(out_dir / "vec_normalize.pkl"))
-    print(f"\n[CBF-PPO] Training complete → {out_dir.resolve()}")
+    print(f"\n[MPC-SF-PPO] Training complete → {out_dir.resolve()}")
 
 
 if __name__ == "__main__":

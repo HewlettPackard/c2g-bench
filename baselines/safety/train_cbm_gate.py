@@ -1,5 +1,5 @@
 """
-baselines/train_cbm_gate.py  —  CBM+Gate Ablation (Tier 3 Ablation)
+baselines/safety/train_cbm_gate.py  —  CBM+Gate Ablation (Tier 3 Ablation)
 =====================================================================
 PPO with Concept Bottleneck + actively trained Safe Projection Gate,
 but NO physics shield.  The concept encoder and gate are jointly
@@ -12,8 +12,8 @@ without a hard shield?"
 
 Usage
 -----
-  python baselines/train_cbm_gate.py algo=cbm_gate
-  python baselines/train_cbm_gate.py algo=cbm_gate scenario=scenario_b
+  python baselines/safety/train_cbm_gate.py algo=cbm_gate
+  python baselines/safety/train_cbm_gate.py algo=cbm_gate scenario=scenario_b
 """
 from __future__ import annotations
 
@@ -45,7 +45,7 @@ from baselines.safety.concept_bottleneck import (
 from baselines.safety.safe_projection import SafeProjectionGate
 
 # Re-use the concept+gate supervision callback from HA-C2G
-from baselines.train_ha_c2g import ConceptGateSupervisionCallback, HAC2GShieldWrapper
+from baselines.safety.train_ha_c2g import ConceptGateSupervisionCallback, HAC2GShieldWrapper
 from baselines.metrics_callback import C2GMetricsCallback
 
 log = logging.getLogger(__name__)
