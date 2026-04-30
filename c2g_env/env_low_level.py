@@ -82,7 +82,6 @@ from c2g_env.physics.thermal    import ThermalTwin
 from c2g_env.physics.electrical import DatacenterElectrical
 from c2g_env.physics.bess       import BESSModel
 from c2g_env.physics.macro_grid import MacroGridSignal
-from c2g_env.physics.renewable  import RenewableGen
 from c2g_env.physics.weather    import WeatherLoader
 
 # ---------------------------------------------------------------------------
@@ -186,7 +185,6 @@ class C2GFastEnv(gym.Env):
         self._elec      = None
         self._bess      = None
         self._grid      = None
-        self._renewable = None
         self._weather   = None
 
         # Episode state
@@ -276,7 +274,6 @@ class C2GFastEnv(gym.Env):
             seed=rng_seed,
             market=gcfg.get("grid_market", "nyiso_nyc"),
         )
-        self._renewable = RenewableGen(renewable_dir=gcfg["renewable_dir"])
         self._weather_driven = bool(scfg.get("weather_driven", True))
         _weather_market = scfg.get(
             "weather_market",
