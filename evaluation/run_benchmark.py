@@ -12,8 +12,8 @@ Metrics (per episode)
   thermal_viol_rate   — fraction of ticks with temp > T_warn (33°C)
   throughput_ratio    — mean(p_flex_kw / p_flex_nom_kw) over episode
   bess_degradation    — cumulative cycle ageing fraction * 1e4
-  episode_length      — ticks in episode (< 288 means thermal termination)
-  survival_rate       — fraction of episodes that ran to full 288 ticks
+  episode_length      — ticks in episode (< episode_ticks means thermal termination)
+  survival_rate       — fraction of episodes that ran to full episode_ticks ticks
 
 Usage
 -----
@@ -183,7 +183,9 @@ def _make_inner_controller(
     if name == "bang_bang":
         return BangBangController()
     if name == "rule_based":
-        return RuleBasedController()
+        _committed = float(env._scfg.get("committed_mw_max", 30.0))
+        _bess_pmax = float(getattr(env._bess, "P_MAX_MW", 5.0))
+        return RuleBasedController(committed_mw_max=_committed, bess_p_max_mw=_bess_pmax)
     if name == "mpc_fast":
         return MPCFastController()
     if name == "ppo":
@@ -470,7 +472,7 @@ def run_episode(
     bess_degradation = (bess_final_age - (bess_init_age or 0.0)) * 1e4
 
     n_ticks    = len(rewards)
-    survived   = 1.0 if n_ticks >= 288 else 0.0
+    survived   = 1.0 if n_ticks >= env._episode_ticks else 0.0
 
     return {
         "mean_reward"       : float(np.mean(rewards)),
@@ -657,7 +659,9 @@ def benchmark(
                 inner_action_fn = lambda obs, _act, c=inner_ctrl: c.predict(obs)[0]
 
             if agent_name == "rule_based":
-                agent = RuleBasedController()
+                _committed = float(env_for_space._fast_env._scfg.get("committed_mw_max", 30.0))
+                _bess_pmax = float(getattr(env_for_space._fast_env._bess, "P_MAX_MW", 5.0))
+                agent = RuleBasedController(committed_mw_max=_committed, bess_p_max_mw=_bess_pmax)
             elif macro_part == "rule_macro":
                 agent = RuleBasedMacroController()
             elif macro_part == "random_macro":

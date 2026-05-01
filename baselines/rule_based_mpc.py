@@ -58,7 +58,6 @@ _T_CRITICAL    = 0.98           # 0.5°C below T_safe (obs normalised)
 _SOC_MIN_GUARD = 0.15           # SOC below which we protect BESS
 _SOC_CHARGE    = 0.80           # SOC above which we prefer not to charge further
 _REGD_THRESH   = 0.10           # minimum regd_signal magnitude to act on
-_BESS_GAIN     = 6.0            # committed_mw_max / P_MAX_MW = 30/5
 _DEFAULT_HVAC  = 0.7            # nominal HVAC (matches MacroEnv default)
 
 from c2g_env.obs_indices import Fast as _F
@@ -77,19 +76,23 @@ class RuleBasedController:
         Normalised temperature warning threshold (default: 33/35).
     t_critical_norm : float
         Normalised temperature just below T_safe (default: 0.98).
-    bess_gain : float
-        Proportional gain for grid-signal → BESS dispatch mapping.
+    committed_mw_max : float
+        Maximum regulation capacity for the scenario (MW). Used to derive
+        bess_gain = committed_mw_max / bess_p_max_mw.
+    bess_p_max_mw : float
+        BESS peak power rating for the scenario (MW).
     """
 
     def __init__(
         self,
-        t_warn_norm: float    = _T_WARN_NORM,
+        t_warn_norm: float     = _T_WARN_NORM,
         t_critical_norm: float = _T_CRITICAL,
-        bess_gain: float       = _BESS_GAIN,
+        committed_mw_max: float = 30.0,
+        bess_p_max_mw: float    = 5.0,
     ) -> None:
         self.t_warn_norm     = t_warn_norm
         self.t_critical_norm = t_critical_norm
-        self.bess_gain       = bess_gain
+        self.bess_gain       = committed_mw_max / bess_p_max_mw
 
     def predict(
         self,
