@@ -78,7 +78,6 @@ from baselines.metrics_callback import C2GTransitionLoggerCallback, build_ablati
 from baselines.train_llm_agents import (
     LLMPolicyAgent,
     load_prompt_templates,
-    validate_llm_model_id,
 )
 
 # ── High-Assurance agents ────────────────────────────────────────
@@ -118,9 +117,9 @@ def _make_env(
     return C2GFastEnv(scenario=scenario, **kwargs)
 
 
-def _make_macro_env(scenario: str, **kwargs) -> C2GMacroEnv:
+def _make_macro_env(scenario: str, sub_step_callback=None, **kwargs) -> C2GMacroEnv:
     """Return a C2GMacroEnv for macro-level agent evaluation."""
-    return C2GMacroEnv(scenario=scenario, **kwargs)
+    return C2GMacroEnv(scenario=scenario, sub_step_callback=sub_step_callback, **kwargs)
 
 
 def _parse_fixed_action_args(values: list[str] | None) -> dict[str, float]:
@@ -469,9 +468,61 @@ def run_macro_episode(
     episode_number: int = 0,
     inner_action_fn: Any = None,
     record_transitions: bool = True,
+    inner_algo_name: str | None = None,
 ) -> dict[str, float]:
     """Run one macro-level episode and return metrics dict."""
-    env = _make_macro_env(scenario=scenario, inner_action_fn=inner_action_fn)
+    # sub_step_callback fires after every _fast_env.step() inside C2GMacroEnv
+    # (180 calls per macro tick).  We always collect hardware metrics for combo
+    # agents; the transition logger is only created when record_transitions=True.
+    _HW_RC_KEYS = (
+        "reward_throughput", "reward_tracking", "reward_thermal",
+        "reward_soc", "reward_freq", "reward_volt", "reward_backlog",
+    )
+    hw_step_metrics: list[dict] = []
+    inner_transition_logger = None
+    sub_step_callback = None
+    if inner_action_fn is not None:
+        if record_transitions:
+            inner_transition_logger = C2GTransitionLoggerCallback(
+                output_dir="runs",
+                algorithm_name=inner_algo_name or "inner",
+                scenario_name=scenario,
+                agent_type="hardware",
+                episode_number=episode_number,
+                fixed_action_values=None,
+                verbose=0,
+            )
+        _lg_ref = inner_transition_logger  # capture before closure
+        def sub_step_callback(
+            pre_obs, low_action, next_obs, rew, done, info,
+            _hw=hw_step_metrics, _lg=_lg_ref, _keys=_HW_RC_KEYS,
+        ):
+            _hw.append({
+                "reward":            float(rew),
+                "tracking_err_sq":   float(info.get("tracking_err_kw", 0.0)) ** 2,
+                "thermal_viol":      int(next_obs[0] >= T_WARN_NORM or next_obs[1] >= T_WARN_NORM),
+                "throughput_ratio":  float(info.get("throughput_ratio", 0.0)),
+                "bess_age_frac":     float(info.get("bess_age_frac", 0.0)),
+                "p_pump_mw":         float(info.get("p_pump_mw", 0.0)),
+                "p_hvac_mw":         float(info.get("p_hvac_mw", 0.0)),
+                "flex_reduction_kw": float(info.get("flex_reduction_kw", 0.0)),
+                "bess_actual_kw":    float(info.get("bess_actual_kw", 0.0)),
+            })
+            if _lg is not None:
+                _lg.record_transition(
+                    state=pre_obs,
+                    action=low_action,
+                    observation=next_obs,
+                    reward=float(rew),
+                    done=bool(done),
+                    reward_components={k: info.get(k, 0.0) for k in _keys},
+                )
+
+    env = _make_macro_env(
+        scenario=scenario,
+        inner_action_fn=inner_action_fn,
+        sub_step_callback=sub_step_callback,
+    )
     obs, _ = env.reset(seed=seed)
     algo_for_logging = getattr(agent, "algo_name", (algo_name or "unknown"))
 
@@ -555,10 +606,32 @@ def run_macro_episode(
     finally:
       if transition_logger is not None:
           transition_logger.close()
+      if inner_transition_logger is not None:
+          inner_transition_logger.close()
 
     n_steps = len(rewards)
     macro_ticks_full = env._episode_macro_ticks
     survived = 1.0 if n_steps >= macro_ticks_full else 0.0
+
+    # Hardware-level aggregate metrics for inner controller (empty if no inner_action_fn)
+    inner_agg: dict[str, float] = {}
+    if hw_step_metrics:
+        n_hw = len(hw_step_metrics)
+        bess_ages = [m["bess_age_frac"] for m in hw_step_metrics]
+        inner_agg = {
+            "inner_mean_reward":           float(np.mean([m["reward"] for m in hw_step_metrics])),
+            "inner_total_reward":          float(np.sum([m["reward"] for m in hw_step_metrics])),
+            "inner_tracking_rmse":         float(np.sqrt(np.mean([m["tracking_err_sq"] for m in hw_step_metrics]))),
+            "inner_thermal_viol_rate":     float(np.mean([m["thermal_viol"] for m in hw_step_metrics])),
+            "inner_throughput_ratio":      float(np.mean([m["throughput_ratio"] for m in hw_step_metrics])),
+            "inner_bess_degradation":      (bess_ages[-1] - bess_ages[0]) * 1e4,
+            "inner_episode_length":        float(n_hw),
+            "inner_survived":              survived,  # same episode, same termination
+            "inner_cumul_p_pump_mw":       float(np.sum([m["p_pump_mw"] for m in hw_step_metrics])),
+            "inner_cumul_p_hvac_mw":       float(np.sum([m["p_hvac_mw"] for m in hw_step_metrics])),
+            "inner_cumul_flex_reduction_kw": float(np.sum([m["flex_reduction_kw"] for m in hw_step_metrics])),
+            "inner_cumul_bess_actual_kw":  float(np.sum([m["bess_actual_kw"] for m in hw_step_metrics])),
+        }
 
     return {
         "mean_reward":          float(np.mean(rewards)),
@@ -578,6 +651,7 @@ def run_macro_episode(
         "mean_cool_delta_kw":   float(np.mean(cool_deltas)) if cool_deltas else 0.0,
         "mean_p_pump_mw":       float(np.mean(p_pumps)) if p_pumps else 0.0,
         "mean_p_hvac_mw":       float(np.mean(p_hvacs)) if p_hvacs else 0.0,
+        **inner_agg,
     }
 
 
@@ -589,7 +663,6 @@ def benchmark(
     model_dir   : str | None,
     record_transitions: bool = False,
     fixed_action_values: dict[str, float] | None = None,
-    llm_model_id: str | None = None,
     llm_api_base: str = "http://localhost:8000/v1",
     llm_mode: str = "hardware",
     llm_template_path: str = "conf/chat_templates/run_benchmark.yaml",
@@ -598,9 +671,6 @@ def benchmark(
     llm_enable_thinking: bool = True,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
-
-    if "llm_policy" in set(agents):
-        llm_model_id = validate_llm_model_id(str(llm_model_id or ""))
 
     if llm_mode not in ["hardware", "macro"]:
         raise ValueError(f"Invalid agent mode '{llm_mode}'. Must be 'hardware' or 'macro'.")
@@ -637,11 +707,27 @@ def benchmark(
                 macro_part, inner_part = agent_name.split("+", 1)
                 inner_env = _make_env(scenario=scenario)
                 inner_env.reset(seed=0)
-                inner_ctrl = _make_inner_controller(
-                    inner_part, env=inner_env,
-                    scenario=scenario, seed=seed_start, model_dir=model_dir,
-                )
-                inner_action_fn = lambda obs, _act, c=inner_ctrl: c.predict(obs)[0]
+                if inner_part == "llm_policy":
+                    # LLM hardware agent as inner controller — predict() needs a live
+                    # C2GFastEnv to read bess_p_max_mw / committed_mw_max; pass inner_env.
+                    state_names = [name.removeprefix("s_") for name in STATE_COLUMNS]
+                    llm_inner = LLMPolicyAgent(
+                        mode="hardware",
+                        prompts=prompt_templates,
+                        state_names=state_names,
+                        max_new_tokens=llm_max_new_tokens,
+                        temperature=llm_temperature,
+                        api_base=llm_api_base,
+                        enable_thinking=llm_enable_thinking,
+                    )
+                    inner_action_fn = lambda obs, _act, c=llm_inner, e=inner_env, sc=scenario: \
+                        c.predict(obs, env=e, scenario=sc)[0]
+                else:
+                    inner_ctrl = _make_inner_controller(
+                        inner_part, env=inner_env,
+                        scenario=scenario, seed=seed_start, model_dir=model_dir,
+                    )
+                    inner_action_fn = lambda obs, _act, c=inner_ctrl: c.predict(obs)[0]
 
             if agent_name == "rule_based":
                 agent = RuleBasedController()
@@ -673,7 +759,6 @@ def benchmark(
                 try:
                     state_names = [name.removeprefix("s_") for name in STATE_COLUMNS]
                     agent = LLMPolicyAgent(
-                        model_id=llm_model_id,
                         mode=llm_mode,
                         prompts=prompt_templates,
                         state_names=state_names,
@@ -742,6 +827,7 @@ def benchmark(
                         episode_number=ep,
                         inner_action_fn=inner_action_fn,
                         record_transitions=record_transitions,
+                        inner_algo_name=inner_part if "+" in agent_name else None,
                     )
                 else:
                     m = run_episode(
@@ -772,6 +858,33 @@ def benchmark(
                 **{f"{k}_std": round(v, 4) for k, v in std.items() if k != "survived"},
             }
             rows.append(row)
+
+            # Emit a separate hardware-schema row for the inner controller so
+            # it can be compared directly with standalone hardware agent results.
+            if "+" in agent_name and any(k.startswith("inner_") for k in agg):
+                inner_part_name = agent_name.split("+", 1)[1]
+                inner_row = {
+                    "scenario"              : scenario,
+                    "agent"                 : inner_part_name,
+                    "n_episodes"            : n_episodes,
+                    "wall_time_s"           : round(elapsed, 2),
+                    "mean_reward"           : round(agg.get("inner_mean_reward", 0.0), 4),
+                    "total_reward"          : round(agg.get("inner_total_reward", 0.0), 4),
+                    "tracking_rmse"         : round(agg.get("inner_tracking_rmse", 0.0), 4),
+                    "thermal_viol_rate"     : round(agg.get("inner_thermal_viol_rate", 0.0), 4),
+                    "throughput_ratio"      : round(agg.get("inner_throughput_ratio", 0.0), 4),
+                    "bess_degradation"      : round(agg.get("inner_bess_degradation", 0.0), 4),
+                    "episode_length"        : round(agg.get("inner_episode_length", 0.0), 4),
+                    "survival_rate"         : round(agg.get("survival_rate", 0.0), 4),
+                    "cumul_p_pump_mw"       : round(agg.get("inner_cumul_p_pump_mw", 0.0), 4),
+                    "cumul_p_hvac_mw"       : round(agg.get("inner_cumul_p_hvac_mw", 0.0), 4),
+                    "cumul_flex_reduction_kw": round(agg.get("inner_cumul_flex_reduction_kw", 0.0), 4),
+                    "cumul_bess_actual_kw"  : round(agg.get("inner_cumul_bess_actual_kw", 0.0), 4),
+                    # std columns (tracking_rmse_std etc.) if available
+                    **{f"{k[len('inner_'):]}__std": round(std.get(k, 0.0), 4)
+                       for k in std if k.startswith("inner_") and k != "inner_survived"},
+                }
+                rows.append(inner_row)
             if agent_type == "macro":
                 tqdm.write(
                     f"  {agent_name}/{scenario}  "
@@ -894,11 +1007,6 @@ if __name__ == "__main__":
         help="Optional fixed value for a disabled action, e.g. --fixed-action hvac_effort=0.8",
     )
     parser.add_argument(
-        "--llm-model-id",
-        default="HuggingFaceTB/SmolLM2-360M-Instruct",
-        help="Model name to query on vLLM server (e.g., org/model)",
-    )
-    parser.add_argument(
         "--llm-api-base",
         default="http://localhost:8000/v1",
         help="vLLM server base URL for OpenAI-compatible API",
@@ -958,13 +1066,6 @@ if __name__ == "__main__":
                 if combo not in agents:
                     agents.append(combo)
 
-    llm_model_id = args.llm_model_id
-    if "llm_policy" in set(args.agents):
-        try:
-            llm_model_id = validate_llm_model_id(args.llm_model_id)
-        except (ValueError, ImportError) as exc:
-            parser.error(str(exc))
-
     rows = benchmark(
         agents     = agents,
         scenarios  = args.scenarios,
@@ -973,7 +1074,6 @@ if __name__ == "__main__":
         model_dir  = args.model_dir,
         record_transitions = args.record_transitions,
         fixed_action_values = fixed_action_values,
-        llm_model_id = llm_model_id,
         llm_api_base = args.llm_api_base,
         llm_mode = args.llm_mode,
         llm_template_path = args.llm_template_path,

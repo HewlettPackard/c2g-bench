@@ -120,6 +120,7 @@ class C2GMacroEnv(gym.Env):
         scenario: str = "default",
         config_path: str | Path | None = None,
         inner_action_fn: Callable | None = None,
+        sub_step_callback: Callable | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__()
@@ -144,6 +145,7 @@ class C2GMacroEnv(gym.Env):
         self._dr_rate_usd_mw = float(self._scfg.get("dr_rate_usd_mw", 5.0))
 
         self._inner_action_fn = inner_action_fn
+        self._sub_step_callback = sub_step_callback
 
         committed_max_mw = float(self._scfg["committed_mw_max"])
         self._committed_max_mw = float(committed_max_mw)
@@ -293,6 +295,9 @@ class C2GMacroEnv(gym.Env):
                 ], dtype=np.float32)
 
             obs, rew, term, trunc, info = self._fast_env.step(low_action)
+            if self._sub_step_callback is not None:
+                _pre = sub_obs_list[-1] if sub_obs_list else np.zeros_like(obs)
+                self._sub_step_callback(_pre, low_action, obs, rew, term or trunc, info)
             sub_rewards.append(rew)
             sub_obs_list.append(obs)
             sub_infos.append(info)
