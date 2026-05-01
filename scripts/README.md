@@ -21,6 +21,12 @@ uv run python baselines/train_sac.py algo=sac scenario=default experiment.seed=1
 uv run python baselines/train_lowsac_highrandom.py algo=sac scenario=default experiment.seed=100
 ```
 
+### SAC high-level + Rule low-level
+
+```bash
+uv run python baselines/train_hierarchical_sac.py algo=sac scenario=default experiment.seed=100
+```
+
 ## Evaluation
 
 ### Rule high-level + SAC low-level
