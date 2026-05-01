@@ -799,14 +799,18 @@ def print_results_table(rows: list[dict[str, Any]]) -> None:
     """Print results as a formatted table."""
     if not rows:
         return
-    cols = list(rows[0].keys())
+    # Collect union of all keys to handle mixed hardware/macro schemas
+    seen: dict[str, None] = {}
+    for row in rows:
+        seen.update(dict.fromkeys(row.keys()))
+    cols = list(seen.keys())
     # Compute column widths
     widths = {c: len(c) for c in cols}
     str_rows = []
     for row in rows:
         sr = {}
         for c in cols:
-            v = row[c]
+            v = row.get(c, "")
             sr[c] = f"{v:.4f}" if isinstance(v, float) else str(v)
             widths[c] = max(widths[c], len(sr[c]))
         str_rows.append(sr)
@@ -824,9 +828,14 @@ def save_csv(rows: list[dict[str, Any]], path: Path) -> None:
     if not rows:
         print("No results to save.")
         return
+    # Collect union of all keys to handle mixed hardware/macro schemas
+    seen: dict[str, None] = {}
+    for row in rows:
+        seen.update(dict.fromkeys(row.keys()))
+    fieldnames = list(seen.keys())
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+        writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore", restval="")
         writer.writeheader()
         writer.writerows(rows)
     print(f"\nResults saved -> {path}")

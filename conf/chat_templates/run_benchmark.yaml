@@ -110,10 +110,11 @@ hardware_user_prompt: |
      backlog_regime  = HIGH if backlog_norm + {backlog_increment} > 0.5 else LOW
      soc_regime      = LOW if bess_soc < 0.20, HIGH if bess_soc > 0.80, else NORMAL
      Write one line: "state: thermal=X, tracking=X, backlog=X, soc=X"
-  1. Warm-start baseline: apply thermal table row for T_max to get
-     (throttle_batch_0, pump_speed_A_0, hvac_effort_0); set bess_dispatch_0 = bess_dispatch_base.
-     These are starting points — the search in Step 2 will improve on them.
-  2. Mandatory action search — do NOT skip even if the baseline looks good.
+  1. Apply REASONING WARM-START PRIOR: use T_max={T_max} to look up throttle/pump/hvac from the thermal table.
+     Set bess_dispatch = {bess_dispatch_baseline} (pre-computed; do NOT re-derive).
+     Then apply the three additional heuristics from the system prompt.
+     Write one line: "baseline: throttle=X, pump=X, hvac=X, bess=X"
+  2. Mandatory action search — Are there actions possibly better than the baseline?
 
      Step 2 prelude — pick the criticality order in ONE step using the FIRST matching row below:
        Condition                                                      Order (A1 → A2 → A3 → A4)
@@ -149,25 +150,26 @@ hardware_user_prompt: |
               throttle_batch last to clear backlog and maximize reward.
     Write exactly one line: "criticality order: A1=<name>, A2=<name>, A3=<name>, A4=<name>" — no further reasoning about the order.
 
-     # Baseline tuple (from Step 1): b_t=throttle_batch_0, b_p=pump_speed_A_0, b_h=hvac_effort_0, b_d=bess_dispatch_0
-     # def update_base():  # call once to initialize; call again after each action lock:
-     #   delta_p_actual_kw_base = (1−b_t)×{p_flex_nom_kw} + b_d×{bess_p_max_mw}×1000 − (50×b_h+1.5×max(0.15,b_p)−36.5)×1000
-     #   bess_soc_base′         = bess_soc − b_d×{bess_p_max_mw}×9.54×10⁻⁵
-     # update_base()
+     # Frozen baseline from Step 1 — computed ONCE, never changed during the loop:
+     # b_t0=throttle_batch_0, b_p0=pump_speed_A_0, b_h0=hvac_effort_0, b_d0=bess_dispatch_0
+     # delta_p_actual_kw_base = (1−b_t0)×{p_flex_nom_kw} + b_d0×{bess_p_max_mw}×1000 − (50×b_h0+1.5×max(0.15,b_p0)−36.5)×1000
+     # bess_soc_base′         = bess_soc − b_d0×{bess_p_max_mw}×9.54×10⁻⁵
+     # (Compute these two values here once; do NOT recompute after any action lock.)
 
      remaining = [A1, A2, A3, A4]               # criticality order from prelude
      while remaining is not empty:
        action = remaining.pop(0)
 
        # eval(v, δ): score one candidate value v for the current action.
-       # For the action being evaluated, v replaces the baseline; all others stay at baseline.
+       # Only the current action changes; all others use the FROZEN Step-1 baseline (b_t0/b_p0/b_h0/b_d0).
+       # Previously locked values from this loop are NOT used here — baseline never changes.
        # δ = signed step size (used only for qualitative scaling).
        def eval(v, δ):
-         # Resolve full action tuple — only the current action changes:
-         t = v   if action==throttle_batch  else b_t
-         p = v   if action==pump_speed_A    else b_p
-         h = v   if action==hvac_effort     else b_h
-         d = v   if action==bess_dispatch   else b_d
+         # Resolve full action tuple — only the current action changes; rest stay at frozen baseline:
+         t = v   if action==throttle_batch  else b_t0
+         p = v   if action==pump_speed_A    else b_p0
+         h = v   if action==hvac_effort     else b_h0
+         d = v   if action==bess_dispatch   else b_d0
          # Step 2a — intermediate quantities:
          flex_reduction_kw = (1 − t) × {p_flex_nom_kw}
          bess_actual_kw    = d × {bess_p_max_mw} × 1000
@@ -175,8 +177,8 @@ hardware_user_prompt: |
          delta_p_actual_kw = flex_reduction_kw + bess_actual_kw − cool_delta_kw
          # Step 2b — EXACT computable deltas vs baseline:
          Δr_tracking   = −2.0 × (|{target_kw} − delta_p_actual_kw| − |{target_kw} − delta_p_actual_kw_base|) / ({committed_mw} × 1000)
-         Δr_throughput = +1.0 × (t − b_t)
-         Δr_backlog    = −2.0 × (max(0, backlog_norm + {backlog_increment} − t) − max(0, backlog_norm + {backlog_increment} − b_t))
+         Δr_throughput = +1.0 × (t − b_t0)
+         Δr_backlog    = −2.0 × (max(0, backlog_norm + {backlog_increment} − t) − max(0, backlog_norm + {backlog_increment} − b_t0))
          Δr_comp       = Δr_tracking + Δr_throughput + Δr_backlog
          # Step 2c — APPROXIMATE SOC penalty:
          bess_soc′     = bess_soc − d × {bess_p_max_mw} × 9.54×10⁻⁵
@@ -211,23 +213,18 @@ hardware_user_prompt: |
        best_v = clip(b_action + sign×0.05, bounds) ;  best_r = max(r_plus, r_minus)
 
        # (2) Magnitude sweep:
-       for δ_mag in [0.10, 0.15, 0.20]:
+       for δ_mag in [0.10, 0.15, 0.2]:
          v_cand = clip(b_action + sign × δ_mag, bounds)
          r_cand = eval(v_cand, sign × δ_mag)
          if r_cand <= best_r: break
          best_v = v_cand ;  best_r = r_cand
        done
        # bounds: throttle_batch/pump_speed_A/hvac_effort → [0,1]; bess_dispatch → [−1,1]
-       # b_action = baseline value for the current action (b_t / b_p / b_h / b_d)
+       # b_action = frozen baseline value for the current action (b_t0 / b_p0 / b_h0 / b_d0)
 
        write: "action best_v  Δr_comp=X Δr_soc=X Δr_qual≈X Δr_total≈X  [LOCKED]"
-       # Update baseline to locked value, then refresh intermediates:
-       if   action==throttle_batch: b_t = best_v
-       elif action==pump_speed_A:   b_p = best_v
-       elif action==hvac_effort:    b_h = best_v
-       else:                        b_d = best_v
-       update_base()
-     done   # all 4 actions locked → emit JSON immediately
+       # Record best_v for this action only. Do NOT modify b_t0/b_p0/b_h0/b_d0.
+     done   # all 4 actions locked → emit JSON using the four recorded best_v values
 
   Then output ONLY a valid JSON object — no explanation, no markdown, no extra text.
   Use EXACTLY these four key names (copy them verbatim):
@@ -299,7 +296,7 @@ macro_system_prompt: |
   For reference only (already embedded in commit_norm_0):
     commit_norm: grid_load_norm>0.7→0.80; >0.4→0.50; else→0.20
                  capped if thermal headroom<0.10, freq_dev<−0.3 boosts, v_pcc<0.96 caps
-    bid_price:   clip(40×rmcp_norm, 0, 100); 48×rmcp_norm if reg_need_norm > 2.0
+    bid_price:   clip(40×rmcp_norm, 0, 100)
 
 
 macro_user_prompt: |
@@ -322,8 +319,8 @@ macro_user_prompt: |
      market_regime     = RICH if rmcp_norm > 1.0 else NORMAL; STRESSED if reg_need_norm > 2.0 else OK
      Write one line: "state: headroom=X, market=X/X"
   1. Warm-start baseline: commit_norm_0={commit_norm_0}, bid_price_0={bid_price_0}.
-     These are starting points — the search in Step 2 will improve on them.
-  2. Mandatory grid search — do NOT skip even if the baseline looks good.
+     Write one line: "baseline: commit={commit_norm_0}, price={bid_price_0}"
+  2. Mandatory grid search — Are there actions possibly better than the baseline?
 
      Step 2 prelude — pick an action priority order in ONE step using the FIRST matching rule below:
        • market_regime=RICH or hardware_headroom=TIGHT        → commit_norm, bid_price
@@ -343,6 +340,10 @@ macro_user_prompt: |
                  OR hardware_headroom=TIGHT and market_regime=STRESSED 
      Write exactly one line: "criticality order: A1=<name>, A2=<name>" — no further reasoning about the order.
 
+     # Frozen baseline from Step 1 — computed ONCE, never changed during the loop:
+     # c0 = {commit_norm_0},  p0 = {bid_price_0}
+     # commit_norm_locked = c0   (updated when commit_norm is locked, for use in bid_price quantity_factor)
+
      remaining = [A1, A2]                        # criticality order from prelude
      while remaining is not empty:
        action = remaining.pop(0)
@@ -351,57 +352,55 @@ macro_user_prompt: |
          # eval(c): ALL reward components for one candidate commit_norm value c.
          def eval(c):
            # Step 2a: committed_mw(c) = c × {committed_mw_max}
-           # Step 2b — EXACT churn penalty:
-           Δr_comp = −0.05 × (|c − {commit_norm_prev}| − |{commit_norm_0} − {commit_norm_prev}|)
+           # Step 2b — EXACT churn penalty vs frozen baseline c0:
+           Δr_comp = −0.05 × (|c − {commit_norm_prev}| − |c0 − {commit_norm_prev}|)
            # Qualitative — revenue direction, headroom VETO, and electricity cost:
            # electricity cost: r_elec = −0.5 × mean_lmp × mean_p_facility_norm × hours / 1000
            #   higher c → more tracking demand → higher p_facility_norm
-           #   Δr_elec ≈ −0.5 × lmp_norm × p_facility_norm × 0.025 × (c − commit_norm_0)
+           #   Δr_elec ≈ −0.5 × lmp_norm × p_facility_norm × 0.025 × (c − c0)
            Δr_qual = −99                                                                                              if hardware_headroom=TIGHT and c > 0.6
-                   = +{rmcp_usd} × (c − {commit_norm_0}) × {committed_mw_max} × 2.5e-4
-                     − 0.5 × lmp_norm × p_facility_norm × 0.025 × (c − {commit_norm_0})                             otherwise
+                   = +{rmcp_usd} × (c − c0) × {committed_mw_max} × 2.5e-4
+                     − 0.5 × lmp_norm × p_facility_norm × 0.025 × (c − c0)                                          otherwise
            return Δr_comp + Δr_qual
 
          # (1) Sign detection:
          sign = +1 if (hardware_headroom=AMPLE and rmcp_norm > 0.5 and is_spike=0) else −1
-         best_c = clip(commit_norm_0 + sign×0.05, 0, 1)
+         best_c = clip(c0 + sign×0.05, 0, 1)
          best_r = eval(best_c)
 
          # (2) Magnitude sweep:
-         for δ_mag in [0.10, 0.20, 0.30]:
-           c_cand = clip(commit_norm_0 + sign × δ_mag, 0, 1)
+         for δ_mag in [0.10, 0.15, 0.2]:
+           c_cand = clip(c0 + sign × δ_mag, 0, 1)
            r_cand = eval(c_cand)
            if r_cand <= best_r: break
            best_c = c_cand ;  best_r = r_cand
          done
+         commit_norm_locked = best_c   # forward-pass locked commit_norm for use in bid_price quantity_factor
 
        else:   # bid_price
          # eval(p): ALL reward components for one candidate bid_price value p.
          # Pre-compute quantity factor (grid residual vs bid size):
-         # quantity_factor = min(1.0, reg_need_norm / max(commit_norm_0, 0.01))
+         # quantity_factor = min(1.0, reg_need_norm / max(commit_norm_locked, 0.01))
          #   reg_need_norm > 1 → grid needs more than one facility's max → factor=1 (full acceptance capacity)
-         #   reg_need_norm < commit_norm_0 → grid residual < our bid → factor<1 (partial acceptance)
+         #   reg_need_norm < commit_norm_locked → grid residual < our bid → factor<1 (partial acceptance)
          def eval(p):
            # Step 2b — EXACT acceptance probability:
            Δr_comp = 1 / (1 + exp(−0.30 × ({rmcp_usd}/2 − p)))
-                     × min(1.0, reg_need_norm / max(commit_norm_0, 0.01))
+                     × min(1.0, reg_need_norm / max(commit_norm_locked, 0.01))
                      × {rmcp_usd}
            #         [env: actual_bid = 2p; sigmoid k=0.15 on actual_bid = k=0.30 on p]
-           # Qualitative — market stress adjustment (additive tie-break ±1):
-           Δr_qual = −1   if reg_need_norm < 1 and p > bid_price_0   # penalise overbid in soft market
-                   = +1   if reg_need_norm > 2 and p > bid_price_0   # reward higher bid in stressed market
+           # Qualitative — market stress adjustment vs frozen baseline p0 (additive tie-break ±1):
+           Δr_qual = −1   if reg_need_norm < 1 and p > p0   # penalise overbid in soft market
+                   = +1   if reg_need_norm > 2 and p > p0   # reward higher bid in stressed market
                    = 0    otherwise
            return Δr_comp + Δr_qual
 
          # Enumerate 3 candidates (sign+magnitude collapsed — only 3 points):
-         best_p = argmax over {{bid_price_0−10, bid_price_0, bid_price_0+10}} ∩ [0,100]
+         best_p = argmax over {{p0−10, p0, p0+10}} ∩ [0,100]
                   of eval(p)
        done
 
        write: "action best_v  Δr_comp=X Δr_qual≈X Δr_total≈X  [LOCKED]"
-       # Update baseline to locked value before the next action:
-       if action==commit_norm: commit_norm_0 = best_c   # bid_price eval uses locked commit_norm in quantity_factor
-       else:                   bid_price_0   = best_p   # commit_norm eval uses locked bid_price_0 as churn reference
      done   # both actions locked → emit JSON immediately
 
   Then output ONLY a valid JSON object — no explanation, no markdown, no extra text.
