@@ -1,24 +1,52 @@
 """
-baselines/train_sac.py  —  SAC Training Script (SB3 + Hydra)
-=============================================================
+baselines/train_rule_macro_sac.py  —  SAC Low-Level + Rule-Based Macro
+=======================================================================
+Trains a SAC low-level controller (4-D: throttle, pump, hvac, bess) on
+``C2GFastEnv`` while a frozen ``RuleBasedMacroController`` drives the
+15-minute market bidding decisions that determine ``committed_mw``.
+
+This gives the low-level agent a realistic training distribution: the
+grid commitment varies over time (as the macro controller bids), so the
+agent learns to track *dynamic* regulation signals — not just the fixed
+``dr_baseline_mw`` default.
+
+Architecture
+------------
+  ┌──────────────────────────────────────────────┐
+  │  RuleMacroWrappedEnv  (gymnasium.Wrapper)    │
+  │                                              │
+  │  every 180 steps (15 min):                   │
+  │    ① aggregate sub-obs → macro obs (19-D)    │
+  │    ② RuleBasedMacroController.predict(obs)   │
+  │    ③ grid.step_rmcp() → clear_bid()          │
+  │    ④ env.committed_mw = cleared MW           │
+  │                                              │
+  │  every step (5 s):                           │
+  │    SAC action (4-D) → C2GFastEnv.step()      │
+  └──────────────────────────────────────────────┘
+
 Usage
 -----
-  python baselines/train_sac.py algo=sac
-  python baselines/train_sac.py algo=sac scenario=scenario_a
-  python baselines/train_sac.py algo=sac --multirun \\
+  # Single run with defaults
+  python baselines/train_rule_macro_sac.py algo=sac
+
+  # Override scenario
+  python baselines/train_rule_macro_sac.py algo=sac scenario=scenario_a
+
+  # Sweep
+  python baselines/train_rule_macro_sac.py algo=sac --multirun \\
       scenario=default,scenario_a,scenario_b,scenario_c \\
       experiment.seed=1,2,3
 
-Outputs (managed by Hydra)
---------------------------
+Outputs (Hydra-managed)
+-----------------------
   outputs/<algo>_<scenario>/seed_<N>/<timestamp>/
-      .hydra/           — config snapshot
+      .hydra/               — config snapshot
       episode_metrics.csv
       checkpoints/
       best_model/
       tensorboard/
 """
-
 from __future__ import annotations
 from pathlib import Path
 
@@ -33,16 +61,26 @@ from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback
 from stable_baselines3.common.env_util import make_vec_env
 
 from c2g_env import C2GFastEnv
+from c2g_env.train_envs import RuleMacroWrappedEnv
 from baselines.metrics_callback import C2GMetricsCallback
 
 
+# ======================================================================
+# Env factory
+# ======================================================================
+
 def make_env_fn(scenario: str, seed: int):
     def _init():
-        env = C2GFastEnv(scenario=scenario)
+        fast_env = C2GFastEnv(scenario=scenario)
+        env = RuleMacroWrappedEnv(fast_env)
         env.reset(seed=seed)
         return env
     return _init
 
+
+# ======================================================================
+# Hydra entry-point
+# ======================================================================
 
 @hydra.main(config_path="../conf", config_name="config", version_base="1.3")
 def train(cfg: DictConfig) -> None:
@@ -54,17 +92,17 @@ def train(cfg: DictConfig) -> None:
     algo_cfg = cfg.algo
     log_cfg  = cfg.logging
 
-    print(f"[SAC] scenario={scenario}  seed={seed}  "
+    print(f"[RuleMacro+SAC] scenario={scenario}  seed={seed}  "
           f"timesteps={algo_cfg.timesteps:,}")
 
-    # ── Environments ──────────────────────────────────────────────────────
+    # ── Environments ──────────────────────────────────────────────────
     # SAC is off-policy: single env is fine; no VecNormalize needed
     env = make_env_fn(scenario, seed)()
 
     eval_env = make_vec_env(make_env_fn(scenario, seed + 999),
                             n_envs=1, seed=seed + 999)
 
-    # ── Callbacks ─────────────────────────────────────────────────────────
+    # ── Callbacks ─────────────────────────────────────────────────────
     checkpoint_cb = CheckpointCallback(
         save_freq   = max(algo_cfg.eval_freq, 1),
         save_path   = str(out_dir / "checkpoints"),
@@ -85,7 +123,7 @@ def train(cfg: DictConfig) -> None:
         verbose    = 1,
     )
 
-    # ── Model ─────────────────────────────────────────────────────────────
+    # ── Model ─────────────────────────────────────────────────────────
     net_arch = OmegaConf.to_container(algo_cfg.net_arch, resolve=True)
 
     model = SAC(
@@ -107,7 +145,7 @@ def train(cfg: DictConfig) -> None:
         seed                    = seed,
     )
 
-    # ── Train ─────────────────────────────────────────────────────────────
+    # ── Train ─────────────────────────────────────────────────────────
     model.learn(
         total_timesteps     = algo_cfg.timesteps,
         callback            = [checkpoint_cb, eval_cb, metrics_cb],
@@ -116,7 +154,7 @@ def train(cfg: DictConfig) -> None:
     )
 
     model.save(str(out_dir / "final_model"))
-    print(f"\n[SAC] Training complete → {out_dir.resolve()}")
+    print(f"\n[RuleMacro+SAC] Training complete → {out_dir.resolve()}")
 
 
 if __name__ == "__main__":
