@@ -722,8 +722,8 @@ def benchmark(
                     inner_action_fn = lambda obs, _act, c=inner_ctrl: c.predict(obs)[0]
 
             if agent_name == "rule_based":
-                _committed = float(env_for_space._fast_env._scfg.get("committed_mw_max", 30.0))
-                _bess_pmax = float(getattr(env_for_space._fast_env._bess, "P_MAX_MW", 5.0))
+                _committed = float(env_for_space._scfg.get("committed_mw_max", 30.0))
+                _bess_pmax = float(getattr(env_for_space._bess, "P_MAX_MW", 5.0))
                 agent = RuleBasedController(committed_mw_max=_committed, bess_p_max_mw=_bess_pmax)
             elif macro_part == "rule_macro":
                 agent = RuleBasedMacroController()

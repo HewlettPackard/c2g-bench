@@ -11,22 +11,28 @@ O(1) per step.  It is the lower bound that all RL agents must beat.
 Policy logic (evaluated in priority order)
 ------------------------------------------
 1. **Thermal protection** (highest priority)
-   - If T_A > T_warn_A: set hvac_effort = 1.0, throttle_batch = 0.5
-   - If T_A > T_safe - 0.5°C: set hvac_effort = 1.0, throttle_batch = 0.0
+   - T_max >= T_critical (0.98): max cooling (pump=1, hvac=1), throttle=0
+   - T_max >= T_warn (33/35 ≈ 0.943): ramp cooling/pump up, throttle down proportionally
 
-2. **Grid regulation tracking**
-   - Read regd_signal from obs[6] (positive = grid wants DC to reduce draw)
-   - bess_dispatch = clip(regd_signal / 0.5, -1, 1)   (proportional gain 2×)
-   - If SOC < 0.15: reduce BESS discharge, fall back to DVFS
+2. **Grid regulation via BESS**
+   - bess_gain = committed_mw_max / bess_p_max_mw  (scenario-parameterised)
+   - raw_demand = bess_gain * committed_norm * regd_signal
+   - bess_dispatch = clip(raw_demand, -1, 1)
+   - SOC < 0.15: ramp down discharge;  SOC > 0.80: ramp down charge
 
-3. **DVFS flex reduction** (to augment BESS when needed)
-   - If regd_signal > 0.3 and SOC < 0.20:
-       throttle_batch = max(0.0, 1.0 - regd_signal)
+3. **Multi-lever residual tracking assist**
+   - residual = raw_demand - bess_dispatch
+   - residual > 0.05 (discharge deficit, no spike): shed throttle, reduce pump/hvac
+   - residual < -0.05 (charge deficit): increase pump/hvac
 
 4. **Defaults** (when no rule fires)
    - throttle_batch = 1.0  (run all batch at full speed)
-   - hvac_effort    = 0.6  (moderate cooling, energy-efficient)
+   - pump_speed_A   = 0.7
+   - hvac_effort    = 0.7  (moderate cooling, energy-efficient)
    - bess_dispatch  = 0.0  (idle)
+
+5. **Opportunistic BESS charge**
+   - |regd_signal| < 0.10 and SOC < 0.40: bess_dispatch = -0.3
 
 Observation index map (C2GFastEnv, 12-D)
 -----------------------------------------

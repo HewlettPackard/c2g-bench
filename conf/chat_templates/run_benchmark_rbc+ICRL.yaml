@@ -35,30 +35,21 @@ hardware_system_prompt: |
 
   ── OBJECTIVE PRIORITIES (highest first) ──────────────────────────────────────────────────────────
   1. SAFETY     prevent thermal shutdown (temp ≥ 1.0), voltage fault (v_pcc_pu < 0.90), freq fault (|freq_dev_norm| ≥ 1.0)
-  2. TRACKING   match regd_signal with bess_dispatch (penalty −2.0 × err; dominates on high commitment)
-  3. THROUGHPUT maximize throttle_batch when thermal headroom allows (reward +1.0/unit)
-  4. BACKLOG    reduce backlog_norm (penalty −2.0/unit)
+  2. TRACKING   match regd_signal with bess_dispatch
+  3. THROUGHPUT maximize throttle_batch when thermal headroom allows
+  4. BACKLOG    reduce backlog_norm
 
   ── ACTIONS AVAILABLE (floating point values) ─────────────────────────────────────────────────────
   throttle_batch  [0,1]   Batch workload intensity (controls deferrable batch jobs only).
-    +1.0 reward per unit. Raises heat and power. Maximize when backlog_norm > 0 or is_spike=1.
-    Reduce when temp_A_norm or temp_B_norm > 0.90 to prevent thermal breach.
+    Raises heat and power. Maximize when backlog_norm > 0 or is_spike=1.
+    Reduce when temp_A_norm or temp_B_norm ≥ 0.943 to prevent thermal breach.
 
   pump_speed_A    [0,1]   Liquid-cooling pump speed.
-    Prevents thermal penalty. Ramp toward 1.0 when either temp_A_norm or temp_B_norm > 0.85.
+    Prevents thermal penalty. Ramp toward 1.0 when either temp_A_norm or temp_B_norm ≥ 0.943.
     Combine with hvac_effort for faster cooling; both draw power.
-    DUAL ROLE: cool_delta_kw = (50×h + 1.5×max(0.15,p) − 36.5)×1000 is subtracted from
-    delta_p_actual_kw — so LOWER cooling draw = more negative cool_delta_kw = higher delivery.
-    Raising pump_speed_A above the Step 1 baseline hurts tracking (and raises electricity cost);
-    reducing it below the Step 1 baseline improves tracking delivery and saves electricity cost.
-    Reducing is UNSAFE if T_max ≥ 0.943 (HOT/CRITICAL) — do NOT reduce then.
 
   hvac_effort     [0,1]   HVAC fan effort.
-    Assists pump cooling. Increase when T_amb_norm > 0.6 (hot outdoor air weakens passive cooling).
-    DUAL ROLE: same as pump_speed_A — cool_delta_kw increases with hvac_effort, so raising above
-    the Step 1 baseline hurts tracking and raises electricity cost; reducing below the baseline
-    improves tracking delivery and saves electricity cost.
-    Reducing is UNSAFE if T_max ≥ 0.943 (HOT/CRITICAL) — do NOT reduce then.
+    Assists pump cooling. Increase when thermally stressed.
 
   bess_dispatch   [-1,1]  Battery dispatch (+1=discharge→grid, −1=charge←grid).
     actual_bess_kw (realized dispatch) = bess_dispatch × {bess_p_max_mw} MW × 1000
@@ -76,10 +67,6 @@ hardware_system_prompt: |
                               [e = (T_max − 0.943) / 0.037]
     T_max ≥ 0.98           → throttle_batch=0.0,          pump_speed_A=1.0,           hvac_effort=1.0
   Regulation/BESS rule:
-    # NOTE: RBC (rule_based_mpc.py) hardcodes bess_gain=6.0 (correct only for default scenario,
-    # committed_mw_max=30 MW / P_MAX_MW=5 MW). For scenario_a/c (committed_mw_max=40) the true
-    # gain is 8.0; for scenario_b (committed_mw_max=60) it is 12.0. The formula below uses the
-    # injected committed_mw and bess_p_max_mw values and is therefore scenario-correct throughout.
     [clip(x,lo,hi) clamps x to [lo,hi]; SIGN: +1=discharge→grid, −1=charge←grid]
     if |regd_signal| >= 0.10: bess_dispatch=clip(regd_signal × committed_mw / bess_p_max_mw, −1, 1)
                                [committed_mw and bess_p_max_mw are provided in the user prompt]
@@ -119,7 +106,6 @@ hardware_user_prompt: |
   Apply REASONING WARM-START PRIOR: use T_max={T_max} to look up throttle/pump/hvac from the thermal table.
   Set bess_dispatch = {bess_dispatch_baseline} (pre-computed; do NOT re-derive).
   Then apply the residual tracking assist and opportunistic charge rules from the system prompt.
-  If any action can improve on the warm-start baseline given the priorities above, use that value — otherwise keep the baseline.
   Then output ONLY a valid JSON object — no explanation, no markdown, no extra text.
   Use EXACTLY these four key names (copy them verbatim):
   {{
@@ -159,29 +145,26 @@ macro_system_prompt: |
                                                             high lmp_norm combined with high p_facility_norm = large electricity bill.
   grid_load_norm  Mean system grid demand(Normalized)    [0–1]   overall grid stress; high → LMP likely rising; expect strong regulation demand next interval
   is_spike        Any GenAI spike this interval    {0,1}   1 = a live AI inference burst hit the facility;
-                                                            expect elevated backlog_norm and p_facility_norm next interval;
-                                                            reduce commit_norm pre-emptively if spike=1 and thermal headroom is low.
+                                                            expect elevated backlog_norm and p_facility_norm next interval.
   prev_throttle   Mean throttle_batch              [0–1]   how hard hardware ran batch jobs last interval; low = hardware was stressed or throttled
   prev_pump_speed Mean pump_speed_A                [0–1]   average liquid cooling effort last interval; high = zone A was thermally stressed
   pue_norm        Mean PUE ÷ 2.5                   [0–2]   total power ÷ IT power; un-normalized typical range 1.2–1.6 (pue_norm ≈ 0.48–0.64); high = large cooling overhead
-  T_amb_norm      Mean outdoor temperature ÷ max   [0–1]   high = passive cooling degraded → hardware runs hotter → reduce commit_norm proactively
+  T_amb_norm      Mean outdoor temperature ÷ max   [0–1]   high = passive cooling degraded → data center hardware runs hotter 
   freq_dev_norm   Mean frequency deviation(Normalized)   [-1–1]  penalty |val| > 0.4 (±0.2 Hz dead-band); FATAL |val| ≥ 1.0 (±0.5 Hz)
   v_pcc_pu        Mean PCC voltage per-unit        [pu]    penalty <0.95 or >1.05; FATAL <0.90
   backlog_norm    Mean batch queue backlog(Normalized)   [0–2]   high = hardware overloaded
-  rmcp_norm       RMCP ÷ rmcp_max                  [0–5]   grid's posted clearing price; >1 = unusually high; high = bid aggressively for more revenue
-  reg_need_norm   Regulation need ÷ capacity max   [0–5]   how much regulation the grid still needs; >1 = stressed grid; high = bid full capacity
+  rmcp_norm       RMCP ÷ rmcp_max                  [0–5]   grid's posted clearing price; >1 = unusually high
+  reg_need_norm   Regulation need ÷ capacity max   [0–5]   how much regulation the grid still needs; >1 = stressed grid
 
   ── AVAILABLE ACTIONS (floating point values) ─────────────────────────────────────────────────────
   commit_norm  [0,1]   Fraction of committed_mw_max to bid (committed_mw_max passed above).
     Winning bid → hardware tier tracks this MW for next 180 sub-steps.
     Losing bid  → committed_mw falls to dr_baseline_mw (passed later).
     High commit_norm = more revenue potential but harder to track → lower perf_score.
-    Reduce when: max(temp_A_norm, temp_B_norm) > 0.85, backlog_norm > 1.0, or bess_soc < 0.2.
+    Reduce when: thermal headroom < 0.10, under-frequency (freq_dev_norm < −0.3), or low voltage (v_pcc_pu < 0.96).
 
   bid_price    [0,100] Offer price in USD/MW·h.
-    Acceptance: price_prob = sigmoid(0.30 × (50×rmcp_norm − bid_price))  [50% threshold at bid_price = 50×rmcp_norm]
-    Rule of thumb: bid_price = 40×rmcp_norm when reg_need_norm < 1.0 (~90% acceptance);
-                   bid_price = 48×rmcp_norm when reg_need_norm > 2.0 (~80% acceptance).
+    Lower price increases acceptance probability. Default: bid_price = 40×rmcp_norm.
 
 
   ── REASONING WARM-START PRIOR ─────
@@ -208,7 +191,6 @@ macro_user_prompt: |
     bid_price_0      = {bid_price_0}  (= clip(40×rmcp_norm, 0, 100))
 
   Apply REASONING WARM-START PRIOR: output commit_norm_0={commit_norm_0} and bid_price_0={bid_price_0} (pre-computed; do NOT re-derive).
-  If any action can improve on the warm-start baseline given the priorities above, use that value — otherwise keep the baseline.
   Then output ONLY a valid JSON object — no explanation, no markdown, no extra text.
   Use EXACTLY these two key names (copy them verbatim):
   {{
