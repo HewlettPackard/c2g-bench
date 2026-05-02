@@ -22,9 +22,8 @@ Usage
   python evaluation/run_benchmark.py --agents rule_based ppo --n_episodes 10
   python evaluation/run_benchmark.py --model_dir trained_models/ppo_default_s42
 
-  # Hierarchical: macro agent + low-level controller
-  python evaluation/run_benchmark.py --agents rule_macro --inner-agents random pid bang_bang rule_based
-  python evaluation/run_benchmark.py --agents rule_macro+pid rule_macro+bang_bang  # explicit combos
+  # Hierarchical: macro agent + low-level controller (explicit combo form)
+  python evaluation/run_benchmark.py --agents rule_macro+pid rule_macro+bang_bang rule_macro+rule_based
 
 Agents
 ------
@@ -1027,13 +1026,6 @@ if __name__ == "__main__":
         default=SCENARIOS,
         choices=SCENARIOS,
     )
-    parser.add_argument(
-        "--inner-agents", nargs="+",
-        default=None,
-        help="Low-level controllers to pair with each macro agent "
-             "(e.g. --inner-agents pid bang_bang rule_based). "
-             "Creates hierarchical combos like rule_macro+pid.",
-    )
     parser.add_argument("--n_episodes", type=int, default=5)
     parser.add_argument("--seed",       type=int, default=100)
     parser.add_argument(
@@ -1122,16 +1114,6 @@ if __name__ == "__main__":
     # To also keep the standalone macro agent, pass it explicitly twice or use
     # the explicit combo form: --agents rule_macro rule_macro+pid
     agents = list(args.agents)
-    if args.inner_agents:
-        macro_agents_in_list = [
-            a for a in agents if _infer_agent_type(a) == "macro" and "+" not in a
-        ]
-        for macro_name in macro_agents_in_list:
-            agents.remove(macro_name)
-            for inner_name in args.inner_agents:
-                combo = f"{macro_name}+{inner_name}"
-                if combo not in agents:
-                    agents.append(combo)
 
     rows = benchmark(
         agents     = agents,
