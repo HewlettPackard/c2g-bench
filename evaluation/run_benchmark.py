@@ -199,25 +199,34 @@ def _default_output_path(
     scenarios: list[str],
     fixed_action_values: dict[str, float] | None = None,
 ) -> Path:
-    """Build a deterministic output path when --output is not provided."""
+    """Build a deterministic output path stem when --output is not provided.
+
+    For single-type runs returns e.g. evaluation/results/rule_based_default_hardware_base.csv.
+    For combo runs the stem omits the agent_type suffix — save_results will append _macro
+    and _hardware itself.
+    """
     unique_agents = list(dict.fromkeys(agents))
     unique_scenarios = list(dict.fromkeys(scenarios))
 
     algo_tag = unique_agents[0] if len(unique_agents) == 1 else "multi"
     scenario_tag = unique_scenarios[0] if len(unique_scenarios) == 1 else "multi"
 
+    has_combo = any("+" in a for a in unique_agents)
     agent_types = {_infer_agent_type(name) for name in unique_agents}
-    if not agent_types:
-        agent_type_tag = "unknown"
+    if has_combo:
+        # Combo runs: no agent_type suffix — save_results appends _macro/_hardware
+        agent_type_tag = ""
+    elif not agent_types:
+        agent_type_tag = "_unknown"
     elif len(agent_types) == 1:
-        agent_type_tag = next(iter(agent_types))
+        agent_type_tag = f"_{next(iter(agent_types))}"
     else:
-        agent_type_tag = "mixed"
+        agent_type_tag = "_mixed"
 
     ablation_suffix = build_ablation_suffix(fixed_action_values)
     ablation_tag = ablation_suffix.lstrip("_") if ablation_suffix else "base"
 
-    return Path("evaluation") / "results" / f"{algo_tag}_{scenario_tag}_{agent_type_tag}_{ablation_tag}.csv"
+    return Path("evaluation") / "results" / f"{algo_tag}_{scenario_tag}{agent_type_tag}_{ablation_tag}.csv"
 
 
 # ---------------------------------------------------------------------------
@@ -449,6 +458,7 @@ def run_macro_episode(
     inner_action_fn: Any = None,
     record_transitions: bool = True,
     inner_algo_name: str | None = None,
+    combo_name: str | None = None,
 ) -> dict[str, float]:
     """Run one macro-level episode and return metrics dict."""
     # sub_step_callback fires after every _fast_env.step() inside C2GMacroEnv
@@ -465,7 +475,7 @@ def run_macro_episode(
         if record_transitions:
             inner_transition_logger = C2GTransitionLoggerCallback(
                 output_dir="runs",
-                algorithm_name=inner_algo_name or "inner",
+                algorithm_name=combo_name or inner_algo_name or "inner",
                 scenario_name=scenario,
                 agent_type="hardware",
                 episode_number=episode_number,
@@ -785,6 +795,7 @@ def benchmark(
                         inner_action_fn=inner_action_fn,
                         record_transitions=record_transitions,
                         inner_algo_name=inner_part if "+" in agent_name else None,
+                        combo_name=agent_name if "+" in agent_name else None,
                     )
                 else:
                     m = run_episode(
@@ -911,6 +922,48 @@ def save_csv(rows: list[dict[str, Any]], path: Path) -> None:
     print(f"\nResults saved -> {path}")
 
 
+# Hardware-schema keys present only in hardware/inner rows (not macro rows)
+_HW_SCHEMA_KEYS = {"thermal_viol_rate", "throughput_ratio", "bess_degradation",
+                   "cumul_p_pump_mw", "cumul_p_hvac_mw",
+                   "cumul_flex_reduction_kw", "cumul_bess_actual_kw"}
+
+
+def save_results(
+    rows: list[dict[str, Any]],
+    path: Path,
+    agents: list[str],
+) -> None:
+    """Save results CSV(s).
+
+    For combo-agent runs (any agent contains '+'), splits rows into two files:
+      <stem>_macro.csv   — macro-level rows (agent == macro_part)
+      <stem>_hardware.csv — hardware/inner rows
+    and names them ``<combo>_<scenario>_macro.csv`` etc., matching the runs/
+    folder convention.  For pure single-type runs, writes one file.
+    """
+    has_combo = any("+" in a for a in agents)
+    if not has_combo:
+        save_csv(rows, path)
+        return
+
+    # Split: macro rows lack hardware-schema keys; inner rows have them
+    macro_rows    = [r for r in rows if not any(k in r for k in _HW_SCHEMA_KEYS)]
+    hardware_rows = [r for r in rows if     any(k in r for k in _HW_SCHEMA_KEYS)]
+
+    stem = path.with_suffix("")  # drop .csv
+    # If _default_output_path already appended _macro/_hardware (custom --output),
+    # respect that; otherwise append suffixes.
+    stem_str = str(stem)
+    if stem_str.endswith("_macro") or stem_str.endswith("_hardware"):
+        save_csv(rows, path)
+        return
+
+    if macro_rows:
+        save_csv(macro_rows, Path(f"{stem_str}_macro.csv"))
+    if hardware_rows:
+        save_csv(hardware_rows, Path(f"{stem_str}_hardware.csv"))
+
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -1013,11 +1066,18 @@ if __name__ == "__main__":
     except ValueError as exc:
         parser.error(str(exc))
 
-    # Expand --inner-agents: for each macro agent × inner agent, add a combo
+    # Expand --inner-agents: replace each standalone macro agent with its combos.
+    # e.g. --agents rule_macro --inner-agents pid llm_policy
+    #   → agents = [rule_macro+pid, rule_macro+llm_policy]
+    # To also keep the standalone macro agent, pass it explicitly twice or use
+    # the explicit combo form: --agents rule_macro rule_macro+pid
     agents = list(args.agents)
     if args.inner_agents:
-        macro_agents_in_list = [a for a in agents if _infer_agent_type(a) == "macro"]
+        macro_agents_in_list = [
+            a for a in agents if _infer_agent_type(a) == "macro" and "+" not in a
+        ]
         for macro_name in macro_agents_in_list:
+            agents.remove(macro_name)
             for inner_name in args.inner_agents:
                 combo = f"{macro_name}+{inner_name}"
                 if combo not in agents:
@@ -1048,4 +1108,4 @@ if __name__ == "__main__":
             fixed_action_values=fixed_action_values,
         )
     )
-    save_csv(rows, output_path)
+    save_results(rows, output_path, agents=agents)

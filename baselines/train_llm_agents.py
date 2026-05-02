@@ -324,10 +324,39 @@ class HardwareLLMPolicyAgent(_BaseLLMPolicyAgent):
 
         env_context: dict[str, Any] | None = None
         if env is not None:
-            bess_p_max = float(getattr(env._bess, "P_MAX_MW", 5.0))
+            from c2g_env.obs_indices import Fast as _F
+            bess_p_max        = float(getattr(env._bess, "P_MAX_MW", 5.0))
+            committed_mw_max  = float(env._scfg.get("committed_mw_max", 30.0))
+            # Derived obs values
+            committed_mw_norm = float(obs[_F.COMMITTED])
+            regd_signal       = float(obs[_F.REGD])
+            bess_soc          = float(obs[_F.SOC])
+            temp_a_norm       = float(obs[_F.TEMP_A])
+            temp_b_norm       = float(obs[_F.TEMP_B])
+            p_flex_nom_norm   = float(obs[_F.P_FLEX])
+            committed_mw      = round(committed_mw_norm * committed_mw_max, 4)
+            T_max             = round(max(temp_a_norm, temp_b_norm), 4)
+            target_kw         = round(regd_signal * committed_mw * 1000.0, 2)
+            p_flex_nom_kw     = round(p_flex_nom_norm * 250_000.0, 2)
+            backlog_increment = round(p_flex_nom_norm * 2.78, 4)
+            # BESS baseline with SOC ramp guards (mirrors system-prompt rules)
+            if abs(regd_signal) >= 0.10:
+                bess_base = float(np.clip(regd_signal * committed_mw / bess_p_max, -1.0, 1.0))
+            else:
+                bess_base = 0.0
+            if bess_soc < 0.15 and bess_base > 0:
+                bess_base *= max(0.0, (bess_soc - 0.10) / 0.05)
+            if bess_soc > 0.80 and bess_base < 0:
+                bess_base *= max(0.0, (0.95 - bess_soc) / 0.15)
             env_context = {
-                "committed_mw_max": float(env._scfg.get("committed_mw_max", 30.0)),
-                "bess_p_max_mw": bess_p_max,
+                "committed_mw_max":      committed_mw_max,
+                "bess_p_max_mw":         bess_p_max,
+                "committed_mw":          committed_mw,
+                "T_max":                 T_max,
+                "target_kw":             target_kw,
+                "p_flex_nom_kw":         p_flex_nom_kw,
+                "backlog_increment":     backlog_increment,
+                "bess_dispatch_baseline": round(bess_base, 4),
             }
 
         try:
