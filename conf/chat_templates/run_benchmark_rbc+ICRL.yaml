@@ -55,10 +55,16 @@ hardware_system_prompt: |
     actual_bess_kw (realized dispatch) = bess_dispatch × {bess_p_max_mw} MW × 1000
     Avoid discharge (bess_dispatch > 0) when bess_soc < 0.15 (risks SOC penalty).
 
-  
-  ── REASONING WARM-START PRIOR ─────
-  Compute a baseline from these rules, then refine using the reward formula in the user prompt.
-  These rules are a starting point only — always adjust for the actual state values.
+  ── IN-CONTEXT REINFORCEMENT LEARNING ─────────────────────────────────────────────────────────────
+  Use the past interactions to learn and provide the best possible action for the current state,
+  aiming to earn a higher reward. Each <attempt> block in the user message shows a past timestep:
+  the state observed, the action taken, and the scalar reward received. Higher reward = better decision.
+    • Learn which bess_dispatch values successfully tracked regd_signal in similar states.
+    • Learn which throttle/pump/hvac combinations kept temperatures safe while maximising throughput.
+    • Avoid repeating action patterns from low-reward attempts.
+  Safety hard constraints (thermal, voltage, frequency) are absolute — never violate them for higher reward.
+
+  ── WARM-START PRIOR (fallback — use only when no past attempts are shown) ──────────────────────────
   Baseline defaults:
     throttle_batch=1.0, pump_speed_A=0.7, hvac_effort=0.7, bess_dispatch=0.0
   Thermal override (use T_max from user prompt; do not recompute):
@@ -72,7 +78,6 @@ hardware_system_prompt: |
                                [committed_mw and bess_p_max_mw are provided in the user prompt]
     if bess_soc < 0.15 and bess_dispatch > 0: bess_dispatch *= max(0.0, (bess_soc − 0.10) / 0.05)  [ramp: full at SOC=0.15, zero at SOC=0.10]
     if bess_soc > 0.80 and bess_dispatch < 0: bess_dispatch *= max(0.0, (0.95 − bess_soc) / 0.15)  [ramp: full at SOC=0.80, zero at SOC=0.95]
-  
   Multi-lever residual tracking assist (applied after BESS dispatch is set):
     residual = regd_signal × committed_mw / bess_p_max_mw − bess_dispatch
     if residual > 0.05 and is_spike==0:
@@ -87,14 +92,57 @@ hardware_system_prompt: |
   Opportunistic BESS charge:
     if |regd_signal| < 0.10 and bess_soc < 0.40: bess_dispatch=−0.3  [opportunistic charge from grid when idle]
 
+# Per-attempt template — runner uses this to render each past (state, action, reward) triple
+# into the {icrl_context} block.  Placeholders filled per entry:
+#   {step}         — 1-based index of this past timestep
+#   {reward}       — scalar step reward received (float, rounded to 3 d.p.)
+#   {state_json}   — JSON object of key state values at that timestep
+#   {action_json}  — JSON object of the action taken (throttle_batch, pump_speed_A, hvac_effort, bess_dispatch)
+hardware_icrl_attempt: |
+  <attempt>
+  Step {step}  |  Reward: {reward}
+  State:  {state_json}
+  Action: {action_json}
+  </attempt>
+
+# ICRL instruction variants — injected as {icrl_instruction} in hardware_user_prompt.
+# Runner picks the appropriate variant based on step parity (Preset) or always Autonomous.
+hardware_icrl_explore: |
+  Examine all the <attempt>...</attempt> examples, each showing a candidate Action, and the Rewards
+  for each step of the Action. Provide an action that is completely different from every single one
+  of the previous attempts demonstrated in the context.
+
+hardware_icrl_exploit: |
+  You will be given multiple <attempt>...</attempt> examples, each showing a candidate Action, and
+  the Rewards for each step of the Action. Your task: Based on the previous attempts, try your best
+  to produce an action that can achieve higher rewards.
+
+hardware_icrl_autonomous: |
+  Examine all the <attempt>...</attempt> examples, each showing a candidate Action and its Reward.
+  You have two options: exploration or exploitation.
+
+  For exploration, provide an action that is completely different from every single one of the
+  previous attempts demonstrated in the context, while making sure it correctly follows the
+  task instruction.
+
+  For exploitation, based on the previous attempts, try your best to produce an action that can
+  achieve higher rewards.
+
+  Pick one option to follow.
+
 hardware_user_prompt: |
   Scenario: {scenario}  |  committed_mw_max: {committed_mw_max} MW
 
+  ── PAST ATTEMPTS (learn from these) ─────────────────────────────────────────────────────────
+  Each attempt below shows: Step index, scalar Reward, key State values, and the Action taken.
+  Format: <attempt> Step N | Reward: R  State: {{...}}  Action: {{throttle_batch, pump_speed_A, hvac_effort, bess_dispatch}} </attempt>
+
+  {icrl_context}
+
+  ── CURRENT STATE ────────────────────────────────────────────────────────────────────────────
   Current normalized system state (18-D, keyed by name):
   {state_json}
 
-  Think concisely — write ONLY what each step specifies. Do NOT restate or summarize observations. Do NOT add prose between steps.
-  Reason through these steps, then output JSON:
   Scenario Attributes (pre-computed; do NOT re-derive):
     committed_mw       = {committed_mw} MW
     T_max              = {T_max}  (= max(temp_A_norm, temp_B_norm))
@@ -103,9 +151,7 @@ hardware_user_prompt: |
     backlog_increment  = {backlog_increment}  (= p_flex_nom_norm × 2.78; per-step backlog increase if throttle=0; net backlog change = backlog_increment − throttle)
     bess_dispatch_base = {bess_dispatch_baseline}  (SOC overrides already applied)
 
-  Apply REASONING WARM-START PRIOR: use T_max={T_max} to look up throttle/pump/hvac from the thermal table.
-  Set bess_dispatch = {bess_dispatch_baseline} (pre-computed; do NOT re-derive).
-  Then apply the residual tracking assist and opportunistic charge rules from the system prompt.
+  {icrl_instruction}
   Then output ONLY a valid JSON object — no explanation, no markdown, no extra text.
   Use EXACTLY these four key names (copy them verbatim):
   {{
@@ -166,8 +212,16 @@ macro_system_prompt: |
   bid_price    [0,100] Offer price in USD/MW·h.
     Lower price increases acceptance probability. Default: bid_price = 40×rmcp_norm.
 
+  ── IN-CONTEXT REINFORCEMENT LEARNING ─────────────────────────────────────────────────────────────
+  Use the past interactions to learn and provide the best possible bid for the current interval,
+  aiming to earn a higher reward. Each <attempt> block in the user message shows a past interval:
+  the state observed, the bid submitted, and the scalar reward received. Higher reward = better bid.
+    • Learn which commit_norm levels earned high regulation revenue without causing tracking failures.
+    • Learn which bid_price values achieved high bid acceptance while not leaving revenue on the table.
+    • Avoid repeating bid combinations from low-reward attempts.
+  Safety hard constraints (thermal, voltage, frequency) are absolute — never over-commit when at risk.
 
-  ── REASONING WARM-START PRIOR ─────
+  ── WARM-START PRIOR (fallback — use only when no past attempts are shown) ──────────────────────────
   Starting points (commit_norm_0, bid_price_0) are pre-computed in the user prompt with all
   sizing rules and safety overrides already applied — do not re-derive them.
   For reference only (already embedded in commit_norm_0):
@@ -175,14 +229,56 @@ macro_system_prompt: |
                  capped if thermal headroom<0.10, freq_dev<−0.3 boosts, v_pcc<0.96 caps
     bid_price:   clip(40×rmcp_norm, 0, 100)
 
+# Per-attempt template — runner uses this to render each past (state, bid, reward) triple
+# into the {icrl_context} block.  Placeholders filled per entry:
+#   {step}         — 1-based index of this past interval
+#   {reward}       — scalar interval reward received (float, rounded to 3 d.p.)
+#   {state_json}   — JSON object of key state values at that interval
+#   {action_json}  — JSON object of the bid submitted (commit_norm, bid_price)
+macro_icrl_attempt: |
+  <attempt>
+  Step {step}  |  Reward: {reward}
+  State:  {state_json}
+  Bid:    {action_json}
+  </attempt>
+
+# ICRL instruction variants — injected as {icrl_instruction} in macro_user_prompt.
+macro_icrl_explore: |
+  Examine all the <attempt>...</attempt> examples, each showing a candidate Bid, and the Rewards
+  for each step of the Bid. Provide a bid that is completely different from every single one of
+  the previous attempts demonstrated in the context.
+
+macro_icrl_exploit: |
+  You will be given multiple <attempt>...</attempt> examples, each showing a candidate Bid, and
+  the Rewards for each step of the Bid. Your task: Based on the previous attempts, try your best
+  to produce a bid that can achieve higher rewards.
+
+macro_icrl_autonomous: |
+  Examine all the <attempt>...</attempt> examples, each showing a candidate Bid and its Reward.
+  You have two options: exploration or exploitation.
+
+  For exploration, provide a bid that is completely different from every single one of the
+  previous attempts demonstrated in the context, while making sure it correctly follows the
+  task instruction.
+
+  For exploitation, based on the previous attempts, try your best to produce a bid that can
+  achieve higher rewards.
+
+  Pick one option to follow.
 
 macro_user_prompt: |
   Scenario: {scenario}  |  committed_mw_max: {committed_mw_max} MW  |  dr_baseline_mw (bid rejected): {dr_baseline_mw} MW
 
+  ── PAST ATTEMPTS (learn from these) ─────────────────────────────────────────────────────────
+  Each attempt below shows: Step index, scalar Reward, key State values, and the Bid submitted.
+  Format: <attempt> Step N | Reward: R  State: {{...}}  Bid: {{commit_norm, bid_price}} </attempt>
+
+  {icrl_context}
+
+  ── CURRENT STATE ────────────────────────────────────────────────────────────────────────────
   Current normalized system state (19-D, keyed by name):
   {state_json}
 
-  Think concisely — write ONLY what each step specifies. Do NOT restate or summarize observations. Do NOT add prose between steps.
   Scenario Attributes (pre-computed; do NOT re-derive):
     rmcp_usd         = {rmcp_usd} USD/MWh  (= 100 × rmcp_norm)
     T_max            = {T_max}  (= max(temp_A_norm, temp_B_norm))
@@ -190,7 +286,7 @@ macro_user_prompt: |
     commit_norm_prev = {commit_norm_prev}  (commit_norm submitted last interval)
     bid_price_0      = {bid_price_0}  (= clip(40×rmcp_norm, 0, 100))
 
-  Apply REASONING WARM-START PRIOR: output commit_norm_0={commit_norm_0} and bid_price_0={bid_price_0} (pre-computed; do NOT re-derive).
+  {icrl_instruction}
   Then output ONLY a valid JSON object — no explanation, no markdown, no extra text.
   Use EXACTLY these two key names (copy them verbatim):
   {{

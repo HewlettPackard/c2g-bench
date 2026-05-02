@@ -189,7 +189,7 @@ def _make_inner_controller(
 
 def _infer_agent_type(agent_name: str) -> str:
     """Classify benchmark agents as macro vs hardware controllers."""
-    macro_agents = {"rule_macro", "random_macro", "mpc_macro", "milp", "ppo_macro"}
+    macro_agents = {"rule_macro", "random_macro", "mpc_macro", "milp", "ppo_macro", "llm_policy_macro"}
     # Hierarchical combos like rule_macro+pid are also macro agents
     if "+" in agent_name:
         return "macro"
@@ -402,6 +402,10 @@ def run_episode(
 
         rewards.append(float(reward))
 
+        # Push reward to ICRL buffer if the agent supports it
+        if hasattr(agent, "push_reward"):
+            agent.push_reward(float(reward))
+
         # Thermal violations
         if obs[0] >= T_WARN_NORM or obs[1] >= T_WARN_NORM:
             thermal_viols += 1
@@ -509,6 +513,9 @@ def run_macro_episode(
                     done=bool(done),
                     reward_components={k: info.get(k, 0.0) for k in _keys},
                 )
+            # Push sub-step reward to inner agent's ICRL buffer if applicable
+            if inner_action_fn is not None and hasattr(inner_action_fn, "push_reward"):
+                inner_action_fn.push_reward(float(rew))
 
     env = _make_macro_env(
         scenario=scenario,
@@ -661,6 +668,7 @@ def benchmark(
     llm_max_new_tokens: int = 9216,
     llm_temperature: float = 0.0,
     llm_enable_thinking: bool = True,
+    llm_context_num_steps: int = 10,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
 
@@ -672,6 +680,11 @@ def benchmark(
         (project_root / "runs").mkdir(parents=True, exist_ok=True)
 
     prompt_templates = load_prompt_templates(llm_template_path)
+    _icrl = prompt_templates.get("icrl", {})
+    _icrl_hw_attempt   = _icrl.get("hardware_attempt", "") or None
+    _icrl_hw_instr     = _icrl.get("hardware_autonomous", "") or None
+    _icrl_macro_attempt = _icrl.get("macro_attempt", "") or None
+    _icrl_macro_instr   = _icrl.get("macro_autonomous", "") or None
 
     scenario_bar = tqdm(scenarios, desc="Scenarios", position=0)
     for scenario in scenario_bar:
@@ -700,10 +713,8 @@ def benchmark(
                 inner_env = _make_env(scenario=scenario)
                 inner_env.reset(seed=0)
                 if inner_part == "llm_policy":
-                    # LLM hardware agent as inner controller — predict() needs a live
-                    # C2GFastEnv to read bess_p_max_mw / committed_mw_max; pass inner_env.
                     state_names = [name.removeprefix("s_") for name in STATE_COLUMNS]
-                    llm_inner = LLMPolicyAgent(
+                    _inner_agent = LLMPolicyAgent(
                         mode="hardware",
                         prompts=prompt_templates,
                         state_names=state_names,
@@ -711,20 +722,48 @@ def benchmark(
                         temperature=llm_temperature,
                         api_base=llm_api_base,
                         enable_thinking=llm_enable_thinking,
+                        context_num_steps=llm_context_num_steps,
+                        icrl_attempt_template=_icrl_hw_attempt,
+                        icrl_instruction_template=_icrl_hw_instr,
                     )
-                    inner_action_fn = lambda obs, _act, c=llm_inner, e=inner_env, sc=scenario: \
+                    inner_action_fn = lambda obs, _act, c=_inner_agent, e=inner_env, sc=scenario: \
                         c.predict(obs, env=e, scenario=sc)[0]
+                    if hasattr(_inner_agent, "push_reward"):
+                        inner_action_fn.push_reward = _inner_agent.push_reward
                 else:
-                    inner_ctrl = _make_inner_controller(
+                    _inner_agent = _make_inner_controller(
                         inner_part, env=inner_env,
                         scenario=scenario, seed=seed_start, model_dir=model_dir,
                     )
-                    inner_action_fn = lambda obs, _act, c=inner_ctrl: c.predict(obs)[0]
+                    inner_action_fn = lambda obs, _act, c=_inner_agent: c.predict(obs)[0]
+                    if hasattr(_inner_agent, "push_reward"):
+                        inner_action_fn.push_reward = _inner_agent.push_reward
 
             if agent_name == "rule_based":
                 _committed = float(env_for_space._scfg.get("committed_mw_max", 30.0))
                 _bess_pmax = float(getattr(env_for_space._bess, "P_MAX_MW", 5.0))
                 agent = RuleBasedController(committed_mw_max=_committed, bess_p_max_mw=_bess_pmax)
+            elif agent_name in ("llm_policy", "llm_policy_macro") or macro_part in ("llm_policy", "llm_policy_macro"):
+                state_names = [name.removeprefix("s_") for name in STATE_COLUMNS]
+                # llm_policy_macro is always macro; llm_policy respects --llm-mode
+                if agent_name == "llm_policy_macro" or macro_part == "llm_policy_macro":
+                    _mode = "macro"
+                else:
+                    _mode = llm_mode if agent_name == "llm_policy" else "macro"
+                _attempt_tmpl = _icrl_hw_attempt if _mode == "hardware" else _icrl_macro_attempt
+                _instr_tmpl   = _icrl_hw_instr   if _mode == "hardware" else _icrl_macro_instr
+                agent = LLMPolicyAgent(
+                    mode=_mode,
+                    prompts=prompt_templates,
+                    state_names=state_names,
+                    max_new_tokens=llm_max_new_tokens,
+                    temperature=llm_temperature,
+                    api_base=llm_api_base,
+                    enable_thinking=llm_enable_thinking,
+                    context_num_steps=llm_context_num_steps,
+                    icrl_attempt_template=_attempt_tmpl,
+                    icrl_instruction_template=_instr_tmpl,
+                )
             elif macro_part == "rule_macro":
                 agent = RuleBasedMacroController()
             elif macro_part == "random_macro":
@@ -980,7 +1019,7 @@ if __name__ == "__main__":
         help="Agents to evaluate: rule_based rule_macro random_macro bang_bang pid mpc_fast "
              "mpc_macro milp ppo sac ppo_lag random "
                "simplex_ppo cbf_ppo hj_ppo mpcsf_ppo cpo reward_shaping ha_c2g "
-                             "llm_policy "
+                             "llm_policy llm_policy_macro "
              "cbm_only cbm_gate cbm_shield",
     )
     parser.add_argument(
@@ -1058,6 +1097,13 @@ if __name__ == "__main__":
         default=True,
         help="Disable <think> reasoning for all LLM agents (faster, lower token cost).",
     )
+    parser.add_argument(
+        "--llm-context-num-steps",
+        dest="llm_context_num_steps",
+        type=int,
+        default=10,
+        help="Number of past steps to keep in the ICRL buffer (0 = disabled).",
+    )
     args = parser.parse_args()
 
     project_root = Path(__file__).resolve().parent.parent
@@ -1101,6 +1147,7 @@ if __name__ == "__main__":
         llm_max_new_tokens = args.llm_max_new_tokens,
         llm_temperature = args.llm_temperature,
         llm_enable_thinking = args.llm_enable_thinking,
+        llm_context_num_steps = args.llm_context_num_steps,
     )
     print_results_table(rows)
     output_path = (

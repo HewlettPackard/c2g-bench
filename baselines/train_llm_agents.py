@@ -14,6 +14,7 @@ import os
 import re
 import urllib.request
 import warnings
+from collections import deque
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -113,6 +114,9 @@ def build_prompt(
     }
     if env_context:
         fmt_kwargs.update(env_context)
+    # Provide defaults for ICRL placeholders so non-ICRL templates don't raise KeyError
+    fmt_kwargs.setdefault("icrl_context", "(no past attempts yet)")
+    fmt_kwargs.setdefault("icrl_instruction", "")
     user_prompt = mode_prompts["user"].format(**fmt_kwargs)
     return f"{system_prompt}\n\n{user_prompt}"
 
@@ -206,6 +210,16 @@ def load_prompt_templates(template_path: str | Path) -> dict[str, dict[str, str]
     return {
         "hardware": {"system": hw_system, "user": hw_user},
         "macro": {"system": macro_system, "user": macro_user},
+        "icrl": {
+            "hardware_attempt":   str(data.get("hardware_icrl_attempt",   "")).strip(),
+            "macro_attempt":      str(data.get("macro_icrl_attempt",      "")).strip(),
+            "hardware_explore":   str(data.get("hardware_icrl_explore",   "")).strip(),
+            "hardware_exploit":   str(data.get("hardware_icrl_exploit",   "")).strip(),
+            "hardware_autonomous":str(data.get("hardware_icrl_autonomous","")).strip(),
+            "macro_explore":      str(data.get("macro_icrl_explore",      "")).strip(),
+            "macro_exploit":      str(data.get("macro_icrl_exploit",      "")).strip(),
+            "macro_autonomous":   str(data.get("macro_icrl_autonomous",   "")).strip(),
+        },
     }
 
 
@@ -254,6 +268,9 @@ class _BaseLLMPolicyAgent:
         temperature: float = 0.0,
         api_base: str = "http://localhost:8000/v1",
         enable_thinking: bool = True,
+        context_num_steps: int = 0,
+        icrl_attempt_template: str | None = None,
+        icrl_instruction_template: str | None = None,
     ):
         self._model_name = probe_api_base(api_base)
 
@@ -277,6 +294,57 @@ class _BaseLLMPolicyAgent:
             "macro": enable_thinking,
         }
         self._previous_action: np.ndarray | None = None
+
+        # ── ICRL buffer ───────────────────────────────────────────────
+        # Stores the last context_num_steps positive-reward (state, action, reward)
+        # triples.  deque(maxlen=0) is never used; maxlen=None means unlimited.
+        _maxlen: int | None = int(context_num_steps) if context_num_steps > 0 else None
+        self._icrl_buffer: deque[dict[str, Any]] = deque(maxlen=_maxlen)
+        self._icrl_attempt_template: str | None = icrl_attempt_template or None
+        self._icrl_instruction_template: str | None = icrl_instruction_template or None
+        self._icrl_step: int = 0          # monotonic counter of stored attempts
+        # Pending slot: filled by predict(), consumed by push_reward()
+        self._pending_obs: np.ndarray | None = None
+        self._pending_action_dict: dict[str, float] | None = None
+
+    # ------------------------------------------------------------------
+    # ICRL helpers
+    # ------------------------------------------------------------------
+
+    def push_reward(self, reward: float) -> None:
+        """Record the reward received for the last predict() call.
+
+        Must be called by the runner after every env.step().  Only steps with
+        positive reward are stored (Naive+ style from Monea et al. 2025) so
+        that the LLM context contains only successful demonstrations.
+        """
+        if self._pending_obs is None or self._pending_action_dict is None:
+            return
+        if self._icrl_attempt_template and reward > 0:
+            self._icrl_step += 1
+            state_dict = obs_to_dict(self._pending_obs, self._state_names)
+            self._icrl_buffer.append({
+                "step":        self._icrl_step,
+                "reward":      round(float(reward), 3),
+                "state_json":  json.dumps({k: round(v, 3) for k, v in state_dict.items()}),
+                "action_json": json.dumps({k: round(v, 4) for k, v in self._pending_action_dict.items()}),
+            })
+        self._pending_obs = None
+        self._pending_action_dict = None
+
+    def _format_icrl_context(self) -> str:
+        """Render the ICRL buffer into a prompt string.
+
+        Each entry is formatted with the attempt template using the placeholders
+        {step}, {reward}, {state_json}, {action_json}.  Entries are ordered
+        oldest-first (t-N, …, t-1) so the most recent attempt is last.
+        Returns a placeholder string when the buffer is empty.
+        """
+        if not self._icrl_buffer or not self._icrl_attempt_template:
+            return "(no past attempts yet)"
+        parts = [self._icrl_attempt_template.format(**entry).strip()
+                 for entry in self._icrl_buffer]
+        return "\n".join(parts)
 
     def _generate_payload(
         self,
@@ -359,6 +427,12 @@ class HardwareLLMPolicyAgent(_BaseLLMPolicyAgent):
                 "bess_dispatch_baseline": round(bess_base, 4),
             }
 
+        # Inject ICRL context (formatted past attempts) into env_context
+        if env_context is None:
+            env_context = {}
+        env_context["icrl_context"] = self._format_icrl_context()
+        env_context["icrl_instruction"] = self._icrl_instruction_template or ""
+
         try:
             payload = self._generate_payload(
                 obs=obs,
@@ -387,6 +461,14 @@ class HardwareLLMPolicyAgent(_BaseLLMPolicyAgent):
             float(payload["bess_dispatch"]),
         ], dtype=np.float32)
         self._previous_action = action
+        # Save for ICRL buffer; push_reward() will complete the entry
+        self._pending_obs = obs.copy()
+        self._pending_action_dict = {
+            "throttle_batch": round(float(payload["throttle_batch"]), 4),
+            "pump_speed_A":   round(float(payload["pump_speed_A"]),   4),
+            "hvac_effort":    round(float(payload["hvac_effort"]),    4),
+            "bess_dispatch":  round(float(payload["bess_dispatch"]),  4),
+        }
         return action, None
 
 
@@ -410,11 +492,51 @@ class MacroLLMPolicyAgent(_BaseLLMPolicyAgent):
         env_context: dict[str, Any] | None = None
         if env is not None:
             bess_p_max = float(getattr(env._bess, "P_MAX_MW", 5.0))
+            from c2g_env.obs_indices import Macro as _M
+            rmcp_norm       = float(obs[_M.RMCP]) if len(obs) > _M.RMCP else 0.25
+            load_norm       = float(obs[_M.GRID_LOAD])
+            hroom_A         = float(obs[_M.HEADROOM_A])
+            hroom_B         = float(obs[_M.HEADROOM_B])
+            freq_dev        = float(obs[_M.FREQ_DEV])
+            v_pcc           = float(obs[_M.VPCC])
+            temp_a          = float(obs[_M.TEMP_A])
+            temp_b          = float(obs[_M.TEMP_B])
+            committed_mw_max = float(getattr(env, "_committed_max_mw", 30.0))
+            T_max           = round(max(temp_a, temp_b), 4)
+            rmcp_usd        = round(rmcp_norm * 100.0, 2)
+            # Replicate rule_based_macro baseline (commit_norm_0, bid_price_0)
+            if load_norm > 0.7:
+                commit_norm_0 = 0.80
+            elif load_norm > 0.4:
+                commit_norm_0 = 0.50
+            else:
+                commit_norm_0 = 0.20
+            if min(hroom_A, hroom_B) < 0.10:
+                commit_norm_0 = min(commit_norm_0, 0.30)
+            if freq_dev < -0.3:
+                commit_norm_0 = min(1.0, commit_norm_0 + 0.2)
+            if v_pcc < 0.96:
+                commit_norm_0 = min(commit_norm_0, 0.40)
+            bid_price_0 = round(float(np.clip(40.0 * rmcp_norm, 0.0, 100.0)), 2)
+            commit_norm_prev = round(
+                float(self._previous_action[0]) if self._previous_action is not None else commit_norm_0, 4
+            )
             env_context = {
-                "committed_mw_max": float(getattr(env, "_committed_max_mw", 30.0)),
+                "committed_mw_max": committed_mw_max,
                 "dr_baseline_mw":   float(getattr(env, "_dr_baseline_mw", 5.0)),
                 "bess_p_max_mw":    bess_p_max,
+                "rmcp_usd":         rmcp_usd,
+                "T_max":            T_max,
+                "commit_norm_0":    round(commit_norm_0, 4),
+                "commit_norm_prev": commit_norm_prev,
+                "bid_price_0":      bid_price_0,
             }
+
+        # Inject ICRL context into env_context
+        if env_context is None:
+            env_context = {}
+        env_context["icrl_context"] = self._format_icrl_context()
+        env_context["icrl_instruction"] = self._icrl_instruction_template or ""
 
         try:
             payload = self._generate_payload(
@@ -444,6 +566,12 @@ class MacroLLMPolicyAgent(_BaseLLMPolicyAgent):
 
         action = np.array([commit_norm, bid_price_norm], dtype=np.float32)
         self._previous_action = action
+        # Save for ICRL buffer; push_reward() will complete the entry
+        self._pending_obs = obs.copy()
+        self._pending_action_dict = {
+            "commit_norm": round(commit_norm, 4),
+            "bid_price":   round(float(payload["bid_price"]), 2),
+        }
         return action, None
 
 
@@ -461,27 +589,31 @@ class LLMPolicyAgent:
         temperature: float = 0.0,
         api_base: str = "http://localhost:8000/v1",
         enable_thinking: bool = True,
+        context_num_steps: int = 0,
+        icrl_attempt_template: str | None = None,
+        icrl_instruction_template: str | None = None,
     ):
+        _shared_kwargs = dict(
+            prompts=prompts,
+            state_names=state_names,
+            max_new_tokens=max_new_tokens,
+            temperature=temperature,
+            api_base=api_base,
+            enable_thinking=enable_thinking,
+            context_num_steps=context_num_steps,
+            icrl_attempt_template=icrl_attempt_template,
+            icrl_instruction_template=icrl_instruction_template,
+        )
         if mode == "hardware":
-            self._delegate = HardwareLLMPolicyAgent(
-                prompts=prompts,
-                state_names=state_names,
-                max_new_tokens=max_new_tokens,
-                temperature=temperature,
-                api_base=api_base,
-                enable_thinking=enable_thinking,
-            )
+            self._delegate = HardwareLLMPolicyAgent(**_shared_kwargs)
         elif mode == "macro":
-            self._delegate = MacroLLMPolicyAgent(
-                prompts=prompts,
-                state_names=state_names,
-                max_new_tokens=max_new_tokens,
-                temperature=temperature,
-                api_base=api_base,
-                enable_thinking=enable_thinking,
-            )
+            self._delegate = MacroLLMPolicyAgent(**_shared_kwargs)
         else:
             raise ValueError(f"Invalid LLM mode '{mode}'. Expected 'hardware' or 'macro'.")
+
+    def push_reward(self, reward: float) -> None:
+        """Forward reward to the delegate's ICRL buffer."""
+        self._delegate.push_reward(reward)
 
     def predict(
         self,
@@ -489,5 +621,6 @@ class LLMPolicyAgent:
         deterministic: bool = True,
         env: C2GFastEnv | None = None,
         scenario: str = "default",
+        **kwargs,
     ):
         return self._delegate.predict(obs, deterministic=deterministic, env=env, scenario=scenario)
