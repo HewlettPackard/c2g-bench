@@ -491,7 +491,7 @@ class MacroLLMPolicyAgent(_BaseLLMPolicyAgent):
 
         env_context: dict[str, Any] | None = None
         if env is not None:
-            bess_p_max = float(getattr(env._bess, "P_MAX_MW", 5.0))
+            bess_p_max = float(getattr(env._fast_env._bess, "P_MAX_MW", 5.0))
             from c2g_env.obs_indices import Macro as _M
             rmcp_norm       = float(obs[_M.RMCP]) if len(obs) > _M.RMCP else 0.25
             load_norm       = float(obs[_M.GRID_LOAD])

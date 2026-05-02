@@ -6,6 +6,7 @@ Covers:
   - C2GMacroEnv with inner_action_fn: obs shape, step, episode
   - train_ppo_macro module importable
   - train_hierarchical module importable
+  - Hierarchical combo smoke tests via run_macro_episode
 """
 import math
 import pytest
@@ -185,3 +186,125 @@ class TestModuleImports:
 
     def test_import_rule_based_macro(self):
         from baselines.rule_based_macro import RuleBasedMacroController  # noqa
+
+
+# =========================================================================
+# E. Hierarchical combo smoke tests (run_macro_episode)
+# =========================================================================
+
+# 4 macro-level outer controllers (no trained model files needed)
+_MACRO_CONTROLLERS = ["rule_macro", "mpc_macro", "milp", "random_macro"]
+
+# 4 hardware-level inner controllers (no trained model files needed)
+# mpc_fast excluded: runs an optimization solve per sub-step (~540 calls/3 ticks), too slow for smoke tests
+_INNER_CONTROLLERS = ["pid", "bang_bang", "rule_based", "random"]
+
+
+def _build_macro_ctrl(macro_part: str, macro_env: "C2GMacroEnv"):
+    """Instantiate a macro controller by name."""
+    from baselines.rule_based_macro import RuleBasedMacroController
+    from baselines.mpc_macro import MPCMacroController
+    from baselines.milp_dispatch import MILPDispatchController
+    from evaluation.run_benchmark import MacroRandomAgent
+    if macro_part == "rule_macro":
+        return RuleBasedMacroController()
+    if macro_part == "mpc_macro":
+        return MPCMacroController()
+    if macro_part == "milp":
+        return MILPDispatchController()
+    if macro_part == "random_macro":
+        return MacroRandomAgent(macro_env, algo_name="random_macro")
+    raise ValueError(f"Unknown macro controller: {macro_part}")
+
+
+class TestHierarchicalCombos:
+    """
+    Smoke-test all 16 non-LLM (macro × inner) combinations via run_macro_episode.
+    Runs only 3 macro steps per combo to keep the suite fast.
+    Validates: no crash, finite reward, correct return type.
+    """
+
+    @pytest.fixture(autouse=True)
+    def short_episode(self, monkeypatch):
+        """Patch C2GMacroEnv so episodes terminate after 3 macro steps."""
+        original_step = C2GMacroEnv.step
+        step_counter = {}
+
+        def patched_step(self_env, action):
+            key = id(self_env)
+            step_counter[key] = step_counter.get(key, 0) + 1
+            obs, rew, term, trunc, info = original_step(self_env, action)
+            if step_counter[key] >= 3:
+                term = True
+            return obs, rew, term, trunc, info
+
+        monkeypatch.setattr(C2GMacroEnv, "step", patched_step)
+
+    @pytest.mark.parametrize("macro_part", _MACRO_CONTROLLERS)
+    @pytest.mark.parametrize("inner_part", _INNER_CONTROLLERS)
+    def test_combo(self, macro_part: str, inner_part: str):
+        """All 16 macro+inner combos: no crash, finite mean_reward."""
+        from evaluation.run_benchmark import (
+            _make_inner_controller,
+            _make_env,
+            _make_macro_env,
+            run_macro_episode,
+        )
+
+        # Build a throw-away macro env just for controllers that need its space
+        macro_env = _make_macro_env(scenario="default")
+        macro_env.reset(seed=0)
+
+        # Build inner controller
+        inner_env = _make_env(scenario="default")
+        inner_env.reset(seed=0)
+        inner_ctrl = _make_inner_controller(inner_part, env=inner_env, scenario="default")
+        inner_action_fn = lambda obs, _act, c=inner_ctrl: c.predict(obs)[0]
+
+        # Build macro controller
+        macro_ctrl = _build_macro_ctrl(macro_part, macro_env)
+
+        metrics = run_macro_episode(
+            agent=macro_ctrl,
+            scenario="default",
+            seed=42,
+            algo_name=macro_part,
+            agent_type="macro",
+            episode_number=0,
+            inner_action_fn=inner_action_fn,
+            record_transitions=False,
+            combo_name=f"{macro_part}+{inner_part}",
+        )
+
+        assert isinstance(metrics, dict), "run_macro_episode must return a dict"
+        assert math.isfinite(metrics["mean_reward"]), (
+            f"{macro_part}+{inner_part} produced non-finite mean_reward"
+        )
+        assert metrics["episode_length"] > 0, (
+            f"{macro_part}+{inner_part} ran 0 steps"
+        )
+
+    def test_inner_fn_push_reward_attr(self):
+        """Standard hardware controllers don't expose push_reward."""
+        from evaluation.run_benchmark import _make_inner_controller, _make_env
+
+        inner_env = _make_env(scenario="default")
+        inner_env.reset(seed=0)
+        inner_ctrl = _make_inner_controller("pid", env=inner_env)
+        assert not hasattr(inner_ctrl, "push_reward"), (
+            "PIDController should not have push_reward"
+        )
+
+    def test_inner_fn_receives_hardware_obs(self):
+        """inner_action_fn is called with hardware-level obs during MacroEnv step."""
+        obs_shapes = []
+
+        def recording_fn(inner_obs, macro_action):
+            obs_shapes.append(inner_obs.shape)
+            return np.zeros(4, dtype=np.float32)
+
+        env = C2GMacroEnv(scenario="default", inner_action_fn=recording_fn)
+        env.reset(seed=0)
+        env.step(np.array([0.5, 0.0], dtype=np.float32))
+        assert len(obs_shapes) > 0
+        assert obs_shapes[0][0] >= 17, f"Unexpected inner obs dim: {obs_shapes[0]}"

@@ -525,6 +525,7 @@ def run_macro_episode(
     algo_for_logging = getattr(agent, "algo_name", (algo_name or "unknown"))
 
     # Extract static env attributes once for LLM agents that need them
+    # (kept for non-LLM agents that use static_env_info; LLM agents receive env directly)
     macro_env_info: dict[str, Any] = {
         "committed_mw_max": float(getattr(env, "_committed_max_mw", 30.0)),
         "dr_baseline_mw":   float(getattr(env, "_dr_baseline_mw", 5.0)),
@@ -562,9 +563,8 @@ def run_macro_episode(
     try:
       while not done:
         state = obs.copy()
-        if macro_env_info:
-            action, _ = agent.predict(obs, deterministic=True, static_env_info=macro_env_info,
-                                      scenario=scenario)
+        if getattr(agent, "uses_env_context", False):
+            action, _ = agent.predict(obs, deterministic=True, env=env, scenario=scenario)
         else:
             action, _ = agent.predict(obs, deterministic=True)
         obs, reward, terminated, truncated, info = env.step(action)
