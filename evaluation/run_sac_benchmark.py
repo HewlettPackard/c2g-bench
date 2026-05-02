@@ -12,8 +12,8 @@ Metrics (per episode)
   thermal_viol_rate   — fraction of ticks with temp > T_warn (33°C)
   throughput_ratio    — mean(p_flex_kw / p_flex_nom_kw) over episode
   bess_degradation    — cumulative cycle ageing fraction * 1e4
-  episode_length      — ticks in episode (< episode_ticks means early termination)
-  survival_rate       — fraction of episodes that ran to full episode_ticks ticks
+  episode_length      — ticks in episode (< 288 means thermal termination)
+  survival_rate       — fraction of episodes that ran to full 288 ticks
 
 Usage
 -----
@@ -38,6 +38,8 @@ Agents
   ppo          — loads trained_models/ppo_<scenario>_s42/final_model
   sac          — loads trained_models/sac_<scenario>_s42/final_model
   ppo_lag      — loads trained PPO-Lagrangian model
+  cmaes        — loads CMA-ES trained linear policy
+  pso          — loads PSO trained linear policy
   random       — np.random uniform (lower bound)
   random_macro — np.random uniform over macro action space (bid MW + price)
 
@@ -56,12 +58,11 @@ Tier 3 Ablations
   cbm_shield   — PPO + concept bottleneck + physics shield (no gate)
 """
 from __future__ import annotations
-import argparse, csv, json, re, time
+import argparse, csv, time
 from pathlib import Path
 from typing import Any
 
 import numpy as np
-import yaml
 from tqdm import tqdm
 
 from c2g_env import C2GFastEnv, C2GMacroEnv
@@ -72,17 +73,13 @@ from baselines.pid_controller import PIDController
 from baselines.mpc_fast import MPCFastController
 from baselines.mpc_macro import MPCMacroController
 from baselines.milp_dispatch import MILPDispatchController
-from baselines.metrics_callback import C2GTransitionLoggerCallback, build_ablation_suffix, STATE_COLUMNS
-from baselines.train_llm_agents import (
-    LLMPolicyAgent,
-    load_prompt_templates,
-)
+from baselines.metrics_callback import C2GTransitionLoggerCallback, build_ablation_suffix
 
 # ── High-Assurance agents ────────────────────────────────────────
 from baselines.safety.cbf_shield import CBFShield, CBFShieldedAgent
 from baselines.safety.hj_shield import HJShield
 from baselines.safety.mpc_safety_filter import MPCSafetyFilter
-from baselines.safety.safety_shield import SafetyShield
+from baselines.safety import SafetyShield
 
 SCENARIOS    = ["default", "scenario_a", "scenario_b", "scenario_c"]
 T_WARN_NORM  = 33.0 / 35.0   # normalised warning threshold
@@ -115,9 +112,9 @@ def _make_env(
     return C2GFastEnv(scenario=scenario, **kwargs)
 
 
-def _make_macro_env(scenario: str, sub_step_callback=None, **kwargs) -> C2GMacroEnv:
+def _make_macro_env(scenario: str, **kwargs) -> C2GMacroEnv:
     """Return a C2GMacroEnv for macro-level agent evaluation."""
-    return C2GMacroEnv(scenario=scenario, sub_step_callback=sub_step_callback, **kwargs)
+    return C2GMacroEnv(scenario=scenario, **kwargs)
 
 
 def _parse_fixed_action_args(values: list[str] | None) -> dict[str, float]:
@@ -157,7 +154,7 @@ def _parse_fixed_action_args(values: list[str] | None) -> dict[str, float]:
     return fixed_action_values
 
 
-_INNER_CONTROLLERS = {"random", "pid", "bang_bang", "rule_based", "mpc_fast", "ppo"}
+_INNER_CONTROLLERS = {"random", "pid", "bang_bang", "rule_based", "mpc_fast", "ppo", "sac"}
 
 
 def _make_inner_controller(
@@ -182,6 +179,8 @@ def _make_inner_controller(
         return MPCFastController()
     if name == "ppo":
         return load_sb3_agent("ppo", scenario, seed, model_dir)
+    if name == "sac":
+        return load_sb3_agent("sac", scenario, seed, model_dir)
     raise ValueError(f"Unknown inner controller '{name}'. Choose from: {_INNER_CONTROLLERS}")
 
 
@@ -302,6 +301,24 @@ def load_sb3_agent(algo: str, scenario: str, seed: int, model_dir: str | None):
     return SB3Agent(model, algo_name=algo.lower(), obs_normalizer=obs_normalizer)
 
 
+class EvolutionaryAgent:
+    """Wraps a CMA-ES or PSO linear policy loaded from .npz."""
+    def __init__(self, npz_path: str | Path, algo_name: str):
+        data = np.load(npz_path)
+        self.W = data["W"]
+        self.b = data["b"]
+        self.act_low = data["act_low"]
+        self.act_high = data["act_high"]
+        self.algo_name = algo_name
+
+    def predict(self, obs: np.ndarray, deterministic: bool = True):
+        if obs.ndim == 1:
+            action = np.clip(self.W @ obs + self.b, self.act_low, self.act_high)
+        else:
+            action = np.clip(obs @ self.W.T + self.b, self.act_low, self.act_high)
+        return action.astype(np.float32), None
+
+
 class ShieldedSB3Agent:
     """Wraps an SB3 model with a runtime safety shield."""
     def __init__(self, base_agent, shield):
@@ -315,7 +332,7 @@ class ShieldedSB3Agent:
         return safe_action, state
 
 
-# ── High-Assurance agents ────────────────────────────────────────
+# ---------------------------------------------------------------------------
 # Metric collection
 # ---------------------------------------------------------------------------
 
@@ -361,13 +378,9 @@ def run_episode(
     cumul_bess_actual_kw : float = 0.0
 
     done = False
-    try:
-      while not done:
+    while not done:
         state = obs.copy()
-        if getattr(agent, "uses_env_context", False):
-            action, _ = agent.predict(obs, deterministic=True, env=env, scenario=scenario)
-        else:
-            action, _ = agent.predict(obs, deterministic=True)
+        action, _ = agent.predict(obs, deterministic=True)
         obs, reward, terminated, truncated, info = env.step(action)
         done = terminated or truncated
 
@@ -378,8 +391,6 @@ def run_episode(
                     "reward_soc", "reward_freq", "reward_volt", "reward_backlog",
                 )
             }
-
-            print(f"[Transition] Step reward: {reward:.3f}, components: {reward_components}", flush=True)
             transition_logger.record_transition(
                 state=state,
                 action=action,
@@ -413,15 +424,14 @@ def run_episode(
         if bess_init_age is None:
             bess_init_age = float(info.get("bess_age_frac", 0.0))
 
-    finally:
-        if transition_logger is not None:
-            transition_logger.close()
+    if transition_logger is not None:
+        transition_logger.close()
 
     bess_final_age = float(info.get("bess_age_frac", bess_init_age or 0.0))
     bess_degradation = (bess_final_age - (bess_init_age or 0.0)) * 1e4
 
-    n_ticks = len(rewards)
-    survived   = 1.0 if n_ticks >= env._episode_ticks else 0.0
+    n_ticks    = len(rewards)
+    survived   = 1.0 if n_ticks >= 288 else 0.0
 
     return {
         "mean_reward"       : float(np.mean(rewards)),
@@ -448,70 +458,11 @@ def run_macro_episode(
     episode_number: int = 0,
     inner_action_fn: Any = None,
     record_transitions: bool = True,
-    inner_algo_name: str | None = None,
 ) -> dict[str, float]:
     """Run one macro-level episode and return metrics dict."""
-    # sub_step_callback fires after every _fast_env.step() inside C2GMacroEnv
-    # (180 calls per macro tick).  We always collect hardware metrics for combo
-    # agents; the transition logger is only created when record_transitions=True.
-    _HW_RC_KEYS = (
-        "reward_throughput", "reward_tracking", "reward_thermal",
-        "reward_soc", "reward_freq", "reward_volt", "reward_backlog",
-    )
-    hw_step_metrics: list[dict] = []
-    inner_transition_logger = None
-    sub_step_callback = None
-    if inner_action_fn is not None:
-        if record_transitions:
-            inner_transition_logger = C2GTransitionLoggerCallback(
-                output_dir="runs",
-                algorithm_name=inner_algo_name or "inner",
-                scenario_name=scenario,
-                agent_type="hardware",
-                episode_number=episode_number,
-                fixed_action_values=None,
-                verbose=0,
-            )
-        _lg_ref = inner_transition_logger  # capture before closure
-        def sub_step_callback(
-            pre_obs, low_action, next_obs, rew, done, info,
-            _hw=hw_step_metrics, _lg=_lg_ref, _keys=_HW_RC_KEYS,
-        ):
-            _hw.append({
-                "reward":            float(rew),
-                "tracking_err_sq":   float(info.get("tracking_err_kw", 0.0)) ** 2,
-                "thermal_viol":      int(next_obs[0] >= T_WARN_NORM or next_obs[1] >= T_WARN_NORM),
-                "throughput_ratio":  float(info.get("throughput_ratio", 0.0)),
-                "bess_age_frac":     float(info.get("bess_age_frac", 0.0)),
-                "p_pump_mw":         float(info.get("p_pump_mw", 0.0)),
-                "p_hvac_mw":         float(info.get("p_hvac_mw", 0.0)),
-                "flex_reduction_kw": float(info.get("flex_reduction_kw", 0.0)),
-                "bess_actual_kw":    float(info.get("bess_actual_kw", 0.0)),
-            })
-            if _lg is not None:
-                _lg.record_transition(
-                    state=pre_obs,
-                    action=low_action,
-                    observation=next_obs,
-                    reward=float(rew),
-                    done=bool(done),
-                    reward_components={k: info.get(k, 0.0) for k in _keys},
-                )
-
-    env = _make_macro_env(
-        scenario=scenario,
-        inner_action_fn=inner_action_fn,
-        sub_step_callback=sub_step_callback,
-    )
+    env = _make_macro_env(scenario=scenario, inner_action_fn=inner_action_fn)
     obs, _ = env.reset(seed=seed)
     algo_for_logging = getattr(agent, "algo_name", (algo_name or "unknown"))
-
-    # Extract static env attributes once for LLM agents that need them
-    macro_env_info: dict[str, Any] = {
-        "committed_mw_max": float(getattr(env, "_committed_max_mw", 30.0)),
-        "dr_baseline_mw":   float(getattr(env, "_dr_baseline_mw", 5.0)),
-        "bess_p_max_mw":    float(getattr(env._fast_env._bess, "P_MAX_MW", 5.0)),
-    } if getattr(agent, "uses_env_context", False) else {}
 
     transition_logger = None
     if record_transitions:
@@ -539,16 +490,16 @@ def run_macro_episode(
     cool_deltas: list[float] = []
     p_pumps: list[float] = []
     p_hvacs: list[float] = []
+    # Inner (low-level) action means per macro tick
+    inner_throttles: list[float] = []
+    inner_pumps: list[float] = []
+    inner_hvacs: list[float] = []
+    inner_besses: list[float] = []
 
     done = False
-    try:
-      while not done:
+    while not done:
         state = obs.copy()
-        if macro_env_info:
-            action, _ = agent.predict(obs, deterministic=True, static_env_info=macro_env_info,
-                                      scenario=scenario)
-        else:
-            action, _ = agent.predict(obs, deterministic=True)
+        action, _ = agent.predict(obs, deterministic=True)
         obs, reward, terminated, truncated, info = env.step(action)
         done = terminated or truncated
 
@@ -558,7 +509,6 @@ def run_macro_episode(
                     "reward_regulation","reward_sub", "reward_elec",  "reward_churn"
                 )
             }
-            print(f"[Transition] Step reward: {reward:.3f}, components: {reward_components}", flush=True)
             transition_logger.record_transition(
                 state=state,
                 action=action,
@@ -583,35 +533,17 @@ def run_macro_episode(
         cool_deltas.append(float(info.get("mean_cool_delta_kw", 0.0)))
         p_pumps.append(float(info.get("mean_p_pump_mw", 0.0)))
         p_hvacs.append(float(info.get("mean_p_hvac_mw", 0.0)))
-    finally:
-      if transition_logger is not None:
-          transition_logger.close()
-      if inner_transition_logger is not None:
-          inner_transition_logger.close()
+        inner_throttles.append(float(info.get("mean_inner_throttle", 0.0)))
+        inner_pumps.append(float(info.get("mean_inner_pump", 0.0)))
+        inner_hvacs.append(float(info.get("mean_inner_hvac", 0.0)))
+        inner_besses.append(float(info.get("mean_inner_bess", 0.0)))
+
+    if transition_logger is not None:
+        transition_logger.close()
 
     n_steps = len(rewards)
     macro_ticks_full = env._episode_macro_ticks
     survived = 1.0 if n_steps >= macro_ticks_full else 0.0
-
-    # Hardware-level aggregate metrics for inner controller (empty if no inner_action_fn)
-    inner_agg: dict[str, float] = {}
-    if hw_step_metrics:
-        n_hw = len(hw_step_metrics)
-        bess_ages = [m["bess_age_frac"] for m in hw_step_metrics]
-        inner_agg = {
-            "inner_mean_reward":           float(np.mean([m["reward"] for m in hw_step_metrics])),
-            "inner_total_reward":          float(np.sum([m["reward"] for m in hw_step_metrics])),
-            "inner_tracking_rmse":         float(np.sqrt(np.mean([m["tracking_err_sq"] for m in hw_step_metrics]))),
-            "inner_thermal_viol_rate":     float(np.mean([m["thermal_viol"] for m in hw_step_metrics])),
-            "inner_throughput_ratio":      float(np.mean([m["throughput_ratio"] for m in hw_step_metrics])),
-            "inner_bess_degradation":      (bess_ages[-1] - bess_ages[0]) * 1e4,
-            "inner_episode_length":        float(n_hw),
-            "inner_survived":              survived,  # same episode, same termination
-            "inner_cumul_p_pump_mw":       float(np.sum([m["p_pump_mw"] for m in hw_step_metrics])),
-            "inner_cumul_p_hvac_mw":       float(np.sum([m["p_hvac_mw"] for m in hw_step_metrics])),
-            "inner_cumul_flex_reduction_kw": float(np.sum([m["flex_reduction_kw"] for m in hw_step_metrics])),
-            "inner_cumul_bess_actual_kw":  float(np.sum([m["bess_actual_kw"] for m in hw_step_metrics])),
-        }
 
     return {
         "mean_reward":          float(np.mean(rewards)),
@@ -631,7 +563,10 @@ def run_macro_episode(
         "mean_cool_delta_kw":   float(np.mean(cool_deltas)) if cool_deltas else 0.0,
         "mean_p_pump_mw":       float(np.mean(p_pumps)) if p_pumps else 0.0,
         "mean_p_hvac_mw":       float(np.mean(p_hvacs)) if p_hvacs else 0.0,
-        **inner_agg,
+        "mean_inner_throttle":  float(np.mean(inner_throttles)) if inner_throttles else 0.0,
+        "mean_inner_pump":      float(np.mean(inner_pumps)) if inner_pumps else 0.0,
+        "mean_inner_hvac":      float(np.mean(inner_hvacs)) if inner_hvacs else 0.0,
+        "mean_inner_bess":      float(np.mean(inner_besses)) if inner_besses else 0.0,
     }
 
 
@@ -641,25 +576,14 @@ def benchmark(
     n_episodes  : int,
     seed_start  : int,
     model_dir   : str | None,
-    record_transitions: bool = False,
+    record_transitions: bool = True,
     fixed_action_values: dict[str, float] | None = None,
-    llm_api_base: str = "http://localhost:8000/v1",
-    llm_mode: str = "hardware",
-    llm_template_path: str = "conf/chat_templates/run_benchmark.yaml",
-    llm_max_new_tokens: int = 9216,
-    llm_temperature: float = 0.0,
-    llm_enable_thinking: bool = True,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
-
-    if llm_mode not in ["hardware", "macro"]:
-        raise ValueError(f"Invalid agent mode '{llm_mode}'. Must be 'hardware' or 'macro'.")
 
     if record_transitions:
         project_root = Path(__file__).resolve().parent.parent
         (project_root / "runs").mkdir(parents=True, exist_ok=True)
-
-    prompt_templates = load_prompt_templates(llm_template_path)
 
     scenario_bar = tqdm(scenarios, desc="Scenarios", position=0)
     for scenario in scenario_bar:
@@ -668,7 +592,7 @@ def benchmark(
         agent_bar = tqdm(agents, desc="Agents", position=1, leave=False)
         for agent_name in agent_bar:
             agent_bar.set_description(f"Agent: {agent_name}")
-            agent_type = llm_mode if agent_name == "llm_policy" else _infer_agent_type(agent_name)
+            agent_type = _infer_agent_type(agent_name)
 
             # Instantiate agent once per (agent, scenario) to share weights
             if agent_type == "macro":
@@ -687,27 +611,11 @@ def benchmark(
                 macro_part, inner_part = agent_name.split("+", 1)
                 inner_env = _make_env(scenario=scenario)
                 inner_env.reset(seed=0)
-                if inner_part == "llm_policy":
-                    # LLM hardware agent as inner controller — predict() needs a live
-                    # C2GFastEnv to read bess_p_max_mw / committed_mw_max; pass inner_env.
-                    state_names = [name.removeprefix("s_") for name in STATE_COLUMNS]
-                    llm_inner = LLMPolicyAgent(
-                        mode="hardware",
-                        prompts=prompt_templates,
-                        state_names=state_names,
-                        max_new_tokens=llm_max_new_tokens,
-                        temperature=llm_temperature,
-                        api_base=llm_api_base,
-                        enable_thinking=llm_enable_thinking,
-                    )
-                    inner_action_fn = lambda obs, _act, c=llm_inner, e=inner_env, sc=scenario: \
-                        c.predict(obs, env=e, scenario=sc)[0]
-                else:
-                    inner_ctrl = _make_inner_controller(
-                        inner_part, env=inner_env,
-                        scenario=scenario, seed=seed_start, model_dir=model_dir,
-                    )
-                    inner_action_fn = lambda obs, _act, c=inner_ctrl: c.predict(obs)[0]
+                inner_ctrl = _make_inner_controller(
+                    inner_part, env=inner_env,
+                    scenario=scenario, seed=seed_start, model_dir=model_dir,
+                )
+                inner_action_fn = lambda obs, _act, c=inner_ctrl: c.predict(obs)[0]
 
             if agent_name == "rule_based":
                 agent = RuleBasedController()
@@ -727,6 +635,14 @@ def benchmark(
                 agent = MILPDispatchController()
             elif agent_name == "random":
                 agent = RandomAgent(env_for_space, algo_name=agent_name)
+            elif agent_name in ("cmaes", "pso"):
+                npz_name = f"{agent_name}_policy.npz"
+                npz_dir = Path(model_dir) if model_dir else Path("trained_models") / f"{agent_name}_{scenario}_s{seed_start}"
+                npz_path = npz_dir / npz_name
+                if not npz_path.exists():
+                    print(f"    SKIP: No trained policy at {npz_path}")
+                    continue
+                agent = EvolutionaryAgent(npz_path, algo_name=agent_name)
             # ── High-Assurance shielded agents ─────────────────
             elif agent_name == "simplex_ppo":
                 try:
@@ -784,7 +700,6 @@ def benchmark(
                         episode_number=ep,
                         inner_action_fn=inner_action_fn,
                         record_transitions=record_transitions,
-                        inner_algo_name=inner_part if "+" in agent_name else None,
                     )
                 else:
                     m = run_episode(
@@ -815,33 +730,6 @@ def benchmark(
                 **{f"{k}_std": round(v, 4) for k, v in std.items() if k != "survived"},
             }
             rows.append(row)
-
-            # Emit a separate hardware-schema row for the inner controller so
-            # it can be compared directly with standalone hardware agent results.
-            if "+" in agent_name and any(k.startswith("inner_") for k in agg):
-                inner_part_name = agent_name.split("+", 1)[1]
-                inner_row = {
-                    "scenario"              : scenario,
-                    "agent"                 : inner_part_name,
-                    "n_episodes"            : n_episodes,
-                    "wall_time_s"           : round(elapsed, 2),
-                    "mean_reward"           : round(agg.get("inner_mean_reward", 0.0), 4),
-                    "total_reward"          : round(agg.get("inner_total_reward", 0.0), 4),
-                    "tracking_rmse"         : round(agg.get("inner_tracking_rmse", 0.0), 4),
-                    "thermal_viol_rate"     : round(agg.get("inner_thermal_viol_rate", 0.0), 4),
-                    "throughput_ratio"      : round(agg.get("inner_throughput_ratio", 0.0), 4),
-                    "bess_degradation"      : round(agg.get("inner_bess_degradation", 0.0), 4),
-                    "episode_length"        : round(agg.get("inner_episode_length", 0.0), 4),
-                    "survival_rate"         : round(agg.get("survival_rate", 0.0), 4),
-                    "cumul_p_pump_mw"       : round(agg.get("inner_cumul_p_pump_mw", 0.0), 4),
-                    "cumul_p_hvac_mw"       : round(agg.get("inner_cumul_p_hvac_mw", 0.0), 4),
-                    "cumul_flex_reduction_kw": round(agg.get("inner_cumul_flex_reduction_kw", 0.0), 4),
-                    "cumul_bess_actual_kw"  : round(agg.get("inner_cumul_bess_actual_kw", 0.0), 4),
-                    # std columns (tracking_rmse_std etc.) if available
-                    **{f"{k[len('inner_'):]}__std": round(std.get(k, 0.0), 4)
-                       for k in std if k.startswith("inner_") and k != "inner_survived"},
-                }
-                rows.append(inner_row)
             if agent_type == "macro":
                 tqdm.write(
                     f"  {agent_name}/{scenario}  "
@@ -851,7 +739,11 @@ def benchmark(
                     f"survive={agg['survival_rate']:.2f}  "
                     f"flex={agg['mean_flex_kw']:.0f}kW  "
                     f"bess={agg['mean_bess_kw']:.0f}kW  "
-                    f"cool_d={agg['mean_cool_delta_kw']:.0f}kW"
+                    f"cool_d={agg['mean_cool_delta_kw']:.0f}kW  "
+                    f"inner[thr={agg['mean_inner_throttle']:.2f} "
+                    f"pmp={agg['mean_inner_pump']:.2f} "
+                    f"hvac={agg['mean_inner_hvac']:.2f} "
+                    f"bess={agg['mean_inner_bess']:+.2f}]"
                 )
             else:
                 tqdm.write(
@@ -869,18 +761,14 @@ def print_results_table(rows: list[dict[str, Any]]) -> None:
     """Print results as a formatted table."""
     if not rows:
         return
-    # Collect union of all keys to handle mixed hardware/macro schemas
-    seen: dict[str, None] = {}
-    for row in rows:
-        seen.update(dict.fromkeys(row.keys()))
-    cols = list(seen.keys())
+    cols = list(rows[0].keys())
     # Compute column widths
     widths = {c: len(c) for c in cols}
     str_rows = []
     for row in rows:
         sr = {}
         for c in cols:
-            v = row.get(c, "")
+            v = row[c]
             sr[c] = f"{v:.4f}" if isinstance(v, float) else str(v)
             widths[c] = max(widths[c], len(sr[c]))
         str_rows.append(sr)
@@ -894,21 +782,23 @@ def print_results_table(rows: list[dict[str, Any]]) -> None:
     print()
 
 
-def save_csv(rows: list[dict[str, Any]], path: Path) -> None:
+def save_csv(rows: list[dict[str, Any]], path: Path, append: bool = False) -> None:
     if not rows:
         print("No results to save.")
         return
-    # Collect union of all keys to handle mixed hardware/macro schemas
-    seen: dict[str, None] = {}
-    for row in rows:
-        seen.update(dict.fromkeys(row.keys()))
-    fieldnames = list(seen.keys())
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore", restval="")
-        writer.writeheader()
-        writer.writerows(rows)
-    print(f"\nResults saved -> {path}")
+    fieldnames = list(rows[0].keys())
+    if append and path.exists():
+        with open(path, "a", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writerows(rows)
+        print(f"\nResults appended -> {path}")
+    else:
+        with open(path, "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(rows)
+        print(f"\nResults saved -> {path}")
 
 
 # ---------------------------------------------------------------------------
@@ -921,14 +811,13 @@ if __name__ == "__main__":
         "--agents", nargs="+",
         default=["rule_based", "bang_bang", "pid", "random"],
         help="Agents to evaluate: rule_based rule_macro random_macro bang_bang pid mpc_fast "
-             "mpc_macro milp ppo sac ppo_lag random "
-               "simplex_ppo cbf_ppo hj_ppo mpcsf_ppo cpo reward_shaping ha_c2g "
-                             "llm_policy "
+             "mpc_macro milp ppo sac ppo_lag cmaes pso random "
+             "simplex_ppo cbf_ppo hj_ppo mpcsf_ppo cpo reward_shaping ha_c2g "
              "cbm_only cbm_gate cbm_shield",
     )
     parser.add_argument(
-        "--scenarios", nargs="+",
-        default=SCENARIOS,
+        "--scenarios", nargs="+", type=str,
+        default="default",
         choices=SCENARIOS,
     )
     parser.add_argument(
@@ -961,45 +850,13 @@ if __name__ == "__main__":
         "--fixed-action",
         action="append",
         default=[],
-        help="Optional fixed value for a disabled action, e.g. --fixed-action hvac_effort=0.8",
+        help="Optional fixed value for an action, e.g. --fixed-action hvac_effort=0.8",
     )
     parser.add_argument(
-        "--llm-api-base",
-        default="http://localhost:8000/v1",
-        help="vLLM server base URL for OpenAI-compatible API",
-    )
-    parser.add_argument(
-        "--llm-mode",
-        choices=["hardware", "macro"],
-        default="hardware",
-        help="Control mode for llm_policy agent",
-    )
-    parser.add_argument(
-        "--llm-template-path",
-        default="conf/chat_templates/run_benchmark.yaml",
-        help="YAML path with hardware_prompt and macro_prompt templates",
-    )
-    parser.add_argument(
-        "--llm-max-new-tokens",
-        type=int,
-        default=9216,
-        help="Max new tokens for llm_policy generation. vLLM has no per-request thinking-budget "
-             "parameter, so this is the only knob: the model fills <think> first, then emits JSON. "
-             "Default 9216 = ~8704 thinking tokens + ~512 for the JSON action output. "
-             "Must be less than the server's --max-model-len minus the prompt length (~2500 tokens).",
-    )
-    parser.add_argument(
-        "--llm-temperature",
-        type=float,
-        default=0.0,
-        help="Sampling temperature for llm_policy generation (0 = greedy)",
-    )
-    parser.add_argument(
-        "--llm-no-thinking",
-        dest="llm_enable_thinking",
-        action="store_false",
-        default=True,
-        help="Disable <think> reasoning for all LLM agents (faster, lower token cost).",
+        "--append",
+        action="store_true",
+        default=False,
+        help="Append results to existing CSV instead of overwriting",
     )
     args = parser.parse_args()
 
@@ -1031,12 +888,6 @@ if __name__ == "__main__":
         model_dir  = args.model_dir,
         record_transitions = args.record_transitions,
         fixed_action_values = fixed_action_values,
-        llm_api_base = args.llm_api_base,
-        llm_mode = args.llm_mode,
-        llm_template_path = args.llm_template_path,
-        llm_max_new_tokens = args.llm_max_new_tokens,
-        llm_temperature = args.llm_temperature,
-        llm_enable_thinking = args.llm_enable_thinking,
     )
     print_results_table(rows)
     output_path = (
@@ -1048,4 +899,4 @@ if __name__ == "__main__":
             fixed_action_values=fixed_action_values,
         )
     )
-    save_csv(rows, output_path)
+    save_csv(rows, output_path, append=args.append)

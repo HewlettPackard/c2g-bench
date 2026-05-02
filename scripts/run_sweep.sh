@@ -2,7 +2,7 @@
 # ══════════════════════════════════════════════════════════════════════════════
 # scripts/run_sweep.sh  —  Full C2G-Bench Training & Evaluation Sweep
 # ══════════════════════════════════════════════════════════════════════════════
-# Runs: 4 scenarios × {PPO, SAC, PPO-Lag, BangBang, PID, MPC, CMA-ES, PSO, RuleBased, Random} × 3 seeds
+# Runs: 4 scenarios × {PPO, SAC, PPO-Lag, BangBang, PID, MPC, RuleBased, Random} × 3 seeds
 #        4 scenarios × {PPO-Macro, HRL, MPC-Macro, MILP, RuleBased-Macro} × 3 seeds
 #   - PPO: 300k steps    (~8 min/run  on H100)
 #   - SAC: 200k steps    (~6 min/run)
@@ -90,20 +90,6 @@ elif algo == "pid":
 elif algo == "mpc_fast":
     from baselines.mpc_fast import MPCFastController
     agent = MPCFastController()
-elif algo in ("cmaes", "pso"):
-    npz_name = f"{algo}_policy.npz"
-    npz_path = Path(model_path) / npz_name if model_path else None
-    if npz_path and npz_path.exists():
-        data = np.load(npz_path)
-        class LinearAgent:
-            def __init__(self, W, b, lo, hi):
-                self.W, self.b, self.lo, self.hi = W, b, lo, hi
-            def predict(self, obs, deterministic=True):
-                a = np.clip(self.W @ obs + self.b, self.lo, self.hi)
-                return a.astype(np.float32), None
-        agent = LinearAgent(data["W"], data["b"], data["act_low"], data["act_high"])
-    else:
-        print(f"  SKIP: no {npz_name} in {model_path}"); exit(0)
 else:
     # RL agent — load from zip and restore observation normalization when used
     model_root = Path(model_path) if model_path else None
@@ -596,61 +582,9 @@ done
 wait
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Phase 9: CMA-ES training + evaluation
+# Phase 9: PPO-Lagrangian training + evaluation
 # ══════════════════════════════════════════════════════════════════════════════
-echo -e "\n▸ Phase 9: CMA-ES training (200 generations × 12 runs) …"
-for scenario in "${SCENARIOS[@]}"; do
-    for seed in "${SEEDS[@]}"; do
-        if $DRY_RUN; then
-            echo "  [dry-run] train CMA-ES $scenario seed=$seed"
-            continue
-        fi
-        wait_for_slots
-        (
-            $PYTHON baselines/train_cmaes.py algo=cmaes scenario="$scenario" experiment.seed="$seed"
-            MODEL_DIR="outputs/cmaes_${scenario}/seed_${seed}"
-            LATEST=$(ls -td "${MODEL_DIR}/"*/ 2>/dev/null | head -1)
-            if [[ -n "$LATEST" && -f "${LATEST}cmaes_policy.npz" ]]; then
-                evaluate "cmaes" "$scenario" "$seed" "$LATEST"
-            else
-                echo "  WARN: No CMA-ES policy found for $scenario/$seed"
-            fi
-        ) &
-        NJOBS=$((NJOBS + 1))
-    done
-done
-wait
-
-# ══════════════════════════════════════════════════════════════════════════════
-# Phase 10: PSO training + evaluation
-# ══════════════════════════════════════════════════════════════════════════════
-echo -e "\n▸ Phase 10: PSO training (200 generations × 12 runs) …"
-for scenario in "${SCENARIOS[@]}"; do
-    for seed in "${SEEDS[@]}"; do
-        if $DRY_RUN; then
-            echo "  [dry-run] train PSO $scenario seed=$seed"
-            continue
-        fi
-        wait_for_slots
-        (
-            $PYTHON baselines/train_pso.py algo=pso scenario="$scenario" experiment.seed="$seed"
-            MODEL_DIR="outputs/pso_${scenario}/seed_${seed}"
-            LATEST=$(ls -td "${MODEL_DIR}/"*/ 2>/dev/null | head -1)
-            if [[ -n "$LATEST" && -f "${LATEST}pso_policy.npz" ]]; then
-                evaluate "pso" "$scenario" "$seed" "$LATEST"
-            else
-                echo "  WARN: No PSO policy found for $scenario/$seed"
-            fi
-        ) &
-        NJOBS=$((NJOBS + 1))
-    done
-done
-wait
-
-# ══════════════════════════════════════════════════════════════════════════════
-# Phase 11: PPO-Lagrangian training + evaluation
-# ══════════════════════════════════════════════════════════════════════════════
-echo -e "\n▸ Phase 11: PPO-Lagrangian training (300k steps × 12 runs) …"
+echo -e "\n▸ Phase 9: PPO-Lagrangian training (300k steps × 12 runs) …"
 for scenario in "${SCENARIOS[@]}"; do
     for seed in "${SEEDS[@]}"; do
         if $DRY_RUN; then
@@ -659,7 +593,7 @@ for scenario in "${SCENARIOS[@]}"; do
         fi
         wait_for_slots
         (
-            $PYTHON baselines/train_ppo_lagrangian.py algo=ppo_lagrangian scenario="$scenario" experiment.seed="$seed"
+            $PYTHON baselines/safety/train_ppo_lagrangian.py algo=ppo_lagrangian scenario="$scenario" experiment.seed="$seed"
             MODEL_DIR="outputs/ppo_lagrangian_${scenario}/seed_${seed}"
             LATEST=$(ls -td "${MODEL_DIR}/"*/ 2>/dev/null | head -1)
             if [[ -n "$LATEST" && -f "${LATEST}final_model.zip" ]]; then
@@ -687,7 +621,7 @@ for scenario in "${SCENARIOS[@]}"; do
         (
             echo "[train] CBF-PPO / ${scenario} / seed=${seed}"
             OUT_DIR="outputs/cbf_ppo_${scenario}/seed_${seed}"
-            $PYTHON baselines/train_cbf_ppo.py \
+            $PYTHON baselines/safety/train_cbf_ppo.py \
                 algo=cbf_ppo \
                 scenario="${scenario}" \
                 experiment.seed="${seed}" \
@@ -720,7 +654,7 @@ for scenario in "${SCENARIOS[@]}"; do
         (
             echo "[train] HJ-PPO / ${scenario} / seed=${seed}"
             OUT_DIR="outputs/hj_ppo_${scenario}/seed_${seed}"
-            $PYTHON baselines/train_hj_ppo.py \
+            $PYTHON baselines/safety/train_hj_ppo.py \
                 algo=hj_ppo \
                 scenario="${scenario}" \
                 experiment.seed="${seed}" \
@@ -753,7 +687,7 @@ for scenario in "${SCENARIOS[@]}"; do
         (
             echo "[train] MPCSF-PPO / ${scenario} / seed=${seed}"
             OUT_DIR="outputs/mpcsf_ppo_${scenario}/seed_${seed}"
-            $PYTHON baselines/train_mpcsf_ppo.py \
+            $PYTHON baselines/safety/train_mpcsf_ppo.py \
                 algo=mpcsf_ppo \
                 scenario="${scenario}" \
                 experiment.seed="${seed}" \
@@ -786,7 +720,7 @@ for scenario in "${SCENARIOS[@]}"; do
         (
             echo "[train] CPO / ${scenario} / seed=${seed}"
             OUT_DIR="outputs/cpo_${scenario}/seed_${seed}"
-            $PYTHON baselines/train_cpo.py \
+            $PYTHON baselines/safety/train_cpo.py \
                 algo=cpo \
                 scenario="${scenario}" \
                 experiment.seed="${seed}" \
@@ -819,7 +753,7 @@ for scenario in "${SCENARIOS[@]}"; do
         (
             echo "[train] Shield-RS / ${scenario} / seed=${seed}"
             OUT_DIR="outputs/reward_shaping_${scenario}/seed_${seed}"
-            $PYTHON baselines/train_shield_reward_shaping.py \
+            $PYTHON baselines/safety/train_shield_reward_shaping.py \
                 algo=shield_reward_shaping \
                 scenario="${scenario}" \
                 experiment.seed="${seed}" \
@@ -852,7 +786,7 @@ for scenario in "${SCENARIOS[@]}"; do
         (
             echo "[train] HA-C2G / ${scenario} / seed=${seed}"
             OUT_DIR="outputs/ha_c2g_${scenario}/seed_${seed}"
-            $PYTHON baselines/train_ha_c2g.py \
+            $PYTHON baselines/safety/train_ha_c2g.py \
                 algo=ha_c2g \
                 scenario="${scenario}" \
                 experiment.seed="${seed}" \
@@ -885,7 +819,7 @@ for scenario in "${SCENARIOS[@]}"; do
         (
             echo "[train] CBM-Only / ${scenario} / seed=${seed}"
             OUT_DIR="outputs/cbm_only_${scenario}/seed_${seed}"
-            $PYTHON baselines/train_cbm_only.py \
+            $PYTHON baselines/safety/train_cbm_only.py \
                 algo=cbm_only \
                 scenario="${scenario}" \
                 experiment.seed="${seed}" \
@@ -918,7 +852,7 @@ for scenario in "${SCENARIOS[@]}"; do
         (
             echo "[train] CBM+Gate / ${scenario} / seed=${seed}"
             OUT_DIR="outputs/cbm_gate_${scenario}/seed_${seed}"
-            $PYTHON baselines/train_cbm_gate.py \
+            $PYTHON baselines/safety/train_cbm_gate.py \
                 algo=cbm_gate \
                 scenario="${scenario}" \
                 experiment.seed="${seed}" \
@@ -951,7 +885,7 @@ for scenario in "${SCENARIOS[@]}"; do
         (
             echo "[train] CBM+Shield / ${scenario} / seed=${seed}"
             OUT_DIR="outputs/cbm_shield_${scenario}/seed_${seed}"
-            $PYTHON baselines/train_cbm_shield.py \
+            $PYTHON baselines/safety/train_cbm_shield.py \
                 algo=cbm_shield \
                 scenario="${scenario}" \
                 experiment.seed="${seed}" \
@@ -1026,7 +960,7 @@ if csv_macro.exists():
 # LaTeX-ready table
 print("═══ LaTeX table rows (paste into paper) ═══")
 for scenario in ["default", "scenario_a", "scenario_b", "scenario_c"]:
-    for algo in ["random", "bang_bang", "pid", "rule_based", "mpc_fast", "cmaes", "pso", "ppo", "sac", "ppo_lag", "cbf_ppo", "hj_ppo", "mpcsf_ppo", "cpo", "reward_shaping", "cbm_only", "cbm_gate", "cbm_shield", "ha_c2g"]:
+    for algo in ["random", "bang_bang", "pid", "rule_based", "mpc_fast", "ppo", "sac", "ppo_lag", "cbf_ppo", "hj_ppo", "mpcsf_ppo", "cpo", "reward_shaping", "cbm_only", "cbm_gate", "cbm_shield", "ha_c2g"]:
         sub = df[(df.scenario == scenario) & (df.algo == algo)]
         if sub.empty:
             continue

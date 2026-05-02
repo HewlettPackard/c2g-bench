@@ -32,7 +32,6 @@ global:
   # Data directories (relative to cwd or absolute)
   trace_dir:    "data/processed/workload_traces"
   energy_dir:   "data/processed/energy"
-  renewable_dir: "data/processed/renewable"
   weather_dir:  "data/processed/weather"
 
   # Default market (overridden per scenario or via Hydra sweep)

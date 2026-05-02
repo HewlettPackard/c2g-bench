@@ -1,5 +1,5 @@
 """
-baselines/train_shield_reward_shaping.py  —  Fixed Shield-Penalty Reward Shaping
+baselines/safety/train_shield_reward_shaping.py  —  Fixed Shield-Penalty Reward Shaping
 ==================================================================================
 Augments the step reward with fixed, engineered penalty functions derived
 from distance-to-constraint-boundary. Unlike PPO-Lagrangian (adaptive
@@ -20,8 +20,8 @@ discrete cost for triggering the safety shield.
 
 Usage
 -----
-  uv run python baselines/train_shield_reward_shaping.py algo=shield_reward_shaping
-  uv run python baselines/train_shield_reward_shaping.py algo=shield_reward_shaping scenario=scenario_b
+  uv run python baselines/safety/train_shield_reward_shaping.py algo=shield_reward_shaping
+  uv run python baselines/safety/train_shield_reward_shaping.py algo=shield_reward_shaping scenario=scenario_b
 """
 from __future__ import annotations
 
@@ -45,7 +45,7 @@ from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.vec_env import VecNormalize
 
 from c2g_env import C2GFastEnv
-from baselines.safety_shield import SafetyShield
+from baselines.safety.safety_shield import SafetyShield
 from baselines.metrics_callback import C2GMetricsCallback
 
 log = logging.getLogger(__name__)

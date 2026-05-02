@@ -32,16 +32,7 @@ import numpy as np
 from numpy.typing import NDArray
 from scipy.optimize import minimize
 
-# ── Observation indices (C2GMacroEnv, 16-D) ──────────────────────────
-_I_TEMP_A     = 0
-_I_TEMP_B     = 1
-_I_SOC        = 2
-_I_LMP        = 6
-_I_LOAD       = 7
-_I_HEADROOM_A = 10
-_I_HEADROOM_B = 11
-_I_COMMIT_PREV = 12
-_I_BESS_PREV  = 13
+from c2g_env.obs_indices import Macro as _M
 
 # ── Physical constants ────────────────────────────────────────────────
 _DT_MACRO   = 900.0     # 15 minutes in seconds
@@ -107,11 +98,11 @@ class MPCMacroController:
         H = self.H
 
         # ── Current state from obs ───────────────────────────────────
-        temp_A_mean = float(obs[_I_TEMP_A])
-        soc         = float(obs[_I_SOC])
-        lmp_norm    = float(obs[_I_LMP])
-        load_norm   = float(obs[_I_LOAD])
-        commit_prev = float(obs[_I_COMMIT_PREV])
+        temp_A_mean = float(obs[_M.TEMP_A])
+        soc         = float(obs[_M.SOC])
+        lmp_norm    = float(obs[_M.LMP])
+        load_norm   = float(obs[_M.GRID_LOAD])
+        commit_prev = float(obs[_M.BID_MW_PREV])
 
         # De-normalise temperature (obs is T/T_safe for headroom, or °C mean)
         # In macro env, obs[0] is temp_A_mean in °C normalised by T_safe

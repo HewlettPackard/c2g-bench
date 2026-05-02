@@ -1,5 +1,5 @@
 """
-baselines/train_ha_c2g.py  —  High-Assurance C2G (Neuro-Symbolic 3-Layer)
+baselines/safety/train_ha_c2g.py  —  High-Assurance C2G (Neuro-Symbolic 3-Layer)
 ==========================================================================
 Trains PPO with the full HA-C2G neuro-symbolic architecture, adapted from
 the SC26 HA-CompOpt paper:
@@ -35,8 +35,8 @@ Training regime:
 
 Usage
 -----
-  uv run python baselines/train_ha_c2g.py algo=ha_c2g
-  uv run python baselines/train_ha_c2g.py algo=ha_c2g scenario=scenario_b
+  uv run python baselines/safety/train_ha_c2g.py algo=ha_c2g
+  uv run python baselines/safety/train_ha_c2g.py algo=ha_c2g scenario=scenario_b
 """
 from __future__ import annotations
 
@@ -65,7 +65,7 @@ from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.vec_env import VecNormalize
 
 from c2g_env import C2GFastEnv
-from baselines.safety_shield import SafetyShield
+from baselines.safety.safety_shield import SafetyShield
 from baselines.safety.concept_bottleneck import (
     C2GConcepts, C2GConceptEncoder, C2GGatedConceptFeatureExtractor,
 )

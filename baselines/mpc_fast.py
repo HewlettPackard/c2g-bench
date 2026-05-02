@@ -37,11 +37,7 @@ import numpy as np
 from numpy.typing import NDArray
 from scipy.optimize import minimize
 
-# ── Observation indices ────────────────────────────────────────────────
-_I_TEMP_A = 0
-_I_TEMP_B = 1
-_I_SOC    = 2
-_I_REGD   = 6
+from c2g_env.obs_indices import Fast as _F
 
 # ── Physical constants (from c2g_env/config.yaml & physics/) ──────────
 _T_SAFE      = 35.0
@@ -121,9 +117,9 @@ class MPCFastController:
             return self._plan[idx]
 
         # ── Extract current state ────────────────────────────────────
-        T_A_norm = float(obs[_I_TEMP_A])
-        soc      = float(obs[_I_SOC])
-        regd     = float(obs[_I_REGD])
+        T_A_norm = float(obs[_F.TEMP_A])
+        soc      = float(obs[_F.SOC])
+        regd     = float(obs[_F.REGD])
 
         T_A = T_A_norm * _T_SAFE  # de-normalise to °C
 

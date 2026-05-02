@@ -1,5 +1,5 @@
 """
-baselines/train_ppo_lagrangian.py  —  PPO-Lagrangian (Constrained RL)
+baselines/safety/train_ppo_lagrangian.py  —  PPO-Lagrangian (Constrained RL)
 ======================================================================
 Augments standard SB3 PPO with Lagrange multipliers for hard-constraint
 satisfaction.  Three constraint costs are tracked:
@@ -20,8 +20,8 @@ adjusts the reward at each step:  r' = r - Σ λ_j · c_j.
 
 Usage
 -----
-  uv run python baselines/train_ppo_lagrangian.py algo=ppo_lagrangian
-  uv run python baselines/train_ppo_lagrangian.py algo=ppo_lagrangian scenario=scenario_b
+  uv run python baselines/safety/train_ppo_lagrangian.py algo=ppo_lagrangian
+  uv run python baselines/safety/train_ppo_lagrangian.py algo=ppo_lagrangian scenario=scenario_b
 """
 from __future__ import annotations
 

@@ -17,11 +17,10 @@ Section 11 is the configuration reference; Section 12 shows how to add a new sce
 5. [Simulator: BESS (Battery Energy Storage)](#5-bess)
 6. [Simulator: Electrical Chain](#6-electrical-chain)
 7. [Simulator: Macro-Grid Signal](#7-macro-grid-signal)
-8. [Simulator: Renewable Generation](#8-renewable-generation)
-9. [Simulator: Weather](#9-weather)
-10. [Simulator: Workload Orchestrator](#10-workload-orchestrator)
-11. [Configuration Reference](#11-configuration-reference)
-12. [Adding a New Scenario](#12-adding-a-new-scenario)
+8. [Simulator: Weather](#8-weather)
+9. [Simulator: Workload Orchestrator](#9-workload-orchestrator)
+10. [Configuration Reference](#10-configuration-reference)
+11. [Adding a New Scenario](#11-adding-a-new-scenario)
 
 ---
 
@@ -40,13 +39,13 @@ C2GMacroEnv  (15-minute ticks)
         Observation : 17-D normalised
         Action      : 4-D  [throttle, pump_A, hvac, bess]
         │
-        └── Seven physics engines (all unconditionally stable):
+        └── Six physics engines (all unconditionally stable):
                 ThermalTwin · BESSModel · DatacenterElectrical
-                MacroGridSignal · RenewableGenerator · WeatherLoader
+                MacroGridSignal · WeatherLoader
                 WorkloadOrchestrator
 ```
 
-Both environments share the same seven physics engines and the same `config.yaml`.
+Both environments share the same six physics engines and the same `config.yaml`.
 
 > **Formal MDP specification:** For the full two-level MDP tuple definition — state/action spaces, discount factors, terminal conditions, and the Semi-MDP framing — see [README.md §5.0](../README.md#50-formal-mdp-specification).
 
@@ -553,54 +552,7 @@ where $L$ is the regional zone load in MW.
 [5] Schweppe, F.C., Caramanis, M.C., Tabors, R.D., Bohn, R.E. (1988) *Spot Pricing of Electricity*, Kluwer Academic (ISBN 978-0-89838-260-0).  
 [6] Kirby, B.J. (2005) *Frequency Regulation Basics and Trends*, ORNL/TM-2004/291. DOI: [10.2172/885974](https://doi.org/10.2172/885974)  
 
----
-
-## 8. Simulator: Renewable Generation
-
-**File:** `c2g_env/physics/renewable.py`  
-**Class:** `RenewableGenerator`
-
-**Capacity:** 100 MW wind + 75 MW solar PV (collocated at facility)
-
-### 8.1 Wind Power Model (IEC 61400-12-1)
-
-```math
-P_\text{wind}(v) = \begin{cases} 0 & v < v_\text{cut-in} \text{ or } v > v_\text{cut-out} \\ P_\text{rated} \cdot \left(\frac{v^3 - v_\text{cut-in}^3}{v_\text{rated}^3 - v_\text{cut-in}^3}\right) & v_\text{cut-in} \le v \le v_\text{rated} \\ P_\text{rated} & v_\text{rated} < v \le v_\text{cut-out} \end{cases}
-```
-| Parameter | Value |
-|-----------|-------|
-| Rated capacity | 100 MW |
-| Cut-in wind speed | 3.0 m/s |
-| Rated wind speed | 12.0 m/s |
-| Cut-out wind speed | 25.0 m/s |
-| Annual degradation | 0.5%/year |
-
-### 8.2 Solar PV Model (PVUSA / IEC 61853-1)
-
-```math
-P_\text{solar}(G, T_c) = P_\text{STC} \cdot \frac{G}{G_\text{STC}} \cdot \left[1 + \gamma_\text{temp}(T_c - T_\text{STC})\right] \cdot f_\text{age}
-```
-| Parameter | Value |
-|-----------|-------|
-| Rated capacity (STC) | 75 MW |
-| Standard irradiance $G_\text{STC}$ | 1000 W/m² |
-| Standard cell temp $T_\text{STC}$ | 25 °C |
-| Temperature coefficient $\gamma_\text{temp}$ | −0.0040/°C |
-| Annual degradation | 0.7%/year |
-
-Renewable output appears in the PCC power balance but **does not currently feed back into the reward** — it is available in `info` for future research on renewable-aware scheduling.
-
-### References
-
-[1] IEC 61400-12-1:2022 *Wind energy generation systems — Part 12-1: Power performance measurements of electricity producing wind turbines*, IEC. <https://webstore.iec.ch/en/publication/68499>  
-[2] Lydia, M., Kumar, S.S., Selvakumar, A.I., Kumar, G.E.P. (2014) “A comprehensive review on wind turbine power curve modeling techniques,” *Renewable and Sustainable Energy Reviews*, 30, 452–460. DOI: [10.1016/j.rser.2013.10.030](https://doi.org/10.1016/j.rser.2013.10.030)  
-[3] Masters, G.M. (2004) *Renewable and Efficient Electric Power Systems*, Wiley-IEEE Press (ISBN 978-0-471-28060-6). Ch. 7 — Betz limit, v³ power law, cut-in/out parameters.  
-[4] King, D.L., Boyson, W.E., Kratochvil, J.A. (2004) *Photovoltaic Array Performance Model*, Sandia National Laboratories, SAND2004-3535. <https://energy.sandia.gov/>  
-[5] Duffie, J.A., Beckman, W.A., McGowan, J.A. (2013) *Solar Engineering of Thermal Processes*, 4th ed., Wiley (ISBN 978-1-118-41541-6).  
-
----
-
-## 9. Simulator: Weather
+## 8. Simulator: Weather
 
 **File:** `c2g_env/physics/weather.py`  
 **Class:** `WeatherLoader`
@@ -641,7 +593,7 @@ T_\text{amb}(d, h) = \bar{T}_\text{annual} + A_\text{seasonal} \cdot \cos\!\left
 
 ---
 
-## 10. Simulator: Workload Orchestrator
+## 9. Simulator: Workload Orchestrator
 
 **File:** `c2g_env/physics/workload.py`  
 **Class:** `WorkloadOrchestrator`
@@ -678,7 +630,7 @@ P_\text{IT,actual} = P_\text{base} + P_\text{flex,nom} \cdot (1 - \text{throttle
 
 ---
 
-## 11. Configuration Reference
+## 10. Configuration Reference
 
 **File:** `c2g_env/config.yaml`
 
@@ -688,7 +640,7 @@ All parameters are loaded at environment construction time. Override via Hydra:
 uv run python baselines/train_ppo.py scenario=scenario_b reward.beta=3.0
 ```
 
-### 11.1 Global Parameters
+### 10.1 Global Parameters
 
 ```yaml
 global:
@@ -696,12 +648,11 @@ global:
   episode_ticks: 17280   # 24-hour episodes (17280 × 5 s)
   trace_dir:    "data/processed/workload_traces"
   energy_dir:   "data/processed/energy"
-  renewable_dir: "data/processed/renewable"
   weather_dir:  "data/processed/weather"
   grid_market:  "nyiso_nyc"
 ```
 
-### 11.2 Reward Weights
+### 10.2 Reward Weights
 
 ```yaml
 reward:
@@ -715,7 +666,7 @@ reward:
   delta_volt_penalty: 5.0   # Voltage penalty (per pu outside [0.95, 1.05])
 ```
 
-### 11.3 Scenario Parameters
+### 10.3 Scenario Parameters
 
 ```yaml
 <scenario_key>:
@@ -731,7 +682,7 @@ reward:
   grid_stress_scale: 1.0           # RegD signal amplitude multiplier
 ```
 
-### 11.4 Hydra Configuration Tree
+### 10.4 Hydra Configuration Tree
 
 ```
 conf/
@@ -754,7 +705,7 @@ conf/
 
 ---
 
-## 12. Adding a New Scenario
+## 11. Adding a New Scenario
 
 1. **Add a block to `c2g_env/config.yaml`:**
 

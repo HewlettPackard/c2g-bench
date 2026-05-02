@@ -165,23 +165,3 @@ class TestReadmeSmokeCommands:
         )
         _assert_ok(result, "train_ppo_lagrangian.py (default)")
 
-    # ── CMA-ES (minimal generations) ────────────────────────────────────────
-    def test_cmaes_default(self):
-        """Train CMA-ES with 2 generations of 4 individuals."""
-        result = _run(
-            "baselines/train_cmaes.py",
-            ["algo=cmaes", "algo.popsize=4", "algo.generations=2",
-             "algo.n_rollouts=1"],
-        )
-        _assert_ok(result, "train_cmaes.py (default)")
-
-    # ── PSO (minimal generations) ───────────────────────────────────────────
-    def test_pso_default(self):
-        """Train PSO with 2 generations of 4 particles."""
-        result = _run(
-            "baselines/train_pso.py",
-            ["algo=pso", "algo.n_particles=4", "algo.generations=2",
-             "algo.n_rollouts=1"],
-        )
-        _assert_ok(result, "train_pso.py (default)")
-

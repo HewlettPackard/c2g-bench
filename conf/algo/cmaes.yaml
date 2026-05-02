@@ -1,7 +1,0 @@
-name: cmaes
-
-env: fast          # "fast" or "macro"
-popsize: 20
-generations: 200
-sigma0: 0.5
-n_rollouts: 3      # episodes per fitness evaluation

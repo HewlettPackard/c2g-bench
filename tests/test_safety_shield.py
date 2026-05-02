@@ -17,7 +17,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from baselines.safety_shield import SafetyShield, ShieldedEnv, ShieldedAgent, ShieldStats
+from baselines.safety.safety_shield import SafetyShield, ShieldedEnv, ShieldedAgent, ShieldStats
 from c2g_env import C2GFastEnv
 
 
@@ -347,7 +347,7 @@ class TestShieldStats:
 class TestModuleImports:
 
     def test_import_safety_shield(self):
-        from baselines.safety_shield import SafetyShield, ShieldedEnv, ShieldedAgent  # noqa
+        from baselines.safety.safety_shield import SafetyShield, ShieldedEnv, ShieldedAgent  # noqa
 
     def test_import_train_shielded(self):
-        import baselines.train_shielded_ppo  # noqa
+        import baselines.safety.train_shielded_ppo  # noqa

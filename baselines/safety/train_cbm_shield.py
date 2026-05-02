@@ -1,5 +1,5 @@
 """
-baselines/train_cbm_shield.py  —  CBM+Shield Ablation (Tier 3 Ablation)
+baselines/safety/train_cbm_shield.py  —  CBM+Shield Ablation (Tier 3 Ablation)
 =========================================================================
 PPO with Concept Bottleneck feature extractor AND the Simplex physics
 shield (shield-in-the-loop with reward penalty), but NO trained safety
@@ -16,8 +16,8 @@ Comparison ladder:
 
 Usage
 -----
-  python baselines/train_cbm_shield.py algo=cbm_shield
-  python baselines/train_cbm_shield.py algo=cbm_shield scenario=scenario_b
+  python baselines/safety/train_cbm_shield.py algo=cbm_shield
+  python baselines/safety/train_cbm_shield.py algo=cbm_shield scenario=scenario_b
 """
 from __future__ import annotations
 
@@ -44,8 +44,8 @@ from c2g_env import C2GFastEnv
 from baselines.safety.concept_bottleneck import (
     C2GConceptFeatureExtractor,
 )
-from baselines.train_ha_c2g import HAC2GShieldWrapper
-from baselines.train_cbm_only import ConceptSupervisionCallback
+from baselines.safety.train_ha_c2g import HAC2GShieldWrapper
+from baselines.safety.train_cbm_only import ConceptSupervisionCallback
 from baselines.metrics_callback import C2GMetricsCallback
 
 log = logging.getLogger(__name__)
@@ -53,7 +53,7 @@ log = logging.getLogger(__name__)
 
 def make_cbm_shield_env_fn(scenario: str, seed: int, shield_penalty: float = 0.5):
     def _init():
-        from baselines.safety_shield import SafetyShield
+        from baselines.safety.safety_shield import SafetyShield
         base_env = C2GFastEnv(scenario=scenario)
         env = HAC2GShieldWrapper(
             base_env,

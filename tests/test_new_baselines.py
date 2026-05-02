@@ -2,7 +2,7 @@
 tests/test_new_baselines.py — Unit tests for Phase 5 baselines
 ==============================================================
 Tests for: BangBang, PID, MPC-Fast, MPC-Macro, MILP Dispatch,
-           CMA-ES LinearPolicy, PSO LinearPolicy, PPO-Lagrangian wrapper.
+           PPO-Lagrangian wrapper.
 
 All tests run in-process (no subprocess), each finishing in seconds.
 """
@@ -429,96 +429,17 @@ class TestMILPDispatch:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# CMA-ES Linear Policy
-# ═══════════════════════════════════════════════════════════════════════════
-
-class TestCMAESLinearPolicy:
-
-    def test_policy_predict(self):
-        from baselines.train_cmaes import LinearPolicy
-        policy = LinearPolicy(
-            obs_dim=18, act_dim=4,
-            act_low=np.array([0, 0, 0, -1], dtype=np.float32),
-            act_high=np.array([1, 1, 1, 1], dtype=np.float32),
-        )
-        obs = _obs_17d()
-        action, state = policy.predict(obs)
-        assert action.shape == (4,)
-        assert state is None
-
-    def test_set_get_params(self):
-        from baselines.train_cmaes import LinearPolicy
-        policy = LinearPolicy(18, 4, np.zeros(4), np.ones(4))
-        n = policy.n_params
-        assert n == 18 * 4 + 4  # 76
-        params = np.random.randn(n)
-        policy.set_params(params)
-        recovered = policy.get_params()
-        np.testing.assert_allclose(params, recovered)
-
-    def test_action_clipping(self):
-        from baselines.train_cmaes import LinearPolicy
-        act_low = np.array([0, 0, 0, -1], dtype=np.float32)
-        act_high = np.array([1, 1, 1, 1], dtype=np.float32)
-        policy = LinearPolicy(18, 4, act_low, act_high)
-        # Set extreme weights to produce out-of-range raw outputs
-        policy.set_params(np.ones(policy.n_params) * 10.0)
-        obs = _obs_17d()
-        action, _ = policy.predict(obs)
-        assert np.all(action >= act_low - 1e-6)
-        assert np.all(action <= act_high + 1e-6)
-
-    def test_batched_predict(self):
-        from baselines.train_cmaes import LinearPolicy
-        policy = LinearPolicy(18, 4, np.zeros(4), np.ones(4))
-        obs_batch = np.stack([_obs_17d() for _ in range(5)])
-        actions, _ = policy.predict(obs_batch)
-        assert actions.shape == (5, 4)
-
-    def test_evaluate_policy_runs(self):
-        """Smoke: evaluate_policy completes one rollout."""
-        from baselines.train_cmaes import LinearPolicy, evaluate_policy
-        act_low = np.array([0, 0, 0, -1], dtype=np.float32)
-        act_high = np.array([1, 1, 1, 1], dtype=np.float32)
-        policy = LinearPolicy(18, 4, act_low, act_high)
-        reward = evaluate_policy(policy, C2GFastEnv, {"scenario": "default"},
-                                 n_rollouts=1, seed_base=0)
-        assert np.isfinite(reward)
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# PSO Linear Policy  (same LinearPolicy structure)
-# ═══════════════════════════════════════════════════════════════════════════
-
-class TestPSOLinearPolicy:
-
-    def test_policy_predict(self):
-        from baselines.train_pso import LinearPolicy
-        policy = LinearPolicy(18, 4, np.zeros(4), np.ones(4))
-        obs = _obs_17d()
-        action, _ = policy.predict(obs)
-        assert action.shape == (4,)
-
-    def test_set_params(self):
-        from baselines.train_pso import LinearPolicy
-        policy = LinearPolicy(18, 4, np.zeros(4), np.ones(4))
-        policy.set_params(np.random.randn(policy.n_params))
-        action, _ = policy.predict(_obs_17d())
-        assert action.shape == (4,)
-
-
-# ═══════════════════════════════════════════════════════════════════════════
 # PPO-Lagrangian Reward Wrapper
 # ═══════════════════════════════════════════════════════════════════════════
 
 class TestPPOLagrangian:
 
     def test_wrapper_imports(self):
-        from baselines.train_ppo_lagrangian import LagrangianRewardWrapper
+        from baselines.safety.train_ppo_lagrangian import LagrangianRewardWrapper
         assert LagrangianRewardWrapper is not None
 
     def test_wrapper_modifies_reward(self):
-        from baselines.train_ppo_lagrangian import LagrangianRewardWrapper
+        from baselines.safety.train_ppo_lagrangian import LagrangianRewardWrapper
         env = C2GFastEnv(scenario="default")
         lambdas = np.array([1.0, 1.0, 1.0])
         wrapped = LagrangianRewardWrapper(env, lambdas)
@@ -531,7 +452,7 @@ class TestPPOLagrangian:
         assert info_wrap["constraint_costs"].shape == (3,)
 
     def test_wrapper_zero_lambdas_no_penalty(self):
-        from baselines.train_ppo_lagrangian import LagrangianRewardWrapper
+        from baselines.safety.train_ppo_lagrangian import LagrangianRewardWrapper
         env = C2GFastEnv(scenario="default")
         lambdas = np.array([0.0, 0.0, 0.0])
         wrapped = LagrangianRewardWrapper(env, lambdas)
@@ -541,7 +462,7 @@ class TestPPOLagrangian:
         assert info["lagrangian_penalty"] == pytest.approx(0.0)
 
     def test_lagrangian_callback_imports(self):
-        from baselines.train_ppo_lagrangian import LagrangianUpdateCallback
+        from baselines.safety.train_ppo_lagrangian import LagrangianUpdateCallback
         lambdas = np.array([0.1, 0.1, 0.1])
         budgets = np.array([0.05, 0.10, 0.05])
         cb = LagrangianUpdateCallback(lambdas, budgets)
@@ -549,7 +470,7 @@ class TestPPOLagrangian:
 
     def test_wrapper_episode_cost_rates(self):
         """On episode end, info should contain episode_cost_rates."""
-        from baselines.train_ppo_lagrangian import LagrangianRewardWrapper
+        from baselines.safety.train_ppo_lagrangian import LagrangianRewardWrapper
         env = C2GFastEnv(scenario="default")
         lambdas = np.array([0.5, 0.5, 0.5])
         wrapped = LagrangianRewardWrapper(env, lambdas)
@@ -575,7 +496,7 @@ class TestAlgoConfigs:
     """Verify all algo YAML files parse correctly."""
 
     @pytest.mark.parametrize("yaml_name", [
-        "pid", "mpc_fast", "mpc_macro", "milp", "cmaes", "pso", "ppo_lagrangian",
+        "pid", "mpc_fast", "mpc_macro", "milp", "ppo_lagrangian",
     ])
     def test_yaml_loads(self, yaml_name):
         import yaml
