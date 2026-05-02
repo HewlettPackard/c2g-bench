@@ -271,6 +271,8 @@ class _BaseLLMPolicyAgent:
         context_num_steps: int = 0,
         icrl_attempt_template: str | None = None,
         icrl_instruction_template: str | None = None,
+        icrl_explore_template: str | None = None,
+        icrl_mode: str = "autonomous",
     ):
         self._model_name = probe_api_base(api_base)
 
@@ -302,6 +304,11 @@ class _BaseLLMPolicyAgent:
         self._icrl_buffer: deque[dict[str, Any]] = deque(maxlen=_maxlen)
         self._icrl_attempt_template: str | None = icrl_attempt_template or None
         self._icrl_instruction_template: str | None = icrl_instruction_template or None
+        self._icrl_explore_template: str | None = icrl_explore_template or None
+        _valid_modes = ("autonomous", "preset", "exploit")
+        if icrl_mode not in _valid_modes:
+            raise ValueError(f"icrl_mode must be one of {_valid_modes}, got '{icrl_mode}'")
+        self._icrl_mode: str = icrl_mode
         self._icrl_step: int = 0          # monotonic counter of stored attempts
         # Pending slot: filled by predict(), consumed by push_reward()
         self._pending_obs: np.ndarray | None = None
@@ -345,6 +352,22 @@ class _BaseLLMPolicyAgent:
         parts = [self._icrl_attempt_template.format(**entry).strip()
                  for entry in self._icrl_buffer]
         return "\n".join(parts)
+
+    def _resolve_icrl_instruction(self) -> str:
+        """Return the instruction string for the current step based on icrl_mode.
+
+        - 'exploit'    : always use the exploitation instruction.
+        - 'autonomous' : always use the combined explore-or-exploit instruction.
+        - 'preset'     : alternate — even steps → explore, odd steps → exploit.
+        """
+        if self._icrl_mode == "exploit":
+            return self._icrl_instruction_template or ""
+        if self._icrl_mode == "autonomous":
+            return self._icrl_instruction_template or ""
+        # preset: alternate based on parity of icrl_step (number of stored attempts)
+        if self._icrl_step % 2 == 0:
+            return self._icrl_explore_template or self._icrl_instruction_template or ""
+        return self._icrl_instruction_template or ""
 
     def _generate_payload(
         self,
@@ -431,7 +454,7 @@ class HardwareLLMPolicyAgent(_BaseLLMPolicyAgent):
         if env_context is None:
             env_context = {}
         env_context["icrl_context"] = self._format_icrl_context()
-        env_context["icrl_instruction"] = self._icrl_instruction_template or ""
+        env_context["icrl_instruction"] = self._resolve_icrl_instruction()
 
         try:
             payload = self._generate_payload(
@@ -536,7 +559,7 @@ class MacroLLMPolicyAgent(_BaseLLMPolicyAgent):
         if env_context is None:
             env_context = {}
         env_context["icrl_context"] = self._format_icrl_context()
-        env_context["icrl_instruction"] = self._icrl_instruction_template or ""
+        env_context["icrl_instruction"] = self._resolve_icrl_instruction()
 
         try:
             payload = self._generate_payload(
