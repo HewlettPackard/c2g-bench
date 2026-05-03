@@ -259,6 +259,7 @@ class _BaseLLMPolicyAgent:
     """Shared client/prompt plumbing for LLM-driven policy agents."""
 
     uses_env_context = True
+    _agent_mode: str = ""  # "hardware" or "macro"; set by subclasses
 
     def __init__(
         self,
@@ -268,10 +269,7 @@ class _BaseLLMPolicyAgent:
         temperature: float = 0.0,
         api_base: str = "http://localhost:8000/v1",
         enable_thinking: bool = True,
-        context_num_steps: int = 0,
-        icrl_attempt_template: str | None = None,
-        icrl_instruction_template: str | None = None,
-        icrl_explore_template: str | None = None,
+        context_num_steps: int = 25,
         icrl_mode: str = "autonomous",
     ):
         self._model_name = probe_api_base(api_base)
@@ -298,18 +296,22 @@ class _BaseLLMPolicyAgent:
         self._previous_action: np.ndarray | None = None
 
         # ── ICRL buffer ───────────────────────────────────────────────
-        # Stores the last context_num_steps positive-reward (state, action, reward)
-        # triples.  deque(maxlen=0) is never used; maxlen=None means unlimited.
+        # Sliding window of the last context_num_steps (state, action, reward) triples.
+        # deque(maxlen=N) automatically evicts the oldest entry when full.
+        # maxlen=None means unlimited (context_num_steps=0).
         _maxlen: int | None = int(context_num_steps) if context_num_steps > 0 else None
         self._icrl_buffer: deque[dict[str, Any]] = deque(maxlen=_maxlen)
-        self._icrl_attempt_template: str | None = icrl_attempt_template or None
-        self._icrl_instruction_template: str | None = icrl_instruction_template or None
-        self._icrl_explore_template: str | None = icrl_explore_template or None
+        _icrl = prompts.get("icrl", {})
+        _m = self._agent_mode
+        self._icrl_attempt_template:    str | None = _icrl.get(f"{_m}_attempt",    "") or None
+        self._icrl_explore_template:    str | None = _icrl.get(f"{_m}_explore",    "") or None
+        self._icrl_exploit_template:    str | None = _icrl.get(f"{_m}_exploit",    "") or None
+        self._icrl_autonomous_template: str | None = _icrl.get(f"{_m}_autonomous", "") or None
         _valid_modes = ("autonomous", "preset", "exploit")
         if icrl_mode not in _valid_modes:
             raise ValueError(f"icrl_mode must be one of {_valid_modes}, got '{icrl_mode}'")
         self._icrl_mode: str = icrl_mode
-        self._icrl_step: int = 0          # monotonic counter of stored attempts
+        self._icrl_step: int = 0          # monotonic counter of env steps (incremented in push_reward)
         # Pending slot: filled by predict(), consumed by push_reward()
         self._pending_obs: np.ndarray | None = None
         self._pending_action_dict: dict[str, float] | None = None
@@ -321,14 +323,13 @@ class _BaseLLMPolicyAgent:
     def push_reward(self, reward: float) -> None:
         """Record the reward received for the last predict() call.
 
-        Must be called by the runner after every env.step().  Only steps with
-        positive reward are stored (Naive+ style from Monea et al. 2025) so
-        that the LLM context contains only successful demonstrations.
+        Must be called by the runner after every env.step().  All steps are
+        counted and stored regardless of reward sign.
         """
         if self._pending_obs is None or self._pending_action_dict is None:
             return
-        if self._icrl_attempt_template and reward > 0:
-            self._icrl_step += 1
+        self._icrl_step += 1
+        if self._icrl_attempt_template:
             state_dict = obs_to_dict(self._pending_obs, self._state_names)
             self._icrl_buffer.append({
                 "step":        self._icrl_step,
@@ -358,16 +359,17 @@ class _BaseLLMPolicyAgent:
 
         - 'exploit'    : always use the exploitation instruction.
         - 'autonomous' : always use the combined explore-or-exploit instruction.
-        - 'preset'     : alternate — even steps → explore, odd steps → exploit.
+        - 'preset'     : alternate every step — even _icrl_step → explore, odd → exploit.
         """
         if self._icrl_mode == "exploit":
-            return self._icrl_instruction_template or ""
+            return self._icrl_exploit_template or ""
         if self._icrl_mode == "autonomous":
-            return self._icrl_instruction_template or ""
-        # preset: alternate based on parity of icrl_step (number of stored attempts)
+            return self._icrl_autonomous_template or ""
+        # preset: alternate per paper (K odd → exploit, K even → explore).
+        # _icrl_step counts completed steps (0-indexed), so step 0 is K=1 (odd → exploit).
         if self._icrl_step % 2 == 0:
-            return self._icrl_explore_template or self._icrl_instruction_template or ""
-        return self._icrl_instruction_template or ""
+            return self._icrl_exploit_template or ""
+        return self._icrl_explore_template or ""
 
     def _generate_payload(
         self,
@@ -396,6 +398,8 @@ class _BaseLLMPolicyAgent:
 
 class HardwareLLMPolicyAgent(_BaseLLMPolicyAgent):
     """Hardware-level LLM policy that emits 4-D low-level actions."""
+
+    _agent_mode = "hardware"
 
     def predict(
         self,
@@ -497,6 +501,8 @@ class HardwareLLMPolicyAgent(_BaseLLMPolicyAgent):
 
 class MacroLLMPolicyAgent(_BaseLLMPolicyAgent):
     """Macro-level LLM policy that emits commitment and bidding actions."""
+
+    _agent_mode = "macro"
 
     def predict(
         self,
@@ -612,9 +618,8 @@ class LLMPolicyAgent:
         temperature: float = 0.0,
         api_base: str = "http://localhost:8000/v1",
         enable_thinking: bool = True,
-        context_num_steps: int = 0,
-        icrl_attempt_template: str | None = None,
-        icrl_instruction_template: str | None = None,
+        context_num_steps: int = 25,
+        icrl_mode: str = "autonomous",
     ):
         _shared_kwargs = dict(
             prompts=prompts,
@@ -624,8 +629,7 @@ class LLMPolicyAgent:
             api_base=api_base,
             enable_thinking=enable_thinking,
             context_num_steps=context_num_steps,
-            icrl_attempt_template=icrl_attempt_template,
-            icrl_instruction_template=icrl_instruction_template,
+            icrl_mode=icrl_mode,
         )
         if mode == "hardware":
             self._delegate = HardwareLLMPolicyAgent(**_shared_kwargs)

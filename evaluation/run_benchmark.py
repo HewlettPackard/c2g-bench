@@ -681,31 +681,10 @@ def benchmark(
 
     prompt_templates = load_prompt_templates(llm_template_path)
     _icrl = prompt_templates.get("icrl", {})
-    _icrl_hw_attempt    = _icrl.get("hardware_attempt",    "") or None
-    _icrl_hw_explore    = _icrl.get("hardware_explore",    "") or None
-    _icrl_hw_exploit    = _icrl.get("hardware_exploit",    "") or None
-    _icrl_hw_autonomous = _icrl.get("hardware_autonomous", "") or None
-    _icrl_macro_attempt    = _icrl.get("macro_attempt",    "") or None
-    _icrl_macro_explore    = _icrl.get("macro_explore",    "") or None
-    _icrl_macro_exploit    = _icrl.get("macro_exploit",    "") or None
-    _icrl_macro_autonomous = _icrl.get("macro_autonomous", "") or None
-
     # ICRL is active only when the template file actually defines attempt templates.
     # When inactive, context_num_steps and icrl_mode are irrelevant.
-    _hw_icrl_active    = bool(_icrl_hw_attempt)
-    _macro_icrl_active = bool(_icrl_macro_attempt)
-
-    # Resolve instruction templates for each mode:
-    #   exploit    → always use exploit template
-    #   preset     → explore template on even steps, exploit on odd (handled in agent)
-    #   autonomous → always use autonomous template
-    def _instr(exploit, autonomous):
-        if llm_icrl_mode == "exploit":  return exploit
-        if llm_icrl_mode == "preset":   return exploit   # odd steps handled inside agent
-        return autonomous  # "autonomous"
-
-    _icrl_hw_instr    = _instr(_icrl_hw_exploit,    _icrl_hw_autonomous)
-    _icrl_macro_instr = _instr(_icrl_macro_exploit, _icrl_macro_autonomous)
+    _hw_icrl_active    = bool(_icrl.get("hardware_attempt"))
+    _macro_icrl_active = bool(_icrl.get("macro_attempt"))
 
     scenario_bar = tqdm(scenarios, desc="Scenarios", position=0)
     for scenario in scenario_bar:
@@ -744,9 +723,6 @@ def benchmark(
                         api_base=llm_api_base,
                         enable_thinking=llm_enable_thinking,
                         context_num_steps=llm_context_num_steps if _hw_icrl_active else 0,
-                        icrl_attempt_template=_icrl_hw_attempt,
-                        icrl_instruction_template=_icrl_hw_instr,
-                        icrl_explore_template=_icrl_hw_explore,
                         icrl_mode=llm_icrl_mode if _hw_icrl_active else "autonomous",
                     )
                     inner_action_fn = lambda obs, _act, c=_inner_agent, e=inner_env, sc=scenario: \
@@ -773,10 +749,7 @@ def benchmark(
                     _mode = "macro"
                 else:
                     _mode = llm_mode if agent_name == "llm_policy" else "macro"
-                _attempt_tmpl = _icrl_hw_attempt if _mode == "hardware" else _icrl_macro_attempt
-                _instr_tmpl   = _icrl_hw_instr   if _mode == "hardware" else _icrl_macro_instr
-                _explore_tmpl = _icrl_hw_explore  if _mode == "hardware" else _icrl_macro_explore
-                _icrl_active  = _hw_icrl_active   if _mode == "hardware" else _macro_icrl_active
+                _icrl_active  = _hw_icrl_active if _mode == "hardware" else _macro_icrl_active
                 agent = LLMPolicyAgent(
                     mode=_mode,
                     prompts=prompt_templates,
@@ -786,9 +759,6 @@ def benchmark(
                     api_base=llm_api_base,
                     enable_thinking=llm_enable_thinking,
                     context_num_steps=llm_context_num_steps if _icrl_active else 0,
-                    icrl_attempt_template=_attempt_tmpl,
-                    icrl_instruction_template=_instr_tmpl,
-                    icrl_explore_template=_explore_tmpl,
                     icrl_mode=llm_icrl_mode if _icrl_active else "autonomous",
                 )
             elif macro_part == "rule_macro":
