@@ -673,6 +673,7 @@ def benchmark(
     llm_temperature: float = 0.0,
     llm_enable_thinking: bool = False,
     llm_context_num_steps: int = 10,
+    llm_context_stride: int = 1,
     llm_icrl_mode: str = "autonomous",
     llm_skip_episodes: int = 0,
 ) -> list[dict[str, Any]]:
@@ -729,6 +730,7 @@ def benchmark(
                         api_base=llm_api_base,
                         enable_thinking=llm_enable_thinking,
                         context_num_steps=llm_context_num_steps if _hw_icrl_active else 0,
+                        context_stride=llm_context_stride,
                         icrl_mode=llm_icrl_mode if _hw_icrl_active else "autonomous",
                     )
                     inner_action_fn = lambda obs, _act, c=_inner_agent, e=inner_env, sc=scenario: \
@@ -765,6 +767,7 @@ def benchmark(
                     api_base=llm_api_base,
                     enable_thinking=llm_enable_thinking,
                     context_num_steps=llm_context_num_steps if _icrl_active else 0,
+                    context_stride=llm_context_stride,
                     icrl_mode=llm_icrl_mode if _icrl_active else "autonomous",
                 )
             elif macro_part == "rule_macro":
@@ -1107,6 +1110,13 @@ if __name__ == "__main__":
         help="Number of past steps to keep in the ICRL buffer (0 = disabled).",
     )
     parser.add_argument(
+        "--llm-context-stride",
+        dest="llm_context_stride",
+        type=int,
+        default=1,
+        help="Store every K-th env step in the ICRL buffer (default 1 = store all steps).",
+    )
+    parser.add_argument(
         "--llm-skip-episodes",
         dest="llm_skip_episodes",
         type=int,
@@ -1159,6 +1169,7 @@ if __name__ == "__main__":
         llm_temperature = args.llm_temperature,
         llm_enable_thinking = args.llm_enable_thinking,
         llm_context_num_steps = args.llm_context_num_steps,
+        llm_context_stride    = args.llm_context_stride,
         llm_icrl_mode         = args.llm_icrl_mode,
         llm_skip_episodes     = args.llm_skip_episodes,
     )

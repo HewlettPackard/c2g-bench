@@ -340,6 +340,7 @@ class _BaseLLMPolicyAgent:
         api_base: str = "http://localhost:8000/v1",
         enable_thinking: bool = True,
         context_num_steps: int = 25,
+        context_stride: int = 1,
         icrl_mode: str = "autonomous",
     ):
         self._model_name = probe_api_base(api_base)
@@ -371,6 +372,7 @@ class _BaseLLMPolicyAgent:
         # maxlen=None means unlimited (context_num_steps=0).
         self._icrl_maxlen: int | None = int(context_num_steps) if context_num_steps > 0 else None
         self._icrl_buffer: deque[dict[str, Any]] = deque(maxlen=self._icrl_maxlen)
+        self._icrl_stride: int = max(1, int(context_stride))
         _icrl = prompts.get("icrl", {})
         _m = self._agent_mode
         self._icrl_attempt_template:    str | None = _icrl.get(f"{_m}_attempt",    "") or None
@@ -400,7 +402,7 @@ class _BaseLLMPolicyAgent:
         if self._pending_obs is None or self._pending_action_dict is None:
             return
         self._icrl_step += 1
-        if self._icrl_attempt_template:
+        if self._icrl_attempt_template and self._icrl_step % self._icrl_stride == 0:
             state_dict = obs_to_dict(self._pending_obs, self._state_names)
             _bid_accepted = (info or {}).get("bid_accepted", None)
             entry = {
@@ -732,6 +734,7 @@ class LLMPolicyAgent:
         api_base: str = "http://localhost:8000/v1",
         enable_thinking: bool = True,
         context_num_steps: int = 25,
+        context_stride: int = 1,
         icrl_mode: str = "autonomous",
     ):
         _shared_kwargs = dict(
@@ -742,6 +745,7 @@ class LLMPolicyAgent:
             api_base=api_base,
             enable_thinking=enable_thinking,
             context_num_steps=context_num_steps,
+            context_stride=context_stride,
             icrl_mode=icrl_mode,
         )
         if mode == "hardware":
