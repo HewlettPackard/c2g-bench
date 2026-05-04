@@ -100,8 +100,13 @@ def build_prompt(
     state_dict: dict[str, float],
     scenario: str,
     env_context: dict[str, Any] | None = None,
-) -> str:
-    """Build full prompt from system and user prompts with state context.
+) -> tuple[str, str]:
+    """Build system and user prompts with state context.
+
+    Returns a ``(system_prompt, user_prompt)`` tuple so callers can place each
+    in the correct chat-message role.  Keeping them separate avoids inflating
+    the user-turn token count, which matters when the vLLM server enforces a
+    tight ``--max-num-batched-tokens`` budget.
 
     ``env_context`` is an optional dict of environment-derived values (e.g.
     ``committed_mw_max``, ``dr_baseline_mw``) injected as extra format variables
@@ -118,13 +123,14 @@ def build_prompt(
     fmt_kwargs.setdefault("icrl_context", "(no past attempts yet)")
     fmt_kwargs.setdefault("icrl_instruction", "")
     user_prompt = mode_prompts["user"].format(**fmt_kwargs)
-    return f"{system_prompt}\n\n{user_prompt}"
+    return system_prompt, user_prompt
 
 
 def generate_structured(
     client: Any,
     model_name: str,
-    prompt: str,
+    system_prompt: str,
+    user_prompt: str,
     max_new_tokens: int,
     temperature: float,
     field_order: list[str] | None = None,
@@ -134,33 +140,77 @@ def generate_structured(
 ) -> dict[str, Any]:
     """Generate structured JSON response from LLM via vLLM server (OpenAI-compatible API).
 
-    vLLM has no per-request thinking-budget parameter. We cap total output tokens
-    (max_new_tokens) as an indirect limit: the model fills <think> first, so
-    max_new_tokens ≈ thinking_budget + json_headroom .
-    When enable_thinking=False the <think> block is suppressed; max_new_tokens
-    can then be set much smaller (~128 tokens for JSON-only output).
+    System and user prompts are sent in separate roles so the model receives proper
+    chat formatting and the user-turn token count stays minimal (important when the
+    server enforces a tight --max-num-batched-tokens budget).
+
+    When enable_thinking=False the assistant turn is pre-filled with a closed
+    <think> block so the model starts generating JSON immediately.
+    chat_template_kwargs is intentionally omitted in that case: Qwen3's Jinja
+    template inserts its own <think></think> when enable_thinking=False, which
+    would create a double think block and cause the model to re-enter reasoning.
     """
     try:
+        # Build messages with proper roles.
+        # Pre-fill the assistant turn with a closed <think> block when thinking is
+        # disabled — the model sees reasoning as already done and generates JSON
+        # directly.  continue_final_message=True keeps the assistant turn open
+        # (no closing <|im_end|>) so the model continues after </think>.
+        # add_generation_prompt=False prevents vLLM from re-adding an assistant
+        # header (its default True conflicts with continue_final_message → 400).
+        #
+        # IMPORTANT: do NOT pass chat_template_kwargs when not enable_thinking.
+        # Qwen3's Jinja template prepends its own <think>\n\n</think> when it sees
+        # enable_thinking=False, creating a double think block that causes the model
+        # to re-open reasoning on complex prompts and exhaust the output budget.
+        messages: list[dict[str, str]] = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user",   "content": user_prompt},
+        ]
+        if not enable_thinking:
+            messages.append({"role": "assistant", "content": "<think>\n\n</think>\n"})
+            extra_body: dict = {
+                "continue_final_message": True,
+                "add_generation_prompt": False,
+            }
+        else:
+            # Thinking ON: cap budget at 75 % so ≥25 % remains for JSON output.
+            extra_body = {
+                "chat_template_kwargs": {
+                    "enable_thinking": True,
+                    "thinking_budget": max(1, int(max_new_tokens * 0.75)),
+                },
+            }
+
         response = client.chat.completions.create(
             model=model_name,
-            messages=[
-                {"role": "user", "content": prompt}
-            ],
+            messages=messages,
             max_tokens=max(1, int(max_new_tokens)),
             temperature=max(0.0, float(temperature)),
-            extra_body={"chat_template_kwargs": {"enable_thinking": enable_thinking}},
+            extra_body=extra_body,
         )
         choice = response.choices[0]
         if choice.finish_reason == "length":
             warnings.warn(
-                f"LLM response was truncated (finish_reason='length'). "
+                "LLM response was truncated (finish_reason='length'). "
                 "Increase --llm-max-new-tokens to fit thinking + JSON output.",
                 RuntimeWarning,
                 stacklevel=2,
             )
+            print("[LLM TRUNCATED] response cut off — JSON likely incomplete", flush=True)
         text = choice.message.content or ""
-        print(f"[LLM RAW] {text}", flush=True)
-        # Strip <think>…</think> blocks emitted by reasoning models (e.g. Qwen3, QwQ)
+        # If a reasoning parser is active, think tokens go to reasoning_content and
+        # content may be empty.  Fall back to reasoning_content to recover the JSON.
+        reasoning = getattr(choice.message, "reasoning_content", None) or ""
+        if not text and reasoning:
+            print(
+                f"[LLM REASONING_CONTENT fallback ({len(reasoning)} chars)] "
+                f"content empty — extracting JSON from reasoning_content.",
+                flush=True,
+            )
+            text = reasoning
+        print(f"[LLM RAW] {text[:300]}{'...' if len(text) > 300 else ''}", flush=True)
+        # Strip any residual <think>…</think> blocks (e.g. if reasoning parser inactive)
         text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
         
     except Exception as exc:
@@ -340,23 +390,27 @@ class _BaseLLMPolicyAgent:
     # ICRL helpers
     # ------------------------------------------------------------------
 
-    def push_reward(self, reward: float) -> None:
+    def push_reward(self, reward: float, info: dict | None = None) -> None:
         """Record the reward received for the last predict() call.
 
         Must be called by the runner after every env.step().  All steps are
-        counted and stored regardless of reward sign.
+        counted and stored regardless of reward sign.  Pass the env info dict
+        to capture bid_accepted (macro mode) and other outcome signals.
         """
         if self._pending_obs is None or self._pending_action_dict is None:
             return
         self._icrl_step += 1
         if self._icrl_attempt_template:
             state_dict = obs_to_dict(self._pending_obs, self._state_names)
-            self._icrl_buffer.append({
-                "step":        self._icrl_step,
-                "reward":      round(float(reward), 3),
-                "state_json":  json.dumps({k: round(v, 3) for k, v in state_dict.items()}),
-                "action_json": json.dumps({k: round(v, 4) for k, v in self._pending_action_dict.items()}),
-            })
+            _bid_accepted = (info or {}).get("bid_accepted", None)
+            entry = {
+                "step":         self._icrl_step,
+                "reward":       round(float(reward), 3),
+                "state_json":   json.dumps({k: round(v, 3) for k, v in state_dict.items()}),
+                "action_json":  json.dumps({k: round(v, 4) for k, v in self._pending_action_dict.items()}),
+                "bid_accepted": "Yes" if _bid_accepted is True else "No" if _bid_accepted is False else "?",
+            }
+            self._icrl_buffer.append(entry)
         self._pending_obs = None
         self._pending_action_dict = None
 
@@ -369,9 +423,6 @@ class _BaseLLMPolicyAgent:
         Returns a placeholder string when the buffer is empty.
         """
         if not self._icrl_buffer or not self._icrl_attempt_template:
-            return ""
-        # Suppress partial history until the buffer is fully warmed up.
-        if self._icrl_maxlen is not None and len(self._icrl_buffer) < self._icrl_maxlen:
             return ""
         header = self._ICRL_SECTION_HEADER.get(self._agent_mode, "")
         parts = [self._icrl_attempt_template.format(**entry).strip()
@@ -416,10 +467,6 @@ class _BaseLLMPolicyAgent:
                 return "\n" + _warmstart_tmpl + "\n"
         if not self._icrl_buffer:
             return _warmstart()
-        # Only activate ICRL instruction once the buffer has filled to its capacity.
-        # While still accumulating, use the warm-start prior.
-        if self._icrl_maxlen is not None and len(self._icrl_buffer) < self._icrl_maxlen:
-            return _warmstart()
         def _wrap(t: str | None) -> str:
             return ("\n" + t.strip() + "\n") if t else ""
         if self._icrl_mode == "exploit":
@@ -443,11 +490,14 @@ class _BaseLLMPolicyAgent:
         env_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         obs_dict = obs_to_dict(obs, self._state_names)
-        prompt = build_prompt(self._prompts[mode], obs_dict, scenario, env_context=env_context)
+        system_prompt, user_prompt = build_prompt(
+            self._prompts[mode], obs_dict, scenario, env_context=env_context
+        )
         return generate_structured(
             self._client,
             self._model_name,
-            prompt,
+            system_prompt,
+            user_prompt,
             self._max_new_tokens,
             self._temperature,
             field_order=field_order,
@@ -701,9 +751,9 @@ class LLMPolicyAgent:
         else:
             raise ValueError(f"Invalid LLM mode '{mode}'. Expected 'hardware' or 'macro'.")
 
-    def push_reward(self, reward: float) -> None:
+    def push_reward(self, reward: float, info: dict | None = None) -> None:
         """Forward reward to the delegate's ICRL buffer."""
-        self._delegate.push_reward(reward)
+        self._delegate.push_reward(reward, info=info)
 
     def predict(
         self,

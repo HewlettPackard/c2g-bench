@@ -55,15 +55,6 @@ hardware_system_prompt: |
     actual_bess_kw (realized dispatch) = bess_dispatch × {bess_p_max_mw} MW × 1000
     Avoid discharge (bess_dispatch > 0) when bess_soc < 0.15 (risks SOC penalty).
 
-  ── IN-CONTEXT REINFORCEMENT LEARNING ─────────────────────────────────────────────────────────────
-  Use the past interactions to learn and provide the best possible action for the current state,
-  aiming to earn a higher reward. Each <attempt> block in the user message shows a past timestep:
-  the state observed, the action taken, and the scalar reward received. Higher reward = better decision.
-    • Learn which bess_dispatch values successfully tracked regd_signal in similar states.
-    • Learn which throttle/pump/hvac combinations kept temperatures safe while maximising throughput.
-    • Avoid repeating action patterns from low-reward attempts.
-  Safety hard constraints (thermal, voltage, frequency) are absolute — never violate them for higher reward.
-
   ── WARM-START PRIOR (fallback — use only when no past attempts are shown) ──────────────────────────
   Baseline defaults:
     throttle_batch=1.0, pump_speed_A=0.7, hvac_effort=0.7, bess_dispatch=0.0
@@ -108,18 +99,21 @@ hardware_icrl_attempt: |
 # ICRL instruction variants — injected as {icrl_instruction} in hardware_user_prompt.
 # Runner picks the appropriate variant based on step parity (Preset) or always Autonomous.
 hardware_icrl_explore: |
+  Each <attempt> shows State → Action → Reward (higher = better); safety (thermal/voltage/freq) is absolute.
   Examine all the <attempt>...</attempt> examples, each showing a candidate Action, and the Rewards
   for each step of the Action. Provide an action that is completely different from every single one
   of the previous attempts demonstrated in the context.
   Treat bounds set by warm start prior as a minimum quality baseline, your actions should lead to outcomes at least as good as or better than what it offers. Return baseline actions if no better alternatives are found.
 
 hardware_icrl_exploit: |
+  Each <attempt> shows State → Action → Reward (higher = better); safety (thermal/voltage/freq) is absolute.
   You will be given multiple <attempt>...</attempt> examples, each showing a candidate Action, and
   the Rewards for each step of the Action. Your task: Based on the previous attempts, try your best
   to produce an action that can achieve higher rewards.
   Treat bounds set by warm start prior as a minimum quality baseline, your actions should lead to outcomes at least as good as or better than what it offers. Return baseline actions if no better alternatives are found.
 
 hardware_icrl_autonomous: |
+  Each <attempt> shows State → Action → Reward (higher = better); safety (thermal/voltage/freq) is absolute.
   Examine all the <attempt>...</attempt> examples, each showing a candidate Action and its Reward.
   You have two options: exploration or exploitation.
 
@@ -208,15 +202,6 @@ macro_system_prompt: |
   bid_price    [0,100] Offer price in USD/MW·h.
     Lower price increases acceptance probability. Default: bid_price = 40×rmcp_norm.
 
-  ── IN-CONTEXT REINFORCEMENT LEARNING ─────────────────────────────────────────────────────────────
-  Use the past interactions to learn and provide the best possible bid for the current interval,
-  aiming to earn a higher reward. Each <attempt> block in the user message shows a past interval:
-  the state observed, the bid submitted, and the scalar reward received. Higher reward = better bid.
-    • Learn which commit_norm levels earned high regulation revenue without causing tracking failures.
-    • Learn which bid_price values achieved high bid acceptance while not leaving revenue on the table.
-    • Avoid repeating bid combinations from low-reward attempts.
-  Safety hard constraints (thermal, voltage, frequency) are absolute — never over-commit when at risk.
-
   ── WARM-START PRIOR (fallback — use only when no past attempts are shown) ──────────────────────────
   Compute starting points using these rules, then refine based on current state:
     commit_norm: grid_load_norm>0.7→0.80; >0.4→0.50; else→0.20
@@ -229,27 +214,31 @@ macro_system_prompt: |
 #   {reward}       — scalar interval reward received (float, rounded to 3 d.p.)
 #   {state_json}   — JSON object of key state values at that interval
 #   {action_json}  — JSON object of the bid submitted (commit_norm, bid_price)
+#   {bid_accepted} — "Yes" if the bid was accepted by the market, "No" otherwise
 macro_icrl_attempt: |
   <attempt>
-  Step {step}  |  Reward: {reward}
+  Step {step}  |  Reward: {reward}  |  Bid accepted: {bid_accepted}
   State:  {state_json}
   Bid:    {action_json}
   </attempt>
 
 # ICRL instruction variants — injected as {icrl_instruction} in macro_user_prompt.
 macro_icrl_explore: |
+  Each <attempt> shows State → Bid → Reward (higher = better); safety (thermal/voltage/freq) is absolute.
   Examine all the <attempt>...</attempt> examples, each showing a candidate Bid, and the Rewards
   for each step of the Bid. Provide a bid that is completely different from every single one of
   the previous attempts demonstrated in the context.
   Treat bounds set by warm start prior as a minimum quality baseline, your actions should lead to outcomes at least as good as or better than what it offers. Return baseline actions if no better alternatives are found.
 
 macro_icrl_exploit: |
+  Each <attempt> shows State → Bid → Reward (higher = better); safety (thermal/voltage/freq) is absolute.
   You will be given multiple <attempt>...</attempt> examples, each showing a candidate Bid, and
   the Rewards for each step of the Bid. Your task: Based on the previous attempts, try your best
   to produce a bid that can achieve higher rewards.
   Treat bounds set by warm start prior as a minimum quality baseline, your actions should lead to outcomes at least as good as or better than what it offers. Return baseline actions if no better alternatives are found.
 
 macro_icrl_autonomous: |
+  Each <attempt> shows State → Bid → Reward (higher = better); safety (thermal/voltage/freq) is absolute.
   Examine all the <attempt>...</attempt> examples, each showing a candidate Bid and its Reward.
   You have two options: exploration or exploitation.
 

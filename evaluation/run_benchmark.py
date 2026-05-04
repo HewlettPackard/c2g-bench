@@ -587,6 +587,11 @@ def run_macro_episode(
             )
 
         rewards.append(float(reward))
+
+        # Push reward to ICRL buffer if the macro agent supports it
+        if hasattr(agent, "push_reward"):
+            agent.push_reward(float(reward), info=info)
+
         bids_accepted.append(float(info.get("bid_accepted", False)))
         reg_revenues.append(float(info.get("regulation_revenue", 0.0)))
         elec_costs.append(float(info.get("electricity_cost", 0.0)))
@@ -666,9 +671,10 @@ def benchmark(
     llm_template_path: str = "conf/chat_templates/run_benchmark.yaml",
     llm_max_new_tokens: int = 9216,
     llm_temperature: float = 0.0,
-    llm_enable_thinking: bool = True,
+    llm_enable_thinking: bool = False,
     llm_context_num_steps: int = 10,
     llm_icrl_mode: str = "autonomous",
+    llm_skip_episodes: int = 0,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
 
@@ -851,11 +857,16 @@ def benchmark(
 
             elapsed = time.perf_counter() - t0
 
+            # Drop warmup episodes from reported metrics (buffer already filled)
+            eval_metrics = ep_metrics[llm_skip_episodes:] if llm_skip_episodes else ep_metrics
+            if not eval_metrics:
+                eval_metrics = ep_metrics  # guard: skip > n_episodes, report all
+
             # Aggregate across episodes (mean + std)
-            keys = list(ep_metrics[0].keys())
-            agg  = {k: float(np.mean([m[k] for m in ep_metrics])) for k in keys}
-            std  = {k: float(np.std([m[k] for m in ep_metrics], ddof=1)) if n_episodes > 1 else 0.0 for k in keys}
-            agg["survival_rate"] = float(np.mean([m["survived"] for m in ep_metrics]))
+            keys = list(eval_metrics[0].keys())
+            agg  = {k: float(np.mean([m[k] for m in eval_metrics])) for k in keys}
+            std  = {k: float(np.std([m[k] for m in eval_metrics], ddof=1)) if len(eval_metrics) > 1 else 0.0 for k in keys}
+            agg["survival_rate"] = float(np.mean([m["survived"] for m in eval_metrics]))
 
             row = {
                 "scenario"          : scenario,
@@ -1068,12 +1079,11 @@ if __name__ == "__main__":
     parser.add_argument(
         "--llm-max-new-tokens",
         type=int,
-        default=24576,
+        default=8192,
         help="Max new tokens for llm_policy generation. vLLM has no per-request thinking-budget "
              "parameter, so this is the only knob: the model fills <think> first, then emits JSON. "
-             "Default 24576 = ~24064 thinking tokens + ~512 for the JSON action output "
-             "(24k thinking budget, 32k context window). "
-             "Use ~512 when --llm-no-thinking is set (JSON-only output). "
+             "Default 2048 suits --llm-no-thinking (JSON ~80 tok + headroom for any preamble). "
+             "Use 8192+ when thinking is enabled. "
              "Must be less than the server's --max-model-len minus the prompt length.",
     )
     parser.add_argument(
@@ -1086,7 +1096,7 @@ if __name__ == "__main__":
         "--llm-no-thinking",
         dest="llm_enable_thinking",
         action="store_false",
-        default=True,
+        default=False,
         help="Disable <think> reasoning for all LLM agents (faster, lower token cost).",
     )
     parser.add_argument(
@@ -1095,6 +1105,13 @@ if __name__ == "__main__":
         type=int,
         default=10,
         help="Number of past steps to keep in the ICRL buffer (0 = disabled).",
+    )
+    parser.add_argument(
+        "--llm-skip-episodes",
+        dest="llm_skip_episodes",
+        type=int,
+        default=0,
+        help="Run this many buffer-warmup episodes before evaluation (not counted in results).",
     )
     parser.add_argument(
         "--llm-icrl-mode",
@@ -1143,6 +1160,7 @@ if __name__ == "__main__":
         llm_enable_thinking = args.llm_enable_thinking,
         llm_context_num_steps = args.llm_context_num_steps,
         llm_icrl_mode         = args.llm_icrl_mode,
+        llm_skip_episodes     = args.llm_skip_episodes,
     )
     print_results_table(rows)
     output_path = (
