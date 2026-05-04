@@ -156,7 +156,7 @@ def _parse_fixed_action_args(values: list[str] | None) -> dict[str, float]:
     return fixed_action_values
 
 
-_INNER_CONTROLLERS = {"random", "pid", "bang_bang", "rule_based", "mpc_fast", "ppo"}
+_INNER_CONTROLLERS = {"random", "pid", "bang_bang", "rule_based", "mpc_fast", "ppo", "sac"}
 
 
 def _make_inner_controller(
@@ -183,12 +183,14 @@ def _make_inner_controller(
         return MPCFastController()
     if name == "ppo":
         return load_sb3_agent("ppo", scenario, seed, model_dir)
+    if name == "sac":
+        return load_sb3_agent("sac", scenario, seed, model_dir)
     raise ValueError(f"Unknown inner controller '{name}'. Choose from: {_INNER_CONTROLLERS}")
 
 
 def _infer_agent_type(agent_name: str) -> str:
     """Classify benchmark agents as macro vs hardware controllers."""
-    macro_agents = {"rule_macro", "random_macro", "mpc_macro", "milp", "ppo_macro", "llm_policy_macro"}
+    macro_agents = {"rule_macro", "random_macro", "mpc_macro", "milp", "ppo_macro", "sac_macro", "llm_policy_macro"}
     # Hierarchical combos like rule_macro+pid are also macro agents
     if "+" in agent_name:
         return "macro"
@@ -271,8 +273,10 @@ def _resolve_sb3_spec(algo: str):
     from stable_baselines3 import PPO, SAC
 
     algo_key = algo.lower()
-    if algo_key == "sac":
-        return SAC, "sac", False
+    if algo_key in ("sac", "sac_macro"):
+        return SAC, algo_key, False
+    if algo_key in ("ppo_macro",):
+        return PPO, "ppo_macro", True
     if algo_key in _RL_ALGOS:
         train_key_map = {
             "ppo_lag": "ppo_lagrangian",
@@ -522,7 +526,7 @@ def run_macro_episode(
         sub_step_callback=sub_step_callback,
     )
     obs, _ = env.reset(seed=seed)
-    algo_for_logging = getattr(agent, "algo_name", (algo_name or "unknown"))
+    algo_for_logging = combo_name or getattr(agent, "algo_name", (algo_name or "unknown"))
 
     # Extract static env attributes once for LLM agents that need them
     # (kept for non-LLM agents that use static_env_info; LLM agents receive env directly)
@@ -818,6 +822,12 @@ def benchmark(
             elif agent_name in ("cpo", "reward_shaping", "ha_c2g", "cbm_only", "cbm_gate", "cbm_shield"):
                 try:
                     agent = load_sb3_agent(agent_name, scenario, seed_start, model_dir)
+                except FileNotFoundError as exc:
+                    print(f"    SKIP: {exc}")
+                    continue
+            elif macro_part in ("sac_macro", "ppo_macro"):
+                try:
+                    agent = load_sb3_agent(macro_part, scenario, seed_start, model_dir)
                 except FileNotFoundError as exc:
                     print(f"    SKIP: {exc}")
                     continue
