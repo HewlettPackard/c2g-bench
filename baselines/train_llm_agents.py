@@ -261,6 +261,26 @@ class _BaseLLMPolicyAgent:
     uses_env_context = True
     _agent_mode: str = ""  # "hardware" or "macro"; set by subclasses
 
+    # Section header prepended to the ICRL context block when the buffer is full.
+    # Keeping these here (not in the YAML) lets us suppress the entire section
+    # (header + attempts) until the buffer has warmed up.
+    _ICRL_SECTION_HEADER: dict[str, str] = {
+        "hardware": (
+            "── PAST ATTEMPTS (learn from these) "
+            "─────────────────────────────────────────────────────────\n"
+            "Each attempt below shows: Step index, scalar Reward, key State values, and the Action taken.\n"
+            "Format: <attempt> Step N | Reward: R  State: {...}  "
+            "Action: {throttle_batch, pump_speed_A, hvac_effort, bess_dispatch} </attempt>"
+        ),
+        "macro": (
+            "── PAST ATTEMPTS (learn from these) "
+            "─────────────────────────────────────────────────────────\n"
+            "Each attempt below shows: Step index, scalar Reward, key State values, and the Bid submitted.\n"
+            "Format: <attempt> Step N | Reward: R  State: {...}  "
+            "Bid: {commit_norm, bid_price} </attempt>"
+        ),
+    }
+
     def __init__(
         self,
         prompts: dict[str, dict[str, str]],
@@ -299,8 +319,8 @@ class _BaseLLMPolicyAgent:
         # Sliding window of the last context_num_steps (state, action, reward) triples.
         # deque(maxlen=N) automatically evicts the oldest entry when full.
         # maxlen=None means unlimited (context_num_steps=0).
-        _maxlen: int | None = int(context_num_steps) if context_num_steps > 0 else None
-        self._icrl_buffer: deque[dict[str, Any]] = deque(maxlen=_maxlen)
+        self._icrl_maxlen: int | None = int(context_num_steps) if context_num_steps > 0 else None
+        self._icrl_buffer: deque[dict[str, Any]] = deque(maxlen=self._icrl_maxlen)
         _icrl = prompts.get("icrl", {})
         _m = self._agent_mode
         self._icrl_attempt_template:    str | None = _icrl.get(f"{_m}_attempt",    "") or None
@@ -349,27 +369,68 @@ class _BaseLLMPolicyAgent:
         Returns a placeholder string when the buffer is empty.
         """
         if not self._icrl_buffer or not self._icrl_attempt_template:
-            return "(no past attempts yet)"
+            return ""
+        # Suppress partial history until the buffer is fully warmed up.
+        if self._icrl_maxlen is not None and len(self._icrl_buffer) < self._icrl_maxlen:
+            return ""
+        header = self._ICRL_SECTION_HEADER.get(self._agent_mode, "")
         parts = [self._icrl_attempt_template.format(**entry).strip()
                  for entry in self._icrl_buffer]
-        return "\n".join(parts)
+        return "\n" + header + "\n\n" + "\n".join(parts) + "\n"
 
-    def _resolve_icrl_instruction(self) -> str:
+    # Warm-start instructions injected when the ICRL buffer is still filling.
+    # Placeholders are formatted with env_context (same dict passed to the user prompt).
+    _WARMSTART_INSTRUCTION: dict[str, str] = {
+        "hardware": (
+            "Apply REASONING WARM-START PRIOR: use T_max={T_max} to look up "
+            "throttle/pump/hvac from the thermal table.\n"
+            "Set bess_dispatch = {bess_dispatch_baseline} (pre-computed; do NOT re-derive).\n"
+            "Then apply the residual tracking assist and opportunistic charge rules "
+            "from the system prompt."
+        ),
+        "macro": (
+            "Apply REASONING WARM-START PRIOR: derive commit_norm from grid_load_norm and "
+            "bid_price = clip(40 \u00d7 rmcp_norm, 0, 100) using the rules in the system prompt. "
+            "Do not rely on pre-computed values."
+        ),
+    }
+
+    def _resolve_icrl_instruction(self, env_context: dict[str, Any] | None = None) -> str:
         """Return the instruction string for the current step based on icrl_mode.
+
+        When the buffer is still filling, returns the mode-specific warm-start instruction
+        formatted with env_context values.  Once the buffer is full, switches to the
+        standard ICRL explore/exploit/autonomous cycle.
 
         - 'exploit'    : always use the exploitation instruction.
         - 'autonomous' : always use the combined explore-or-exploit instruction.
         - 'preset'     : alternate every step — even _icrl_step → explore, odd → exploit.
         """
+        _warmstart_tmpl = self._WARMSTART_INSTRUCTION.get(self._agent_mode, "")
+        def _warmstart() -> str:
+            if not _warmstart_tmpl:
+                return ""
+            try:
+                return "\n" + _warmstart_tmpl.format(**(env_context or {})) + "\n"
+            except KeyError:
+                return "\n" + _warmstart_tmpl + "\n"
+        if not self._icrl_buffer:
+            return _warmstart()
+        # Only activate ICRL instruction once the buffer has filled to its capacity.
+        # While still accumulating, use the warm-start prior.
+        if self._icrl_maxlen is not None and len(self._icrl_buffer) < self._icrl_maxlen:
+            return _warmstart()
+        def _wrap(t: str | None) -> str:
+            return ("\n" + t.strip() + "\n") if t else ""
         if self._icrl_mode == "exploit":
-            return self._icrl_exploit_template or ""
+            return _wrap(self._icrl_exploit_template)
         if self._icrl_mode == "autonomous":
-            return self._icrl_autonomous_template or ""
+            return _wrap(self._icrl_autonomous_template)
         # preset: alternate per paper (K odd → exploit, K even → explore).
         # _icrl_step counts completed steps (0-indexed), so step 0 is K=1 (odd → exploit).
         if self._icrl_step % 2 == 0:
-            return self._icrl_exploit_template or ""
-        return self._icrl_explore_template or ""
+            return _wrap(self._icrl_exploit_template)
+        return _wrap(self._icrl_explore_template)
 
     def _generate_payload(
         self,
@@ -443,22 +504,26 @@ class HardwareLLMPolicyAgent(_BaseLLMPolicyAgent):
                 bess_base *= max(0.0, (bess_soc - 0.10) / 0.05)
             if bess_soc > 0.80 and bess_base < 0:
                 bess_base *= max(0.0, (0.95 - bess_soc) / 0.15)
+            # Opportunistic charge when regulation signal is idle
+            if abs(regd_signal) < 0.10 and bess_soc < 0.40:
+                bess_base = -0.3
+            bess_base = round(bess_base, 4)
             env_context = {
-                "committed_mw_max":      committed_mw_max,
-                "bess_p_max_mw":         bess_p_max,
-                "committed_mw":          committed_mw,
-                "T_max":                 T_max,
-                "target_kw":             target_kw,
-                "p_flex_nom_kw":         p_flex_nom_kw,
-                "backlog_increment":     backlog_increment,
-                "bess_dispatch_baseline": round(bess_base, 4),
+                "committed_mw_max":       committed_mw_max,
+                "bess_p_max_mw":          bess_p_max,
+                "committed_mw":           committed_mw,
+                "T_max":                  T_max,
+                "target_kw":              target_kw,
+                "p_flex_nom_kw":          p_flex_nom_kw,
+                "backlog_increment":      backlog_increment,
+                "bess_dispatch_baseline": bess_base,
             }
 
         # Inject ICRL context (formatted past attempts) into env_context
         if env_context is None:
             env_context = {}
         env_context["icrl_context"] = self._format_icrl_context()
-        env_context["icrl_instruction"] = self._resolve_icrl_instruction()
+        env_context["icrl_instruction"] = self._resolve_icrl_instruction(env_context)
 
         try:
             payload = self._generate_payload(
@@ -556,16 +621,14 @@ class MacroLLMPolicyAgent(_BaseLLMPolicyAgent):
                 "bess_p_max_mw":    bess_p_max,
                 "rmcp_usd":         rmcp_usd,
                 "T_max":            T_max,
-                "commit_norm_0":    round(commit_norm_0, 4),
                 "commit_norm_prev": commit_norm_prev,
-                "bid_price_0":      bid_price_0,
             }
 
         # Inject ICRL context into env_context
         if env_context is None:
             env_context = {}
         env_context["icrl_context"] = self._format_icrl_context()
-        env_context["icrl_instruction"] = self._resolve_icrl_instruction()
+        env_context["icrl_instruction"] = self._resolve_icrl_instruction(env_context)
 
         try:
             payload = self._generate_payload(

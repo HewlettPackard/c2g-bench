@@ -1068,11 +1068,13 @@ if __name__ == "__main__":
     parser.add_argument(
         "--llm-max-new-tokens",
         type=int,
-        default=9216,
+        default=24576,
         help="Max new tokens for llm_policy generation. vLLM has no per-request thinking-budget "
              "parameter, so this is the only knob: the model fills <think> first, then emits JSON. "
-             "Default 9216 = ~8704 thinking tokens + ~512 for the JSON action output. "
-             "Must be less than the server's --max-model-len minus the prompt length (~2500 tokens).",
+             "Default 24576 = ~24064 thinking tokens + ~512 for the JSON action output "
+             "(24k thinking budget, 32k context window). "
+             "Use ~512 when --llm-no-thinking is set (JSON-only output). "
+             "Must be less than the server's --max-model-len minus the prompt length.",
     )
     parser.add_argument(
         "--llm-temperature",

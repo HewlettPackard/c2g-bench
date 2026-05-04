@@ -111,11 +111,13 @@ hardware_icrl_explore: |
   Examine all the <attempt>...</attempt> examples, each showing a candidate Action, and the Rewards
   for each step of the Action. Provide an action that is completely different from every single one
   of the previous attempts demonstrated in the context.
+  Treat bounds set by warm start prior as a minimum quality baseline, your actions should lead to outcomes at least as good as or better than what it offers. Return baseline actions if no better alternatives are found.
 
 hardware_icrl_exploit: |
   You will be given multiple <attempt>...</attempt> examples, each showing a candidate Action, and
   the Rewards for each step of the Action. Your task: Based on the previous attempts, try your best
   to produce an action that can achieve higher rewards.
+  Treat bounds set by warm start prior as a minimum quality baseline, your actions should lead to outcomes at least as good as or better than what it offers. Return baseline actions if no better alternatives are found.
 
 hardware_icrl_autonomous: |
   Examine all the <attempt>...</attempt> examples, each showing a candidate Action and its Reward.
@@ -129,16 +131,11 @@ hardware_icrl_autonomous: |
   achieve higher rewards.
 
   Pick one option to follow.
+  Treat bounds set by warm start prior as a minimum quality baseline, your actions should lead to outcomes at least as good as or better than what it offers. Return baseline actions if no better alternatives are found.
 
 hardware_user_prompt: |
   Scenario: {scenario}  |  committed_mw_max: {committed_mw_max} MW
-
-  ── PAST ATTEMPTS (learn from these) ─────────────────────────────────────────────────────────
-  Each attempt below shows: Step index, scalar Reward, key State values, and the Action taken.
-  Format: <attempt> Step N | Reward: R  State: {{...}}  Action: {{throttle_batch, pump_speed_A, hvac_effort, bess_dispatch}} </attempt>
-
-  {icrl_context}
-
+{icrl_context}
   ── CURRENT STATE ────────────────────────────────────────────────────────────────────────────
   Current normalized system state (18-D, keyed by name):
   {state_json}
@@ -150,8 +147,7 @@ hardware_user_prompt: |
     p_flex_nom_kw      = {p_flex_nom_kw}  (= p_flex_nom_norm × 250000)
     backlog_increment  = {backlog_increment}  (= p_flex_nom_norm × 2.78; per-step backlog increase if throttle=0; net backlog change = backlog_increment − throttle)
     bess_dispatch_base = {bess_dispatch_baseline}  (SOC overrides already applied)
-
-  {icrl_instruction}
+{icrl_instruction}
   Then output ONLY a valid JSON object — no explanation, no markdown, no extra text.
   Use EXACTLY these four key names (copy them verbatim):
   {{
@@ -222,9 +218,7 @@ macro_system_prompt: |
   Safety hard constraints (thermal, voltage, frequency) are absolute — never over-commit when at risk.
 
   ── WARM-START PRIOR (fallback — use only when no past attempts are shown) ──────────────────────────
-  Starting points (commit_norm_0, bid_price_0) are pre-computed in the user prompt with all
-  sizing rules and safety overrides already applied — do not re-derive them.
-  For reference only (already embedded in commit_norm_0):
+  Compute starting points using these rules, then refine based on current state:
     commit_norm: grid_load_norm>0.7→0.80; >0.4→0.50; else→0.20
                  capped if thermal headroom<0.10, freq_dev<−0.3 boosts, v_pcc<0.96 caps
     bid_price:   clip(40×rmcp_norm, 0, 100)
@@ -247,11 +241,13 @@ macro_icrl_explore: |
   Examine all the <attempt>...</attempt> examples, each showing a candidate Bid, and the Rewards
   for each step of the Bid. Provide a bid that is completely different from every single one of
   the previous attempts demonstrated in the context.
+  Treat bounds set by warm start prior as a minimum quality baseline, your actions should lead to outcomes at least as good as or better than what it offers. Return baseline actions if no better alternatives are found.
 
 macro_icrl_exploit: |
   You will be given multiple <attempt>...</attempt> examples, each showing a candidate Bid, and
   the Rewards for each step of the Bid. Your task: Based on the previous attempts, try your best
   to produce a bid that can achieve higher rewards.
+  Treat bounds set by warm start prior as a minimum quality baseline, your actions should lead to outcomes at least as good as or better than what it offers. Return baseline actions if no better alternatives are found.
 
 macro_icrl_autonomous: |
   Examine all the <attempt>...</attempt> examples, each showing a candidate Bid and its Reward.
@@ -265,28 +261,20 @@ macro_icrl_autonomous: |
   achieve higher rewards.
 
   Pick one option to follow.
+  Treat bounds set by warm start prior as a minimum quality baseline, your actions should lead to outcomes at least as good as or better than what it offers. Return baseline actions if no better alternatives are found.
 
 macro_user_prompt: |
   Scenario: {scenario}  |  committed_mw_max: {committed_mw_max} MW  |  dr_baseline_mw (bid rejected): {dr_baseline_mw} MW
-
-  ── PAST ATTEMPTS (learn from these) ─────────────────────────────────────────────────────────
-  Each attempt below shows: Step index, scalar Reward, key State values, and the Bid submitted.
-  Format: <attempt> Step N | Reward: R  State: {{...}}  Bid: {{commit_norm, bid_price}} </attempt>
-
-  {icrl_context}
-
+{icrl_context}
   ── CURRENT STATE ────────────────────────────────────────────────────────────────────────────
   Current normalized system state (19-D, keyed by name):
   {state_json}
 
-  Scenario Attributes (pre-computed; do NOT re-derive):
+  Scenario Attributes:
     rmcp_usd         = {rmcp_usd} USD/MWh  (= 100 × rmcp_norm)
     T_max            = {T_max}  (= max(temp_A_norm, temp_B_norm))
-    commit_norm_0    = {commit_norm_0}  (grid_load_norm baseline + safety overrides already applied)
     commit_norm_prev = {commit_norm_prev}  (commit_norm submitted last interval)
-    bid_price_0      = {bid_price_0}  (= clip(40×rmcp_norm, 0, 100))
-
-  {icrl_instruction}
+{icrl_instruction}
   Then output ONLY a valid JSON object — no explanation, no markdown, no extra text.
   Use EXACTLY these two key names (copy them verbatim):
   {{

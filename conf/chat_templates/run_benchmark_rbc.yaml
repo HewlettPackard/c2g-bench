@@ -93,20 +93,17 @@ hardware_user_prompt: |
   Current normalized system state (18-D, keyed by name):
   {state_json}
 
-  Think concisely — write ONLY what each step specifies. Do NOT restate or summarize observations. Do NOT add prose between steps.
-  Reason through these steps, then output JSON:
   Scenario Attributes (pre-computed; do NOT re-derive):
     committed_mw       = {committed_mw} MW
     T_max              = {T_max}  (= max(temp_A_norm, temp_B_norm))
     target_kw          = {target_kw}  (= regd_signal × committed_mw × 1000)
     p_flex_nom_kw      = {p_flex_nom_kw}  (= p_flex_nom_norm × 250000)
-    backlog_increment  = {backlog_increment}  (= p_flex_nom_norm × 2.78; per-step backlog increase if throttle=0; net backlog change = backlog_increment − throttle)
-    bess_dispatch_base = {bess_dispatch_baseline}  (SOC overrides already applied)
+    backlog_increment  = {backlog_increment}  (= p_flex_nom_norm × 2.78)
+    bess_dispatch_base = {bess_dispatch_baseline}  (SOC overrides applied)
 
-  Apply REASONING WARM-START PRIOR: use T_max={T_max} to look up throttle/pump/hvac from the thermal table.
-  Set bess_dispatch = {bess_dispatch_baseline} (pre-computed; do NOT re-derive).
-  Then apply the residual tracking assist and opportunistic charge rules from the system prompt.
-  Then output ONLY a valid JSON object — no explanation, no markdown, no extra text.
+  Apply REASONING WARM-START PRIOR: use T_max to look up throttle/pump/hvac from the
+  thermal table in the system prompt. Set bess_dispatch = {bess_dispatch_baseline}.
+  Output ONLY a valid JSON object — no explanation, no markdown, no extra text.
   Use EXACTLY these four key names (copy them verbatim):
   {{
     "throttle_batch": <float in [0, 1]>,
@@ -168,9 +165,7 @@ macro_system_prompt: |
 
 
   ── REASONING WARM-START PRIOR ─────
-  Starting points (commit_norm_0, bid_price_0) are pre-computed in the user prompt with all
-  sizing rules and safety overrides already applied — do not re-derive them.
-  For reference only (already embedded in commit_norm_0):
+  Compute starting points using these rules, then refine based on current state:
     commit_norm: grid_load_norm>0.7→0.80; >0.4→0.50; else→0.20
                  capped if thermal headroom<0.10, freq_dev<−0.3 boosts, v_pcc<0.96 caps
     bid_price:   clip(40×rmcp_norm, 0, 100)
@@ -182,16 +177,13 @@ macro_user_prompt: |
   Current normalized system state (19-D, keyed by name):
   {state_json}
 
-  Think concisely — write ONLY what each step specifies. Do NOT restate or summarize observations. Do NOT add prose between steps.
-  Scenario Attributes (pre-computed; do NOT re-derive):
+  Scenario Attributes:
     rmcp_usd         = {rmcp_usd} USD/MWh  (= 100 × rmcp_norm)
     T_max            = {T_max}  (= max(temp_A_norm, temp_B_norm))
-    commit_norm_0    = {commit_norm_0}  (grid_load_norm baseline + safety overrides already applied)
     commit_norm_prev = {commit_norm_prev}  (commit_norm submitted last interval)
-    bid_price_0      = {bid_price_0}  (= clip(40×rmcp_norm, 0, 100))
 
-  Apply REASONING WARM-START PRIOR: output commit_norm_0={commit_norm_0} and bid_price_0={bid_price_0} (pre-computed; do NOT re-derive).
-  Then output ONLY a valid JSON object — no explanation, no markdown, no extra text.
+  Apply REASONING WARM-START PRIOR from the system prompt to derive commit_norm and bid_price.
+  Output ONLY a valid JSON object — no explanation, no markdown, no extra text.
   Use EXACTLY these two key names (copy them verbatim):
   {{
     "commit_norm": <float in [0, 1]>,
