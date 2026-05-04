@@ -135,7 +135,7 @@ hardware_icrl_autonomous: |
 
 hardware_user_prompt: |
   Scenario: {scenario}  |  committed_mw_max: {committed_mw_max} MW
-{icrl_context}
+  {icrl_context}
   ── CURRENT STATE ────────────────────────────────────────────────────────────────────────────
   Current normalized system state (18-D, keyed by name):
   {state_json}
@@ -147,7 +147,7 @@ hardware_user_prompt: |
     p_flex_nom_kw      = {p_flex_nom_kw}  (= p_flex_nom_norm × 250000)
     backlog_increment  = {backlog_increment}  (= p_flex_nom_norm × 2.78; per-step backlog increase if throttle=0; net backlog change = backlog_increment − throttle)
     bess_dispatch_base = {bess_dispatch_baseline}  (SOC overrides already applied)
-{icrl_instruction}
+  {icrl_instruction}
   Then output ONLY a valid JSON object — no explanation, no markdown, no extra text.
   Use EXACTLY these four key names (copy them verbatim):
   {{
@@ -265,7 +265,7 @@ macro_icrl_autonomous: |
 
 macro_user_prompt: |
   Scenario: {scenario}  |  committed_mw_max: {committed_mw_max} MW  |  dr_baseline_mw (bid rejected): {dr_baseline_mw} MW
-{icrl_context}
+  {icrl_context}
   ── CURRENT STATE ────────────────────────────────────────────────────────────────────────────
   Current normalized system state (19-D, keyed by name):
   {state_json}
@@ -274,7 +274,7 @@ macro_user_prompt: |
     rmcp_usd         = {rmcp_usd} USD/MWh  (= 100 × rmcp_norm)
     T_max            = {T_max}  (= max(temp_A_norm, temp_B_norm))
     commit_norm_prev = {commit_norm_prev}  (commit_norm submitted last interval)
-{icrl_instruction}
+  {icrl_instruction}
   Then output ONLY a valid JSON object — no explanation, no markdown, no extra text.
   Use EXACTLY these two key names (copy them verbatim):
   {{
