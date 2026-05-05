@@ -672,7 +672,7 @@ def benchmark(
     fixed_action_values: dict[str, float] | None = None,
     llm_api_base: str = "http://localhost:8000/v1",
     llm_mode: str = "hardware",
-    llm_template_path: str = "conf/chat_templates/run_benchmark.yaml",
+    llm_template_path: str = "conf/chat_templates/run_benchmark_rbc+ICRL.yaml",
     llm_max_new_tokens: int = 9216,
     llm_temperature: float = 0.0,
     llm_enable_thinking: bool = False,
@@ -690,7 +690,16 @@ def benchmark(
         project_root = Path(__file__).resolve().parent.parent
         (project_root / "runs").mkdir(parents=True, exist_ok=True)
 
-    prompt_templates = load_prompt_templates(llm_template_path)
+    _needs_llm = any(
+        "llm_policy" in a for a in agents
+    )
+    try:
+        prompt_templates = load_prompt_templates(llm_template_path)
+    except FileNotFoundError:
+        prompt_templates = {}
+
+    if _needs_llm and not prompt_templates: raise FileNotFoundError(f"LLM agent specified but no prompt templates found at '{llm_template_path}'.")
+
     _icrl = prompt_templates.get("icrl", {})
     # ICRL is active only when the template file actually defines attempt templates.
     # When inactive, context_num_steps and icrl_mode are irrelevant.
@@ -1086,7 +1095,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--llm-template-path",
-        default="conf/chat_templates/run_benchmark.yaml",
+        default="conf/chat_templates/run_benchmark_rbc+ICRL.yaml",
         help="YAML path with hardware_prompt and macro_prompt templates",
     )
     parser.add_argument(
