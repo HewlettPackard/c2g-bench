@@ -179,9 +179,17 @@ class C2GMacroEnv(gym.Env):
         self.observation_space.high[18] = 5.0
 
         # Inner environment
-        self._fast_env = C2GFastEnv(
-            scenario=scenario, config_path=cfg_path
-        )
+        _fixed_action_values = kwargs.pop("fixed_action_values", None)
+        if _fixed_action_values:
+            from c2g_env.experiments.action_ablation_env import ActionAblationFastEnv
+            self._fast_env = ActionAblationFastEnv(
+                scenario=scenario, config_path=cfg_path,
+                fixed_action_values=_fixed_action_values,
+            )
+        else:
+            self._fast_env = C2GFastEnv(
+                scenario=scenario, config_path=cfg_path
+            )
 
         # Episode tracking
         self._macro_tick        = 0
