@@ -555,6 +555,8 @@ class C2GFastEnv(gym.Env):
             "reward_volt":           r_volt,
             "reward_backlog":        r_backlog,
             "scenario":              self._scenario,
+            "throughput_ratio":      throttle_batch,
+            "bess_age_frac":         self._bess._age_frac,
         }
         return obs, reward, terminated, truncated, info
 
