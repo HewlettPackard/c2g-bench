@@ -55,11 +55,12 @@ Tier 3 Ablations
   cbm_shield   — PPO + concept bottleneck + physics shield (no gate)
 """
 from __future__ import annotations
-import argparse, csv, json, re, time
+import argparse, csv, json, random as _py_random, re, time
 from pathlib import Path
 from typing import Any
 
 import numpy as np
+import torch
 import yaml
 from tqdm import tqdm
 
@@ -686,6 +687,13 @@ def benchmark(
     llm_skip_episodes: int = 0,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
+
+    # Seed all global RNGs for cross-run reproducibility.
+    # PyTorch BLAS (multi-threaded CPU mat-mul) is non-deterministic unless
+    # torch.manual_seed() is called before any model inference.
+    torch.manual_seed(seed_start)
+    _py_random.seed(seed_start)
+    np.random.seed(seed_start)
 
     if llm_mode not in ["hardware", "macro"]:
         raise ValueError(f"Invalid agent mode '{llm_mode}'. Must be 'hardware' or 'macro'.")
