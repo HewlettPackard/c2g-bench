@@ -468,6 +468,7 @@ def run_macro_episode(
     record_transitions: bool = True,
     inner_algo_name: str | None = None,
     combo_name: str | None = None,
+    fixed_action_values: dict[str, float] | None = None,
 ) -> dict[str, float]:
     """Run one macro-level episode and return metrics dict."""
     # sub_step_callback fires after every _fast_env.step() inside C2GMacroEnv
@@ -524,6 +525,7 @@ def run_macro_episode(
         scenario=scenario,
         inner_action_fn=inner_action_fn,
         sub_step_callback=sub_step_callback,
+        fixed_action_values=fixed_action_values or None,
     )
     obs, _ = env.reset(seed=seed)
     algo_for_logging = combo_name or getattr(agent, "algo_name", (algo_name or "unknown"))
@@ -668,6 +670,8 @@ def benchmark(
     n_episodes  : int,
     seed_start  : int,
     model_dir   : str | None,
+    macro_model_dir: str | None = None,
+    hw_model_dir: str | None = None,
     record_transitions: bool = False,
     fixed_action_values: dict[str, float] | None = None,
     llm_api_base: str = "http://localhost:8000/v1",
@@ -753,7 +757,8 @@ def benchmark(
                 else:
                     _inner_agent = _make_inner_controller(
                         inner_part, env=inner_env,
-                        scenario=scenario, seed=seed_start, model_dir=model_dir,
+                        scenario=scenario, seed=seed_start,
+                        model_dir=hw_model_dir or model_dir,
                     )
                     inner_action_fn = lambda obs, _act, c=_inner_agent: c.predict(obs)[0]
                     if hasattr(_inner_agent, "push_reward"):
@@ -836,13 +841,13 @@ def benchmark(
                     continue
             elif macro_part in ("sac_macro", "ppo_macro"):
                 try:
-                    agent = load_sb3_agent(macro_part, scenario, seed_start, model_dir)
+                    agent = load_sb3_agent(macro_part, scenario, seed_start, macro_model_dir or model_dir)
                 except FileNotFoundError as exc:
                     print(f"    SKIP: {exc}")
                     continue
             else:
                 try:
-                    agent = load_sb3_agent(agent_name, scenario, seed_start, model_dir)
+                    agent = load_sb3_agent(agent_name, scenario, seed_start, hw_model_dir or model_dir)
                 except FileNotFoundError as exc:
                     print(f"    SKIP: {exc}")
                     continue
@@ -864,6 +869,7 @@ def benchmark(
                         record_transitions=record_transitions,
                         inner_algo_name=inner_part if "+" in agent_name else None,
                         combo_name=agent_name if "+" in agent_name else None,
+                        fixed_action_values=fixed_action_values or None,
                     )
                 else:
                     m = run_episode(
@@ -1061,7 +1067,15 @@ if __name__ == "__main__":
     parser.add_argument("--seed",       type=int, default=100)
     parser.add_argument(
         "--model_dir", default=None,
-        help="Override model directory for SB3 agents (optional)",
+        help="Override model directory for SB3 agents (fallback for both macro and hardware).",
+    )
+    parser.add_argument(
+        "--macro-model-dir", dest="macro_model_dir", default=None,
+        help="Model directory for the macro-level SB3 agent (overrides --model_dir for macro).",
+    )
+    parser.add_argument(
+        "--hw-model-dir", dest="hw_model_dir", default=None,
+        help="Model directory for the hardware/inner SB3 agent (overrides --model_dir for hardware).",
     )
     parser.add_argument(
         "--output", default=None,
@@ -1179,6 +1193,8 @@ if __name__ == "__main__":
         n_episodes = args.n_episodes,
         seed_start = args.seed,
         model_dir  = args.model_dir,
+        macro_model_dir = args.macro_model_dir,
+        hw_model_dir    = args.hw_model_dir,
         record_transitions = args.record_transitions,
         fixed_action_values = fixed_action_values,
         llm_api_base = args.llm_api_base,
