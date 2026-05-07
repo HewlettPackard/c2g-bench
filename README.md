@@ -1,7 +1,6 @@
 # C2G-Bench: Hierarchical AI Orchestration for Grid-Interactive Hyperscale Data Centers
 
-**Target Venue:** NeurIPS 2026 — Datasets and Benchmarks Track  
-**Strategic Alignment:** HPE Edge-to-Cloud, US DOE Genesis Mission, EU Horizon Europe (Cluster 5)
+**Target Venue:** NeurIPS 2026 — Datasets and Evaluation Track  
 
 ---
 
@@ -9,7 +8,7 @@
 
 This project addresses the **"AI-Energy Paradox"** by transforming 250 MW+ hyperscale data centers from passive power consumers into active, grid-balancing assets. By establishing a formal **Energy System Handshake**, we enable data centers to provide wholesale Frequency Regulation, stabilizing the regional transmission grid in exchange for significant revenue and faster deployment permits.
 
-We solve this using a **Hierarchical AI Orchestration** framework that bridges long-term energy market bidding (minutes/hours) and sub-second hardware physics. The framework evaluates the synergy between three critical control levers: **Throttling Batch Workloads (DVFS)**, **Modulating Cooling Thermal Inertia (CDU pump)**, and **Dispatching Battery Energy Storage (BESS)**. This project delivers a high-fidelity cyber-physical benchmark for NeurIPS 2026, positioning HPE at the frontier of autonomous, grid-interactive infrastructure.
+We solve this using a **Hierarchical AI Orchestration** framework that bridges long-term energy market bidding (minutes/hours) and sub-second hardware physics. The framework evaluates the synergy between three critical control levers: **Throttling Batch Workloads (DVFS)**, **Modulating Cooling Thermal Inertia (CDU pump)**, and **Dispatching Battery Energy Storage (BESS)**. This project delivers a high-fidelity cyber-physical benchmark for NeurIPS 2026, at the frontier of autonomous, grid-interactive infrastructure.
 
 ---
 
@@ -1561,11 +1560,6 @@ uv run evaluation/statistical_analysis.py
 ### For the Energy System
 - **Renewable Integration:** Data centers absorb excess wind/solar, preventing curtailment.
 - **Grid Stability:** The DC acts as a "shock absorber" for the transmission grid, reducing reliance on fossil-fuel peaker plants.
-
-### For HPE and Industry Partners
-- **New Revenue Streams:** Grid operators (PJM, CAISO, ERCOT) pay for frequency regulation tracking — turning DC energy flexibility into direct profit.
-- **Faster Deployment:** Demonstrating the "handshake" proves HPE-powered DCs help stabilize the grid, accelerating construction permits.
-- **HPE Hardware Differentiation:** Explicit HPE Cray EX (liquid-cooled Zone A) and ProLiant (air-cooled Zone B) with CDU pump as a thermal-battery lever — unique to this benchmark.
 
 ### For AI Research (NeurIPS 2026)
 - **Cyber-Physical Benchmark:** The first high-fidelity, multi-market testbed for hierarchical RL on real infrastructure physics.
