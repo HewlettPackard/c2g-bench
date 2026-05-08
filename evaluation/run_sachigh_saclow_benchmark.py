@@ -373,7 +373,7 @@ if __name__ == "__main__":
              "Default: trained_models/sac_<scenario>_s<seed>",
     )
     parser.add_argument(
-        "--output", type=str, default='/home/abdullas/projects/NeurIPS26/aiteam/v4_main_to_trainSAC/c2g-bench-neurips2026/outputs/sac_default/sacmacro_rulelowlevel/sachigh_saclow/sachigh_saclow_benchmark.csv',
+        "--output", type=str, default='path to csv',
         help="Output CSV path. Default: evaluation/results/sac_macro+sac_low_<scenario>.csv",
     )
     parser.add_argument(
