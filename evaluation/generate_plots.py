@@ -15,7 +15,7 @@ Figures produced
 
 Usage
 -----
-  cd /lustre/guillant/C2G-Macro
+  cd .../C2G-Macro
   python evaluation/generate_plots.py                       # reads evaluation/results.csv
   python evaluation/generate_plots.py --csv path/to/results.csv --outdir figs/
 """
