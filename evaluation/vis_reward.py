@@ -9,10 +9,10 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--csv",
-        default="path to csv",
+        default="c2g-bench-neurips2026/outputs/sac_default/default_macro/seed_200_best/2026-04-23_20-06-52/episode_metrics.csv",
         help="Path to episode_metrics.csv",
     )
-    parser.add_argument("--output", default="path to csv", help="Save figure to file instead of showing")
+    parser.add_argument("--output", default="c2g-bench-neurips2026/outputs/sac_default/default_macro/seed_200_best/2026-04-23_20-06-52/mean_reward_defaulthigh_saclow", help="Save figure to file instead of showing")
     args = parser.parse_args()
 
     df = pd.read_csv(args.csv)

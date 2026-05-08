@@ -1,18 +1,21 @@
 """Visualise mean_reward from a benchmark results CSV."""
 import argparse
+from pathlib import Path
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--csv",
-        default="path to csv",
+        default=str(_REPO_ROOT / "outputs/sac_default/Rule_macro/benchmarkresults/results.csv"),
         help="Path to benchmark results CSV",
     )
-    parser.add_argument("--output", default="path to csv", help="Save figure to file instead of showing")
+    parser.add_argument("--output", default=str(_REPO_ROOT / "outputs/sac_default/Rule_macro/benchmarkresults/eval_benchmark_rulemacro_v2"), help="Save figure to file instead of showing")
     args = parser.parse_args()
 
     df = pd.read_csv(args.csv)
@@ -45,7 +48,6 @@ def main():
     fig.tight_layout()
 
     if args.output:
-        from pathlib import Path
         out = Path(args.output).with_suffix(".pdf")
         fig.savefig(out, bbox_inches="tight")
         print(f"Saved to {out}")
