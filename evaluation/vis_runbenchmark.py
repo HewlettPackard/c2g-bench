@@ -9,10 +9,10 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--csv",
-        default="/home/abdullas/projects/NeurIPS26/aiteam/v4_main_to_trainSAC/c2g-bench-neurips2026/outputs/sac_default/Rule_macro/benchmarkresults/results.csv",
+        default="path to csv",
         help="Path to benchmark results CSV",
     )
-    parser.add_argument("--output", default="/home/abdullas/projects/NeurIPS26/aiteam/v4_main_to_trainSAC/c2g-bench-neurips2026/outputs/sac_default/Rule_macro/benchmarkresults/eval_benchmark_rulemacro_v2", help="Save figure to file instead of showing")
+    parser.add_argument("--output", default="path to csv", help="Save figure to file instead of showing")
     args = parser.parse_args()
 
     df = pd.read_csv(args.csv)
