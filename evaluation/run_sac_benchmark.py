@@ -17,7 +17,7 @@ Metrics (per episode)
 
 Usage
 -----
-  cd /lustre/guillant/C2G-Macro
+  cd .../C2G-Macro
   python evaluation/run_benchmark.py                         # rule-based only
   python evaluation/run_benchmark.py --agents rule_based ppo --n_episodes 10
   python evaluation/run_benchmark.py --model_dir trained_models/ppo_default_s42
