@@ -222,6 +222,7 @@ class C2GMacroEnv(gym.Env):
         self._prev_bid_price_norm = 0.5
         self._last_rmcp_norm     = 0.0
         self._last_reg_need_norm = 0.0
+        self._last_hw_obs        = inner_obs  # persisted across macro steps
 
         # Build macro obs from the reset inner obs
         return self._obs_from_reset(inner_obs), {}
@@ -292,7 +293,7 @@ class C2GMacroEnv(gym.Env):
 
         for sub in range(_SUBSTEPS):
             if self._inner_action_fn is not None:
-                inner_obs = sub_obs_list[-1] if sub_obs_list else np.zeros(18)
+                inner_obs = sub_obs_list[-1] if sub_obs_list else self._last_hw_obs
                 low_action = self._inner_action_fn(inner_obs, action)
             else:
                 low_action = np.array([
@@ -304,7 +305,7 @@ class C2GMacroEnv(gym.Env):
 
             obs, rew, term, trunc, info = self._fast_env.step(low_action)
             if self._sub_step_callback is not None:
-                _pre = sub_obs_list[-1] if sub_obs_list else np.zeros_like(obs)
+                _pre = sub_obs_list[-1] if sub_obs_list else self._last_hw_obs
                 self._sub_step_callback(_pre, low_action, obs, rew, term or trunc, info)
             sub_rewards.append(rew)
             sub_obs_list.append(obs)
@@ -338,6 +339,7 @@ class C2GMacroEnv(gym.Env):
                 truncated  = trunc
                 break
 
+        self._last_hw_obs = sub_obs_list[-1]  # update for next macro period
         self._macro_tick += 1
         if self._macro_tick >= self._episode_macro_ticks and not terminated:
             truncated = True

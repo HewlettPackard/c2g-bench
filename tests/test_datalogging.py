@@ -73,7 +73,8 @@ class TestDataLogging:
         for root, dirs, files in os.walk(runs_dir):
             for file in files:
                 full_path = os.path.join(root, file)
-                if file.endswith(".csv") and "macro" not in full_path.lower():
+                folder_name = os.path.basename(os.path.dirname(full_path)).lower()
+                if file.endswith(".csv") and not folder_name.endswith("_macro"):
                     all_csv_files.append(full_path)
         
         # Exit if no CSV files found
@@ -138,7 +139,8 @@ class TestDataLogging:
         for root, dirs, files in os.walk(runs_dir):
             for file in files:
                 full_path = os.path.join(root, file)
-                if file.endswith(".csv") and "macro" in full_path.lower():
+                folder_name = os.path.basename(os.path.dirname(full_path)).lower()
+                if file.endswith(".csv") and folder_name.endswith("_macro"):
                     all_csv_files.append(full_path)
 
         # Exit if no macro CSV files found

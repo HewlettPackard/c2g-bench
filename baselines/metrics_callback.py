@@ -421,6 +421,8 @@ class C2GMetricsCallback(BaseCallback):
                 float(self.locals["rewards"][env_idx]),
                 info,
             )
+            if info.get("thermal_fault", False):
+                self._bufs[env_idx]["terminated"] = 1
             if done:
                 self._log_episode(env_idx, info)
                 self._reset_buf(env_idx)

@@ -116,8 +116,7 @@ def train(cfg: DictConfig) -> None:
     )
 
     model.save(str(out_dir / "final_model"))
-    print(f"\n[SAC] Training complete → {out_dir.resolve()}")
-
+    print(f"\n[SAC] Training complete -> {out_dir.resolve()}")
 
 if __name__ == "__main__":
     train()
