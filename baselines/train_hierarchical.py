@@ -113,7 +113,7 @@ def train_low_level(scenario: str, seed: int, timesteps: int,
     model_path = phase_dir / "final_model"
     model.save(str(model_path))
     vec_env.save(str(phase_dir / "vec_normalize.pkl"))
-    print(f"[Phase 1] Complete → {model_path}")
+    print(f"[Phase 1] Complete -> {model_path}")
     return model_path
 
 
@@ -188,7 +188,7 @@ def train_macro(scenario: str, seed: int, timesteps: int,
     model_path = phase_dir / "final_model"
     model.save(str(model_path))
     vec_env.save(str(phase_dir / "vec_normalize.pkl"))
-    print(f"[Phase 2] Complete → {model_path}")
+    print(f"[Phase 2] Complete -> {model_path}")
     return model_path
 
 
@@ -216,17 +216,17 @@ def main(cfg: DictConfig) -> None:
     phase1_steps   = hrl.get("phase1_steps", 300_000)
     phase2_steps   = hrl.get("phase2_steps", 100_000)
 
-    print("═" * 60)
+    print("=" * 60)
     print("  C2G-Bench: Sequential Hierarchical RL Training")
     print(f"  scenario={scenario}  seed={seed}")
     print(f"  Phase 1: {'SKIP' if skip_phase1 else f'{phase1_steps:,} steps'}")
     print(f"  Phase 2: {phase2_steps:,} steps")
-    print("═" * 60)
+    print("=" * 60)
 
     # ── Phase 1 ───────────────────────────────────────────────────────────
     if skip_phase1 and low_level_path:
         model_path = Path(low_level_path)
-        print(f"[Phase 1] Skipped — reusing {model_path}")
+        print(f"[Phase 1] Skipped - reusing {model_path}")
     else:
         model_path = train_low_level(scenario, seed, phase1_steps,
                                      out_dir, log_cfg)
@@ -241,11 +241,11 @@ def main(cfg: DictConfig) -> None:
     shutil.copy2(str(macro_model_path) + ".zip",
                  str(out_dir / "final_model.zip"))
 
-    print(f"\n{'═' * 60}")
-    print(f"  HRL training complete → {out_dir.resolve()}")
+    print(f"\n{'=' * 60}")
+    print(f"  HRL training complete -> {out_dir.resolve()}")
     print(f"  Low-level model:  {model_path}")
     print(f"  Macro model:      {macro_model_path}")
-    print(f"{'═' * 60}")
+    print(f"{'=' * 60}")
 
 
 if __name__ == "__main__":

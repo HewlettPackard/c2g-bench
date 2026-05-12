@@ -12,7 +12,7 @@ dependencies = [
     "pyyaml>=6.0",
     # Phase 2 — RL environment
     "gymnasium>=1.0",
-    # Phase 3 — PyTorch (CUDA 12.4)
+    # Phase 3 — PyTorch (CUDA 12.4 wheels; binary-compatible with CUDA 12.5 driver 555.x)
     "torch>=2.6",
     "torchvision>=0.21",
     "torchaudio>=2.6",
@@ -33,6 +33,15 @@ dependencies = [
 [project.optional-dependencies]
 llm = [
     "openai>=1.0",
+]
+serve = [
+    # vLLM inference server (from PyPI) — CUDA 12.x runtime compatible.
+    # Linux-only: vLLM ships no Windows wheels.
+    # Install with: uv sync --extra serve
+    "vllm>=0.8.0; sys_platform == 'linux'",
+    # transformers: >=4.48 for Qwen2 tokenizer fix; <5.0 because transformers 5.x
+    # removed all_special_tokens_extended which vLLM still calls.
+    "transformers>=4.48.0,<5.0",
 ]
 pysam = [
     # Must install separately; binaries are platform-specific.
@@ -74,10 +83,32 @@ name = "pytorch-cu124"
 url = "https://download.pytorch.org/whl/cu124"
 explicit = true
 
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
 [tool.uv.sources]
-torch = [{ index = "pytorch-cu124" }]
-torchvision = [{ index = "pytorch-cu124" }]
-torchaudio = [{ index = "pytorch-cu124" }]
+torch = [
+    { index = "pytorch-cu124", marker = "sys_platform == 'linux'" },
+    { index = "pytorch-cpu",   marker = "sys_platform == 'win32'" },
+]
+torchvision = [
+    { index = "pytorch-cu124", marker = "sys_platform == 'linux'" },
+    { index = "pytorch-cpu",   marker = "sys_platform == 'win32'" },
+]
+torchaudio = [
+    { index = "pytorch-cu124", marker = "sys_platform == 'linux'" },
+    { index = "pytorch-cpu",   marker = "sys_platform == 'win32'" },
+]
+
+[tool.uv]
+# Resolve for both Linux (CUDA) and Windows (CPU) platforms.
+# vLLM and flashinfer ship no Windows wheels; they are gated with sys_platform markers.
+environments = [
+    "sys_platform == 'linux'",
+    "sys_platform == 'win32'",
+]
 
 [dependency-groups]
 dev = [

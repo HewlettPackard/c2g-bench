@@ -170,6 +170,7 @@ class TestMetricsCallbackThermalKey:
             }],
         }
         cb._on_step()
+        cb._on_rollout_end()  # flush buffered metrics to logger
 
         # The buffer for env 0 was flushed by _log_episode; check episode count
         assert cb._ep_count == 1, "Episode was not counted"
