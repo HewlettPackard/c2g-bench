@@ -858,53 +858,122 @@ e.g. `ppo_scenario_b_hardware_BESS_0.5.csv` stores evals for hardware PPO agent 
 
 #### Standard benchmark runner
 
-**Basic usage:**
+Runs any combination of agents across all four evaluation scenarios and writes per-episode metrics to CSV.
+
 ```bash
+# Classical hardware controllers (no trained models needed)
 uv run evaluation/run_benchmark.py --agents rule_based bang_bang pid random
-uv run evaluation/run_benchmark.py --agents ppo sac --scenarios default scenario_b --n_episodes 10
+
+# SAC low-level agent (requires a trained model)
+uv run evaluation/run_benchmark.py --agents sac --scenarios default scenario_b \
+    --hw-model-dir trained_models/sac_default_s100
+
+# Hierarchical combos: rule-based macro + hardware controller
+uv run evaluation/run_benchmark.py --agents rule_macro+sac rule_macro+rule_based \
+    rule_macro+pid rule_macro+bang_bang rule_macro+random \
+    --hw-model-dir trained_models/sac_default_s100
+
+# RL macro (Phase 2) + frozen SAC low-level
+uv run evaluation/run_benchmark.py --agents sac_macro+sac \
+    --macro-model-dir trained_models/sac_macro_default_s100 \
+    --hw-model-dir trained_models/sac_default_s100
+
+# LLM macro + hardware controller (requires a running vLLM server)
+uv run evaluation/run_benchmark.py --agents llm_policy_macro+sac \
+    --hw-model-dir trained_models/sac_default_s100 \
+    --llm-api-base http://localhost:8000/v1
+
+# With transition logging (per-step CSV traces)
+uv run evaluation/run_benchmark.py --agents rule_macro+sac --record_transitions \
+    --hw-model-dir trained_models/sac_default_s100
 ```
 
-Benchmark runner note: PPO-style agents automatically restore saved
-`VecNormalize` observation statistics from `vec_normalize.pkl` at evaluation
-time for apples-to-apples comparison with their training setup.
-Non-normalized agents such as `SAC` are left unwrapped.
+SAC agents automatically load the model from `trained_models/<algo>_<scenario>_s<seed>/final_model.zip`. Use `--hw-model-dir` or `--macro-model-dir` to override.
 
-**Transition Logging:**
+**Agents used in the paper:**
+
+| Agent | Type | Description |
+|-------|------|-------------|
+| `random` | hardware | Uniform random baseline (lower bound) |
+| `bang_bang` | hardware | Hysteresis on/off controller |
+| `pid` | hardware | Multi-loop PID with anti-windup |
+| `rule_based` | hardware | Threshold heuristic controller (`baselines/rule_based_mpc.py`) |
+| `sac` | hardware | Trained SAC low-level controller (Phase 1) |
+| `rule_macro` | macro | Rule-based macro bidding controller |
+| `sac_macro` | macro | Trained SAC macro controller (Phase 2) |
+| `llm_policy_macro` | macro | LLM macro controller (Qwen3-32B, ICRL) |
+| `<macro>+<hardware>` | combo | Macro agent paired with hardware agent, e.g. `rule_macro+sac`, `llm_policy_macro+pid` |
+
+**Fixed-action ablations (Appendix M):**
+
+Pin actuators to fixed setpoints to isolate each lever's contribution:
+
 ```bash
-uv run evaluation/run_benchmark.py --agents ppo --record_transitions
+# Disable BESS (throttle + cooling only)
+uv run evaluation/run_benchmark.py --agents rule_macro+sac \
+    --fixed-action bess_dispatch=0.0 \
+    --hw-model-dir trained_models/sac_default_s100
+
+# Disable BESS and fix cooling (throttle only)
+uv run evaluation/run_benchmark.py --agents rule_macro+sac \
+    --fixed-action bess_dispatch=0.0 \
+    --fixed-action pump_speed_A=0.7 \
+    --fixed-action hvac_effort=0.7 \
+    --hw-model-dir trained_models/sac_default_s100
 ```
 
-**Fixed-Action Ablations:**
-Pin physical actuators to fixed setpoints while the RL agent controls the remaining levers:
-```bash
-# Disable BESS, agent controls DVFS + cooling
-uv run evaluation/run_benchmark.py --fixed-action bess_dispatch=0.0
+Action bounds: `throttle_batch ∈ [0, 1]`, `pump_speed_A ∈ [0, 1]`, `hvac_effort ∈ [0, 1]`, `bess_dispatch ∈ [-1, 1]`. Values are validated and clipped to these ranges.
 
-# HVAC at 80%, BESS disabled, agent controls DVFS + pump
-uv run evaluation/run_benchmark.py \
-  --fixed-action hvac_effort=0.8 \
-  --fixed-action bess_dispatch=0.0
-```
+**Key CLI arguments:**
 
-**Key Options:**
-- `--agents`: agents to evaluate
-- `--scenarios`: scenarios to run
-- `--n_episodes`: number of episodes per agent/scenario
-- `--output`: output CSV path (auto-generated if omitted)
-- `--fixed-action action=value`: pin action to fixed setpoint for ablation studies
-- `--record_transitions` / `--no-record_transitions`: per-step transition logging (default: enabled)
-- `--seed`: starting seed (default: 42)
-- `--model_dir`: optional override for trained model directory
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--agents` | `rule_based bang_bang pid random` | One or more agent names (see table above) |
+| `--scenarios` | all 4 | Subset of `default scenario_a scenario_b scenario_c` |
+| `--n_episodes` | `5` | Episodes per agent × scenario combination |
+| `--seed` | `100` | Starting RNG seed; episode `i` uses `seed + i` |
+| `--hw-model-dir` | `None` | Model directory for the hardware/inner SAC agent |
+| `--macro-model-dir` | `None` | Model directory for the macro-level SAC agent |
+| `--output` | auto-generated | Output CSV path; defaults to `evaluation/results/<algo>_<scenario>_<agent_type>_<ablation>.csv` |
+| `--record_transitions` / `--no-record_transitions` | disabled | Write per-step state/action/reward traces to `runs/<agent>_<scenario>_<type>/episode*.csv` |
+| `--append` | `False` | Append rows to an existing CSV instead of overwriting |
+| `--fixed-action <name>=<value>` | none | Pin an actuator to a fixed setpoint (repeatable) |
+| `--llm-api-base` | `http://localhost:8000/v1` | vLLM / OpenAI-compatible server URL |
+| `--llm-template-path` | `conf/chat_templates/run_benchmark_rbc+ICRL.yaml` | YAML prompt templates for LLM agents |
+| `--llm-max-new-tokens` | `8192` | Maximum tokens per LLM generation step |
+| `--llm-temperature` | `0.0` | Sampling temperature (0 = greedy) |
+| `--llm-no-thinking` | off | Disable `<think>` reasoning blocks |
+| `--llm-context-num-steps` | `10` | ICRL rolling buffer size in past steps (paper uses 5; 0 = disabled) |
+| `--llm-context-stride` | `1` | Store every *K*-th step in the ICRL buffer |
+| `--llm-icrl-mode` | `autonomous` | ICRL instruction mode: `autonomous` (paper default), `preset`, or `exploit` |
 
-When transition logging is enabled, per-step state, action, observation, and reward traces are written under `runs/<agent>_<scenario>_<agent_type>/episode*.csv`. The `agent_type` path component can be `hardware`, `macro`, or `hardware_ha`, depending on which evaluation runner produced the logs.
+**Output metrics:**
 
-**Action Bounds (continuous):**
-- `throttle_batch ∈ [0, 1]`
-- `pump_speed_A ∈ [0, 1]`
-- `hvac_effort ∈ [0, 1]`
-- `bess_dispatch ∈ [-1, 1]`
+For hardware agents, each row in the output CSV contains:
 
-Any `--fixed-action` value is interpreted as a continuous setpoint and clipped to the corresponding action bounds.
+| Column | Description |
+|--------|-------------|
+| `mean_reward` | Mean step reward over the episode |
+| `total_reward` | Sum of step rewards |
+| `tracking_rmse` | RMSE of `ΔP_demanded − ΔP_actual` (kW) |
+| `thermal_viol_rate` | Fraction of ticks with temperature > T_warn (33 °C) |
+| `throughput_ratio` | Mean `p_flex_served / p_flex_nom` |
+| `bess_degradation` | Cumulative capacity fade × 10⁴ |
+| `episode_length` | Ticks completed (< 17 280 indicates early termination) |
+| `survival_rate` | Fraction of episodes surviving to 24 h |
+
+For macro agents, additional columns include:
+
+| Column | Description |
+|--------|-------------|
+| `bid_acceptance_rate` | Fraction of 15-min bids accepted by the grid |
+| `total_reg_revenue` | Cumulative regulation revenue (USD) |
+| `mean_perf_score` | Mean FERC performance score |
+| `mean_committed_mw` | Mean accepted MW commitment per interval |
+
+For hierarchical combo agents (`macro+hardware`), results are split into `*_macro.csv` and `*_hardware.csv` automatically, with a separate hardware-schema row for the inner controller enabling direct comparison with standalone hardware results.
+
+When `--record_transitions` is enabled, per-step logs are written under `runs/<agent>_<scenario>_<agent_type>/episode*.csv`.
 
 #### High-assurance benchmark runner
 
