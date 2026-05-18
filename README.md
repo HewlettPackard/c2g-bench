@@ -65,7 +65,7 @@ Under FERC Order 755, the *performance score* is the correlation between the dem
 A 250 MW hyperscale facility has three fast-response levers unavailable to most grid assets:
 
 1. **Batch compute DVFS** — schedulable HPC/AI training jobs can be throttled in milliseconds via CPU/GPU frequency scaling. Service capacity is capped at `p_flex_max × throttle` (~90 MW); unserved work is **deferred into a FIFO queue** (not dropped) and served when capacity recovers. Average queue delay is tracked via Little's Law and exposed in `obs[16]` (`backlog_norm`).
-2. **BESS** — the on-site 150 MWh / 50 MW battery can charge or discharge at full rate in under 100 ms, providing the fastest regulation response.
+2. **BESS** — the on-site 15 MWh / 5 MW battery can charge or discharge at full rate in under 100 ms, providing the fastest regulation response.
 3. **Thermal inertia (CDU pump)** — the liquid cooling loop acts as a thermal capacitor (τ ≈ 12.7 min). Slowing the pump briefly stores heat in the water loop without immediately raising server temperatures, providing ~5–10 MW of additional regulation headroom for short intervals.
 
 These three levers in combination can follow a RegD signal far more accurately than a single-asset provider, while the hierarchical RL agent learns the optimal trade-off between grid revenue, compute throughput, and thermal safety.
@@ -183,7 +183,7 @@ Executes the physical "Handshake." Receives the real-time frequency regulation s
 
 | Lever | Response time | Capacity | Side-effect | Role |
 |-------|--------------|----------|-------------|------|
-| **BESS** `action[3]` | <100 ms | 50 MW / 150 MWh | Depletes; capacity fade over time | **First resort** — fastest, zero-penalty, finite |
+| **BESS** `action[3]` | <100 ms | 5 MW / 15 MWh | Depletes; capacity fade over time | **First resort** — fastest, zero-penalty, finite |
 | **CDU pump** `action[1]` | Minutes (τ ≈ 12.7 min) | ~30 MW equivalent | Thermal inertia; slow and partially irreversible on short intervals | **Second resort** — exploits physics cheaply |
 | **HVAC** `action[2]` | Seconds | ~50 MW draw | Affects Zone B only; draws additional facility power | **Defensive** — prevents thermal fault, not a primary regulation lever |
 | **IT throttle** `action[0]` | Milliseconds | Up to full flex load | Accrues FIFO backlog; cuts throughput revenue | **Last resort** — immediate but highest SLA cost |
@@ -195,7 +195,7 @@ The optimal policy learns this hierarchy: use BESS first (fast, free), borrow th
 | **IT (DVFS)** | `action[0]` | [0, 1] | Throttles schedulable Alibaba batch jobs; GenAI/DLRM rigid loads unaffected |
 | **Cooling (CDU pump)** | `action[1]` | [0, 1] | Modulates liquid cooling pump speed, exploiting thermal inertia |
 | **HVAC** | `action[2]` | [0, 1] | Zone B air-side fan speed |
-| **BESS** | `action[3]` | [-1, 1] | Charge (−) / discharge (+) the 150 MWh battery |
+| **BESS** | `action[3]` | [-1, 1] | Charge (−) / discharge (+) the 15 MWh battery |
 
 - **Action Space (4-D, continuous):** `[throttle_batch, pump_speed_A, hvac_effort, bess_dispatch]`
 - **Observation Space (18-D, normalised):** 
@@ -320,7 +320,7 @@ Six independent physics/data modules, all with exact-exponential or analytical s
 | **Workload Orchestrator** | `workload.py` | Fuses Alibaba batch (2023), DLRM (2025), and GenAI (2026) traces into P_base + P_flex at 5-min resolution. FIFO queue model: unserved batch work defers rather than drops; exposes `backlog_kw` and `avg_delay_steps` (Little's Law) per step |
 | **Thermal Twin** | `thermal.py` | Exact exponential ODE integration for dual-zone cooling (Zone A: HPE Cray EX liquid, Zone B: HPE ProLiant air) |
 | **Electrical Chain** | `electrical.py` | Non-linear UPS/PDU/XFMR loss curves + PUE calculation |
-| **BESS** | `bess.py` | 150 MWh / 50 MW Li-ion NMC (pure-Python backend + optional PySAM) with C-rate η, SOC derating, capacity fade |
+| **BESS** | `bess.py` | 15 MWh / 5 MW Li-ion NMC (pure-Python backend + optional PySAM) with C-rate η, SOC derating, capacity fade |
 | **Macro-Grid** | `macro_grid.py` | AR(1) RegD signal + LMP proxy; calibrated for 6 global markets |
 | **Weather** | `weather.py` | NOAA ISD-Lite real data or calibrated synthetic (6 climate profiles) |
 
@@ -498,7 +498,7 @@ All scenarios share the same underlying simulator stack and reward weights:
 |-----------|-------|---------|
 | Episode length | 17,280 ticks | 24 h × 3,600 s h⁻¹ ÷ 5 s tick⁻¹ |
 | IT capacity | 250 MW | Rigid (GenAI/DLRM) + flexible (Alibaba batch) |
-| BESS | 150 MWh / 50 MW | NMC Li-ion, C-rate derating + capacity fade |
+| BESS | 15 MWh / 5 MW | NMC Li-ion, C-rate derating + capacity fade |
 | Cooling zones | Zone A (liquid, HPE Cray EX) · Zone B (air, HPE ProLiant) | |
 | $T_{\text{safe}}$ | 35 °C | Silicon hard limit → immediate termination |
 | $T_{\text{warn}}$ | 33 °C | Soft threshold → thermal penalty begins |
@@ -636,7 +636,7 @@ C2G-Macro/
 │       ├── workload.py                  # Alibaba trace fusion (batch/DLRM/GenAI)
 │       ├── thermal.py                   # Exact-exponential ODEs, dual-zone cooling
 │       ├── electrical.py                # Non-linear UPS/PDU/XFMR loss + PUE
-│       ├── bess.py                      # 150 MWh NMC BESS (pure-Python + PySAM)
+│       ├── bess.py                      # 15 MWh NMC BESS (pure-Python + PySAM)
 │       ├── macro_grid.py                # AR(1) RegD + LMP proxy, 6 market presets
 │       └── weather.py                   # NOAA ISD real data + synthetic climate, 6 presets
 │
@@ -665,31 +665,16 @@ C2G-Macro/
 │   ├── rule_based_macro.py              # Macro-level rule-based controller for C2GMacroEnv
 │   ├── bang_bang.py                     # Bang-bang / hysteresis controller (floor baseline)
 │   ├── pid_controller.py                # Multi-loop PID controller with anti-windup
-│   ├── mpc_fast.py                      # Rolling-horizon nonlinear MPC for C2GFastEnv (SLSQP)
-│   ├── mpc_macro.py                     # Rolling-horizon MPC for C2GMacroEnv (15-min intervals)
-│   ├── milp_dispatch.py                 # MILP economic dispatch for C2GMacroEnv (HiGHS/cvxpy)
 │   │
 │   │  # ── RL Training Scripts ─────────────────────────────────────────────
-│   ├── train_ppo.py                     # SB3 PPO + Hydra + VecNormalize + callbacks
 │   ├── train_sac.py                     # SB3 SAC (off-policy, auto entropy)
-│   ├── train_ppo_macro.py               # PPO on C2GMacroEnv (optional inner policy)
 │   ├── train_hierarchical.py            # Two-phase sequential HRL pipeline (PPO inner)
 │   ├── train_hierarchical_sac.py        # Two-phase HRL with SAC inner policy
-│   ├── train_rule_macro_ppo.py          # Rule-based macro + PPO inner policy
 │   ├── train_rule_macro_sac.py          # Rule-based macro + SAC inner policy
 │   ├── train_lowsac_highrandom.py       # SAC lower + random macro (ablation)
 │   ├── train_llm_agents.py              # LLM-guided agent training
 │   │
 │   └── safety/                          # HA safety methods + shielded training scripts (see §10.5)
-│       ├── README.md                    # 3-tier HA safety benchmark documentation
-│       ├── safety_shield.py             # Simplex safety filter (5 hard constraints, O(1))
-│       ├── cbf_shield.py                # Control Barrier Function safety filter (QP)
-│       ├── hj_shield.py                 # Hamilton-Jacobi reachability shield (offline BRS)
-│       ├── mpc_safety_filter.py         # MPC safety filter (receding-horizon NLP)
-│       ├── concept_bottleneck.py        # Concept Bottleneck Model (Koh et al., 2020)
-│       ├── safe_projection.py           # Concept-conditioned differentiable gate (Layer 2)
-│       ├── proof_tree.py                # Hierarchical audit proof trees per timestep
-│       └── train_*.py                   # 13 shielded/constrained/HA-C2G training scripts (see sec. 10.5)
 │
 ├── evaluation/                          # Benchmark auditing & analysis
 │   ├── run_benchmark.py                 # Standard benchmark: runs agents on all 4 scenarios
