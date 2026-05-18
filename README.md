@@ -1,5 +1,7 @@
 # C2G-Bench: Hierarchical AI Orchestration for Grid-Interactive Hyperscale Data Centers
 
+![C2G-Bench Architecture](figures/architecture_full.png)
+
 
 ---
 
@@ -7,7 +9,7 @@
 
 This project addresses the **"AI-Energy Paradox"** by transforming 250 MW+ hyperscale data centers from passive power consumers into active, grid-balancing assets. By establishing a formal **Energy System Handshake**, we enable data centers to provide wholesale Frequency Regulation, stabilizing the regional transmission grid in exchange for significant revenue and faster deployment permits.
 
-We solve this using a **Hierarchical AI Orchestration** framework that bridges long-term energy market bidding (minutes/hours) and sub-second hardware physics. The framework evaluates the synergy between three critical control levers: **Throttling Batch Workloads (DVFS)**, **Modulating Cooling Thermal Inertia (CDU pump)**, and **Dispatching Battery Energy Storage (BESS)**. This project delivers a high-fidelity cyber-physical benchmark at the frontier of autonomous, grid-interactive infrastructure.
+We solve this using a **Hierarchical AI Orchestration** framework that bridges long-term energy market bidding (minutes/hours) and sub-second hardware physics. The framework evaluates the synergy between three critical control levers: **Throttling Batch Workloads (DVFS)**, **Modulating Cooling Thermal Inertia (CDU pump)**, and **Dispatching Battery Energy Storage (BESS)**. This project delivers a high-fidelity cyber-physical benchmark for NeurIPS 2026, at the frontier of autonomous, grid-interactive infrastructure.
 
 ---
 
@@ -218,7 +220,7 @@ The optimal policy learns this hierarchy: use BESS first (fast, free), borrow th
   | 16 | `backlog_norm` | [0, 2] | Deferred batch queue depth / p_flex_max (Little's Law queue) |
   | 17 | `committed_mw_norm` | [0, 1] | Current DR commitment / committed_mw_max|
 
-### 5.3. The Primary Evaluation Metric: The Tracking Reward
+### 5.3. The NeurIPS Evaluation Metric: The Tracking Reward
 
 The scalar reward received at every 5-second tick has **seven additive terms**:
 
@@ -305,413 +307,6 @@ where $P_{\text{flex,served}} = \min\!\left(Q_{\text{backlog}},\ P_{\text{flex,m
 - Voltage fault: $v_{\text{pcc}} < 0.90$ pu (under-voltage relay)
 
 Episode truncates at 17,280 ticks (24 hours at 5 s).
-
-### 5.4. Environment Architecture & Data Flow
-
-> 📖 **Full technical reference** — equations, parameters, and API for all 6 physics engines and both environments: [`c2g_env/ENVIRONMENTS.md`](c2g_env/ENVIRONMENTS.md)
-
-The diagrams below describe (0) a high-level system overview, (1) the full hierarchical control loop, (2) the internal step function of `C2GFastEnv`, and (3) the Simplex safety shield that can wrap any agent.
-
-#### Diagram 0 — High-Level System Overview
-
-A one-glance picture of C2G-Bench: an RL agent hierarchy controls a data center *from the inside*, while the power grid drives it *from the outside*.
-
-```mermaid
-flowchart TD
-    subgraph EXT["External Environment"]
-        direction TB
-        GRD["⚡ Power Grid
-(prices · frequency · voltage)"]
-        WTH["🌤️  Weather & Renewables
-(temp · solar · wind)"]
-    end
-
-    subgraph DC["🏢 Data Center"]
-        direction TB
-        IT["💻  IT Workloads
-(rigid + flexible + GenAI)"]
-        COOL["❄️  HVAC / Cooling
-(2-zone thermal model)"]
-        BESS["🔋  Battery Storage
-(BESS · charge · discharge)"]
-    end
-
-    subgraph HRL["🤖 Hierarchical RL Agent"]
-        direction TB
-        MAC["Macro Agent
-⏱ 15-min ticks
-(market & envelope)"]
-        FST["Fast Agent
-⏱ 5-sec ticks
-(throttle · BESS · HVAC)"]
-        MAC -- "target envelope" --> FST
-    end
-
-    SHIELD["🛡️ Safety Shield
-(freq · voltage · thermal)"]
-
-    EXT -- "market signals
-& forecasts" --> MAC
-    EXT -- "real-time
-f / V / T" --> FST
-    FST -- "control commands" --> SHIELD
-    SHIELD -- "safe actions" --> DC
-    DC -- "observations
-(17-D state)" --> FST
-    FST -- "aggregated KPIs
-(every 180 steps)" --> MAC
-    MAC -- "reward signal" --> MAC
-
-    style EXT  fill:#e8f4fd,stroke:#5b9bd5,color:#000
-    style DC   fill:#e8fde8,stroke:#5bb55b,color:#000
-    style HRL  fill:#fdf3e8,stroke:#d5955b,color:#000
-    style SHIELD fill:#fde8e8,stroke:#d55b5b,color:#000
-```
-
-#### Diagram 1 — Hierarchical RL Control Loop
-
-The two agents operate at different timescales and communicate through the `inner_action_fn` interface.  The macro agent sets a 15-minute *target envelope*; the fast agent executes 180 sub-steps inside that envelope before returning aggregated observations to the macro agent.
-
-```mermaid
-flowchart TD
-    subgraph GRID["🔌 Regional Power Grid"]
-        G1["RegD Regulation Signal\n(every 5 s)"]
-        G2["LMP — Locational Marginal Price\n(every 15 min)"]
-        G3["Grid Frequency f(t)\n(swing equation)"]
-        G4["PCC Voltage V_pcc\n(Thévenin model)"]
-    end
-
-    subgraph MARKET["📈 Market Layer — C2GMacroEnv (15-min ticks)"]
-        MA["Upper-Level Agent\n(Market Orchestrator)\nobs: 19-D aggregated\nact: 2-D [bid_mw_norm, bid_price_norm]"]
-        MR["Macro Reward\nλ_rev × reg_revenue\n+ mean sub-step reward\n− λ_elec × elec_cost\n− λ_churn × Δbid_mw"]
-    end
-
-    subgraph FAST["⚡ Physics Layer — C2GFastEnv (5-s ticks)"]
-        direction TB
-        FA["Lower-Level Agent\n(Hardware Controller)\nobs: 17-D normalised\nact: 4-D continuous"]
-
-        subgraph SIM["Six Physics Engines"]
-            S1["🖥️ Workload\nP_base + P_flex (queue)"]
-            S2["🌡️ Thermal Twin\nZone A (liquid) · Zone B (air)"]
-            S3["⚡ Electrical Chain\nUPS · PDU · XFMR · PUE"]
-            S4["🔋 BESS\n150 MWh / 50 MW NMC"]
-            S5["📡 Macro-Grid\nAR(1) RegD · LMP proxy"]
-            S6["️ Weather\nNOAA ISD / synthetic"]
-        end
-
-        FR["Fast Reward\nα·throughput − β·tracking_error\n− γ·thermal − δ_soc − δ_f·freq − δ_v·volt"]
-    end
-
-    subgraph SAFETY["🛡️ Safety Shield (optional)"]
-        SH["SafetyShield\nC1 Thermal-A · C2 Thermal-B\nC3 SOC · C4 Frequency · C5 Voltage\nO(1) analytic — no solver"]
-    end
-
-    G1 -->|"regd_signal"| FA
-    G2 -->|"lmp"| MA
-    G3 -->|"freq_dev_norm [14]"| FA
-    G4 -->|"v_pcc_pu [15]"| FA
-
-    MA -->|"inner_action_fn\n(bid_mw_norm, bid_price_norm)"| FA
-    FA -->|"raw action"| SH
-    SH -->|"safe action"| SIM
-    SIM -->|"next state"| FA
-    SIM --> FR
-    FR -->|"step reward"| FA
-    FA -->|"19-D obs (aggregated × 180)"| MA
-    MA --> MR
-```
-
----
-
-#### Diagram 2 — C2GFastEnv Step Function
-
-A single 5-second `env.step(action)` call flows through all six physics engines in this order:
-
-```mermaid
-flowchart LR
-    ACT["action\n[throttle, pump_A,\nhvac, bess]"]
-
-    ACT --> WL
-    ACT --> TH
-    ACT --> BS
-    ACT --> EL
-
-    subgraph STEP["env.step() — one 5-second tick"]
-        WL["Workload\nP_base, P_flex (queue)\n→ P_IT_actual"]
-        TH["Thermal Twin\nexact-exp ODE\n→ T_A, T_B"]
-        EL["Electrical Chain\nUPS+PDU+XFMR losses\n→ P_facility, PUE"]
-        BS["BESS\nSOC update, η(C-rate)\n→ P_BESS_actual"]
-        MG["Macro-Grid\nAR(1) RegD step\n→ ΔP_demanded, LMP"]
-        WE["Weather\nNOAA ISD or synthetic\n→ T_amb update"]
-        FV["Freq + Voltage\nswing eq → Δf\nThévenin → V_pcc"]
-        RW["Reward\nα·thr − β·err − γ·T\n− δ_soc − δ_f·Δf − δ_v·V − δ_q·backlog"]
-        OB["Observation\n17-D normalised vector"]
-        TM{"Termination\ncheck"}
-    end
-
-    WL --> EL
-    BS --> EL
-    WE --> TH
-    EL --> FV
-    EL --> RW
-    TH --> RW
-    BS --> RW
-    FV --> RW
-    MG --> RW
-    RW --> OB
-    TH --> TM
-    FV --> TM
-    TM -->|"thermal / freq / volt fault"| DONE["episode end"]
-    OB --> OUT["obs, reward,\nterminated, truncated, info"]
-```
-
----
-
-#### Diagram 3 — Simplex Safety Shield
-
-The shield sits between any agent and the environment. It intercepts every action, checks five hard constraints analytically, and overrides only the components that would violate a constraint — leaving the rest of the action unchanged.
-
-```mermaid
-flowchart TD
-    AG["RL Agent\n(PPO / SAC / Rule-Based / Human)"]
-    AG -->|"raw_action [4-D]"| SH
-
-    subgraph SH["SafetyShield.filter(action, obs)"]
-        direction TB
-        C1{"C1: T_A\n≥ T_safe − 1°C?"}
-        C2{"C2: T_B\n≥ T_safe − 1°C?"}
-        C3{"C3: SOC out of\n[0.13, 0.92]?"}
-        C4{"C4: |Δf| ≥ 0.4 Hz\n& wrong BESS sign?"}
-        C5{"C5: V_pcc\n< 0.92 pu?"}
-
-        C1 -->|"yes"| OV1["Reduce throttle\nForce max pump"]
-        C2 -->|"yes"| OV2["Increase HVAC"]
-        C3 -->|"yes"| OV3["Block discharge / charge"]
-        C4 -->|"yes"| OV4["Force BESS\ncorrective dispatch"]
-        C5 -->|"yes"| OV5["Proportional\nthrottle reduction"]
-
-        C1 -->|"no"| C2
-        C2 -->|"no"| C3
-        C3 -->|"no"| C4
-        C4 -->|"no"| C5
-        C5 -->|"no"| PASS["action unchanged"]
-    end
-
-    OV1 & OV2 & OV3 & OV4 & OV5 & PASS --> SA["safe_action [4-D]"]
-    SA -->|"ShieldStats updated"| ENV["C2GFastEnv"]
-    ENV -->|"obs, reward, info"| AG
-```
-
----
-
-#### Diagram 4 — Temporal Hierarchy: 5-second vs 15-minute Timescales
-
-The two environment layers run at different cadences. The fast agent executes **180 × 5-second sub-steps** for every single macro-agent decision. This diagram shows the signal update frequencies, when rewards are computed, and how the macro agent gets its aggregated view.
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant Grid as ⚡ Power Grid<br/>(5-sec signals)
-    participant Macro as 🤖 Macro Agent<br/>(15-min cadence)
-    participant Fast as ⚡ Fast Agent<br/>(5-sec cadence)
-    participant Sim as 🏭 Physics Engines
-    participant Shield as 🛡️ Safety Shield
-
-    note over Grid,Shield: t = 0 min — MacroEnv tick k begins
-
-    Macro->>Fast: macro-action [2-D]<br/>bid_mw_norm, bid_price_norm
-    Fast->>Fast: set committed_mw = bid_mw_norm × max_mw
-
-    loop 180 × 5-second sub-steps (i = 0 … 179)
-        Grid->>Fast: regd_signal, lmp, f_grid, V_pcc
-        Fast->>Shield: raw_action [4-D]<br/>[throttle, pump, hvac, bess]
-        Shield-->>Fast: safe_action [4-D] (may be modified)
-        Fast->>Sim: safe_action
-        Sim-->>Fast: T_A, T_B, SOC, P_facility, PUE, Δf, V_pcc
-        Fast->>Fast: compute r_i<br/>α·thr − β·track − γ·thermal − penalties
-        Fast-->>Grid: tracking response ΔP_actual
-    end
-
-    note over Grid,Shield: t = 15 min — MacroEnv tick k ends
-
-    Fast->>Macro: aggregated 19-D obs<br/>(means, maxima, SOC_end, freq/volt means, backlog_norm_mean, rmcp, reg_need)
-    Fast->>Macro: macro reward R_k<br/>= λ_rev×reg_revenue + mean(r₀…r₁₇₉) − λ_elec×elec_cost − λ_churn×Δbid
-    Macro->>Macro: update policy with R_k
-```
-
----
-
-#### Diagram 5 — FastEnv 17-D Observation Vector Anatomy
-
-Every five seconds the environment returns a 17-element `float32` vector. This diagram maps each index to its physical meaning and the simulator that produces it.
-
-```mermaid
-flowchart LR
-    subgraph SIM_THERM["🌡️ Thermal Twin"]
-        T0["[0] temp_A / T_safe\n∈ [0, ~1]"]
-        T1["[1] temp_B / T_safe\n∈ [0, ~1]"]
-    end
-
-    subgraph SIM_BESS["🔋 BESS"]
-        B2["[2] soc_fraction\n∈ [0.10, 0.95]"]
-    end
-
-    subgraph SIM_WORK["🖥️ Workload (queue model)"]
-        W3["[3] p_base_kw / 250 MW\n∈ [0, 1]"]
-        W4["[4] p_flex_nom / 250 MW\nArrivals this tick ∈ [0, 1]"]
-        W9["[9] is_spike_active\n∈ {0, 1}"]
-        W16["[16] backlog_norm\nQueue depth / p_flex_max\n∈ [0, 2]"]
-    end
-
-    subgraph SIM_ELEC["⚡ Electrical Chain"]
-        E5["[5] p_facility / 250 MW\n∈ [0, ~2]"]
-        E12["[12] pue_dynamic / 2.5\n∈ [0, ~2]"]
-    end
-
-    subgraph SIM_GRID["📡 Macro-Grid"]
-        G6["[6] regd_signal\n∈ [−1, 1]"]
-        G7["[7] lmp / 200 $/MWh\n∈ [0, 1]"]
-        G8["[8] load_norm\n∈ [0, 1]"]
-        G14["[14] freq_dev / 0.5 Hz\n∈ [−1, 1]"]
-        G15["[15] v_pcc_pu\n∈ [0, 1.1]"]
-    end
-
-    subgraph SIM_WEATH["🌤️ Weather"]
-        WE13["[13] T_amb_norm\n∈ [0, 1]"]
-    end
-
-    subgraph AGT_MEM["🧠 Agent Memory"]
-        AM10["[10] prev_throttle\n∈ [0, 1]"]
-        AM11["[11] prev_pump_speed\n∈ [0, 1]"]
-    end
-
-    OBS["📦 obs\n17-D float32"]
-    OBS --> T0 & T1
-    OBS --> B2
-    OBS --> W3 & W4 & W9 & W16
-    OBS --> E5 & E12
-    OBS --> G6 & G7 & G8 & G14 & G15
-    OBS --> WE13
-    OBS --> AM10 & AM11
-```
-
----
-
-#### Diagram 6 — Action Decomposition: 4 Levers → Physical Actuators
-
-Each of the four action dimensions maps to a distinct physical actuator. The signal paths show which physics engines are affected and through what mechanism.
-
-```mermaid
-flowchart TD
-    ACT["4-D Action \n[0] throttle_batch  [1] pump_speed_A  [2] hvac_effort  [3] bess_dispatch"]
-
-    ACT --> A0
-    ACT --> A1
-    ACT --> A2
-    ACT --> A3
-
-    A0["[0] throttle_batch ∈ [0, 1]\nDVFS / batch scheduling factor"]
-    A1["[1] pump_speed_A ∈ [0, 1]\nCDU liquid-loop pump speed"]
-    A2["[2] hvac_effort ∈ [0, 1]\nZone-B CRAH fan + chiller effort"]
-    A3["[3] bess_dispatch ∈ [−1, 1]\n+1 = full discharge  −1 = full charge"]
-
-    A0 -->|"capacity = throttle × P_flex_max\n(queue served up to capacity)"| WL["🖥️ Workload\nIT power Zone A (FIFO queue)"]
-    A0 -->|"+ α × throttle"| RW["⚡ Reward signal"]
-
-    A1 -->|"K_liq_eff = K_liq × pump_speed"| THA["🌡️ Thermal Zone A\nLiquid-cooled (HPE Cray EX)\nSlower pump = thermal storage"]
-    A1 -->|"p_pump = P_PUMP_MAX × pump_speed"| ELP["⚡ Facility load (+pump draw)"]
-
-    A2 -->|"Q_HVAC = effort × max_hvac × COP"| THB["🌡️ Thermal Zone B\nAir-cooled (HPE ProLiant)"]
-    A2 -->|"p_hvac = effort × 50 MW"| ELH["⚡ Facility load (+HVAC draw)"]
-
-    A3 -->|"P_bess = dispatch × 50 MW\n+ = inject to grid side"| BS["🔋 BESS\nSOC update, η(C-rate, SOC)"]
-    A3 -->|"net grid draw ± P_bess"| ELB["⚡ Electrical chain\nP_facility = P_IT + P_cool − P_bess"]
-```
-
----
-
-#### Diagram 7 — Reward Signal Decomposition
-
-The step reward `r_t` is a weighted sum of a positive throughput term and five normalised penalty terms. Coefficients are set in `conf/` and can be swept independently.
-
-```mermaid
-flowchart LR
-    subgraph RT["Step Reward  r_t"]
-        direction TB
-        TP["+  α · throttle_batch\n    throughput ∈ [0, 1]\n    default α = 1.0"]
-        TK["-  β · |ΔP_demanded − ΔP_actual| / (commit_mw × 1000)\n    grid-regulation tracking error ∈ [0, ~2]\n    default β = 2.0"]
-        TH["-  γ · Σ clamp(T_zone − T_warn, 0) / headroom\n    thermal excess, normalised to [0, 1] per zone\n    headroom = T_safe − T_warn = 2 °C  |  default γ = 5.0"]
-        SC["-  soc_pen  if SOC < 0.12\n    flat penalty per tick  |  default = 0.5"]
-        FQ["-  δ_f · max(0, |Δf| − 0.2)\n    Hz beyond ±0.2 Hz dead-band  |  default δ_f = 2.0"]
-        VT["-  δ_v · (max(0, 0.95−V) + max(0, V−1.05))\n    pu outside ANSI C84.1 Range A  |  default δ_v = 5.0"]
-        BL["-  δ_q · backlog_norm\n    SLA backlog = queue_kw / p_flex_max ∈ [0, 2]  |  default δ_q = 2.0"]
-    end
-
-    subgraph MRT["Macro Reward  R_k  (15-min)"]
-        direction TB
-        MS["mean(r₀ … r₁₇₉)\naverage of 180 sub-step rewards"]
-        LB["+  λ_rev × regulation_revenue / 1000\n    regulation market revenue  |  default λ_rev = 1.0"]
-        EC["-  λ_elec × electricity_cost / 1000\n    electricity cost penalty  |  default λ_elec = 0.5"]
-        CC["-  λ_churn × |Δbid_mw_norm|\n    bid MW churn penalty  |  default λ_churn = 0.05"]
-    end
-
-    TP & TK & TH & SC & FQ & VT & BL --> SUM["Σ → r_t"]
-    SUM --> MS
-    MS & LB & EC & CC --> MSUM["Σ → R_k"]
-```
-
----
-
-#### Diagram 8 — Episode Lifecycle State Machine
-
-A 24-hour episode consists of **17,280 × 5-second ticks** (or 96 × 15-minute macro steps). An episode can end early via three fault conditions or run to completion (truncation).
-
-```mermaid
-flowchart TD
-    START(["env.reset(seed, options)"])
-
-    START --> R1["🔧 Rebuild all 6 physics engines"]
-    R1 --> R2["📋 Apply scenario params
-T_amb · SOC_init · cooling_fault"]
-    R2 --> R3["👁️ _build_obs_at_reset()
-peek real tick-0 state"]
-    R3 --> OBS0(["return obs₀"])
-
-    OBS0 --> STEP
-
-    subgraph LOOP["🔄 Running  (tick 0 → 17 279)"]
-        STEP["env.step(action)"]
-        SHIELD["🛡️ SafetyShield.filter(action, obs)
-check C1–C5 constraints"]
-        SIMS["🏭 6 Physics Engines
-Workload · Thermal · Electrical
-BESS · Grid · Weather"]
-        REW["⚖️ Compute r_t
-α·thr − β·track − γ·thermal
-− soc_pen − freq_pen − volt_pen − δ_q·backlog"]
-        OB["📦 Build 17-D obs
-tick++"]
-
-        STEP --> SHIELD --> SIMS --> REW --> OB
-        OB -->|"tick < 17280
-no fault"| STEP
-    end
-
-    OB -->|"T_A > 35 °C or T_B > 35 °C"| TF["🔥 ThermalFault
-terminated = True"]
-    OB -->|"|Δf| > 0.5 Hz"| FF["⚡ FreqFault
-terminated = True"]
-    OB -->|"V_pcc < 0.90 pu"| VF["🔌 VoltageFault
-terminated = True"]
-    OB -->|"tick = 17280 (24 h)"| SV["✅ Survived
-truncated = True"]
-
-    TF & FF & VF & SV --> DONE(["episode end"])
-```
-
----
-
----
 
 ## 6. Physics Engines
 
@@ -1032,15 +627,11 @@ C2G-Macro/
 │   ├── __init__.py                      # Exports C2GFastEnv, C2GMacroEnv
 │   ├── env_low_level.py                 # 5 s physics step — C2GFastEnv (18-D obs, 4-D act)
 │   ├── env_high_level.py                # 15-min market step — C2GMacroEnv (19-D obs, 2-D act)
-│   ├── obs_indices.py                   # Named index constants for Fast (18-D) and Macro (19-D) obs
 │   ├── ENVIRONMENTS.md                  # 📖 Full environment & simulator reference (equations, params)
 │   ├── config.yaml                      # Centralised env configuration
 │   ├── experiments/
 │   │   ├── __init__.py                  # Exports ActionAblationFastEnv
 │   │   └── action_ablation_env.py       # C2GFastEnv subclass for action-level ablation studies
-│   ├── train_envs/
-│   │   ├── fixed_action_wrapper.py      # Gym wrapper: fixes one or more action dimensions
-│   │   └── rule_macro_wrapped.py        # C2GFastEnv wrapped with a fixed rule-based macro policy
 │   └── physics/
 │       ├── workload.py                  # Alibaba trace fusion (batch/DLRM/GenAI)
 │       ├── thermal.py                   # Exact-exponential ODEs, dual-zone cooling
@@ -1057,16 +648,15 @@ C2G-Macro/
 │
 ├── conf/                                # Hydra configuration tree
 │   ├── config.yaml                      # Top-level defaults (scenario, algo, market, logging)
-│   ├── algo/                            # 18 algo configs: ppo, sac, ppo_macro, rule_macro_ppo,
-│   │                                    #   cpo, ppo_lagrangian, cbf_ppo, hj_ppo, mpcsf_ppo,
-│   │                                    #   ha_c2g, cbm_only, cbm_gate, cbm_shield,
-│   │                                    #   pid, mpc_fast, mpc_macro, milp, shield_reward_shaping
-│   ├── chat_templates/                  # run_benchmark_rbc.yaml, run_benchmark_rbc+ICRL.yaml
+│   ├── algo/                            # 19 algo configs: ppo, sac, ppo_macro, sac_macro, cpo,
+│   │                                    #   ppo_lagrangian, cbf_ppo, hj_ppo, mpcsf_ppo, ha_c2g,
+│   │                                    #   cbm_only, cbm_gate, cbm_shield, rule_macro_ppo, pid,
+│   │                                    #   mpc_fast, mpc_macro, milp, shield_reward_shaping
 │   ├── scenario/                        # default, scenario_a, scenario_b, scenario_c
 │   ├── market/                          # nyiso_nyc, pjm_dom, caiso_pgae, ercot_north, entso_de, aemo_nsw
 │   └── logging/                         # tensorboard.yaml
 │
-├── baselines/                           # All agent implementations
+├── baselines/                           # NeurIPS Evaluation Agents
 │   ├── _hydra_compat.py                 # Hydra 1.3.x compatibility patch for Python ≥ 3.14
 │   ├── metrics_callback.py              # C2GMetricsCallback — per-episode CSV + TensorBoard
 │   │
@@ -1083,33 +673,23 @@ C2G-Macro/
 │   ├── train_ppo.py                     # SB3 PPO + Hydra + VecNormalize + callbacks
 │   ├── train_sac.py                     # SB3 SAC (off-policy, auto entropy)
 │   ├── train_ppo_macro.py               # PPO on C2GMacroEnv (optional inner policy)
-│   ├── train_hierarchical.py            # Two-phase sequential HRL pipeline (PPO low + PPO high)
-│   ├── train_hierarchical_sac.py        # Two-phase HRL pipeline (SAC low + PPO high)
-│   ├── train_lowsac_highrandom.py       # Low-level SAC + high-level random (random macro baseline)
-│   ├── train_rule_macro_ppo.py          # Rule-based macro + PPO hardware agent
-│   ├── train_rule_macro_sac.py          # Rule-based macro + SAC hardware agent
-│   ├── train_llm_agents.py              # LLM macro agent (vLLM backend, chat-template prompts)
+│   ├── train_hierarchical.py            # Two-phase sequential HRL pipeline (PPO inner)
+│   ├── train_hierarchical_sac.py        # Two-phase HRL with SAC inner policy
+│   ├── train_rule_macro_ppo.py          # Rule-based macro + PPO inner policy
+│   ├── train_rule_macro_sac.py          # Rule-based macro + SAC inner policy
+│   ├── train_lowsac_highrandom.py       # SAC lower + random macro (ablation)
+│   ├── train_llm_agents.py              # LLM-guided agent training
 │   │
-│   └── safety/                          # Safe RL and HA safety method implementations
-│       ├── README.md                    # Safety benchmark documentation
+│   └── safety/                          # HA safety methods + shielded training scripts (see §10.5)
+│       ├── README.md                    # 3-tier HA safety benchmark documentation
 │       ├── safety_shield.py             # Simplex safety filter (5 hard constraints, O(1))
 │       ├── cbf_shield.py                # Control Barrier Function safety filter (QP)
 │       ├── hj_shield.py                 # Hamilton-Jacobi reachability shield (offline BRS)
 │       ├── mpc_safety_filter.py         # MPC safety filter (receding-horizon NLP)
-│       ├── concept_bottleneck.py        # Concept Bottleneck Model
-│       ├── safe_projection.py           # Concept-conditioned differentiable gate
+│       ├── concept_bottleneck.py        # Concept Bottleneck Model (Koh et al., 2020)
+│       ├── safe_projection.py           # Concept-conditioned differentiable gate (Layer 2)
 │       ├── proof_tree.py                # Hierarchical audit proof trees per timestep
-│       ├── train_shielded_ppo.py        # PPO inside ShieldedEnv (safety-filtered)
-│       ├── train_cpo.py                 # Constrained Policy Optimization
-│       ├── train_ppo_lagrangian.py      # PPO-Lagrangian with adaptive Lagrange multipliers
-│       ├── train_shield_reward_shaping.py  # Fixed shield-penalty reward shaping
-│       ├── train_cbf_ppo.py             # PPO + CBF-safe action projection (QP solver)
-│       ├── train_hj_ppo.py              # PPO + HJ reachability value function shield
-│       ├── train_mpcsf_ppo.py           # PPO + MPC safety filter (receding-horizon NLP)
-│       ├── train_ha_c2g.py              # Full 3-layer HA-C2G architecture (CBM + gate + shield)
-│       ├── train_cbm_only.py            # Ablation: PPO + Concept Bottleneck only
-│       ├── train_cbm_gate.py            # Ablation: PPO + CBM + safe projection gate
-│       └── train_cbm_shield.py          # Ablation: PPO + CBM + Simplex shield (no gate)
+│       └── train_*.py                   # 13 shielded/constrained/HA-C2G training scripts (see sec. 10.5)
 │
 ├── evaluation/                          # Benchmark auditing & analysis
 │   ├── run_benchmark.py                 # Standard benchmark: runs agents on all 4 scenarios
@@ -1121,12 +701,9 @@ C2G-Macro/
 │   ├── generate_ha_plots.py             # HA-specific: Pareto frontier, radar, violin plots
 │   ├── plot_episode_traces.py           # Per-episode trace analysis with ablation filtering
 │   ├── failure_analysis.py              # Failure-case categorisation for HA benchmark
-│   ├── statistical_analysis.py          # Bootstrap CIs, Welch's t-test, Cohen's d, LaTeX tables
-│   ├── vis_reward.py                    # Reward visualisation utilities
-│   └── vis_runbenchmark.py              # Benchmark results visualisation
+│   └── statistical_analysis.py          # Bootstrap CIs, Welch's t-test, Cohen's d, LaTeX tables
 │
 ├── scripts/                             # Data download & training utilities
-│   ├── README.md                        # Data download & sweep instructions
 │   ├── download_weather.py              # Open-Meteo ERA5 → 6 weather CSVs
 │   ├── download_energy.py               # EIA + SMARD + AEMO → 5 energy CSVs
 │   └── run_sweep.sh                     # Full training sweep (25 phases, ~270 jobs)
@@ -1136,7 +713,7 @@ C2G-Macro/
 │   ├── energy/                          # process_energy.py (NYISO zone load)
 │   └── weather/                         # download_noaa_isd.py
 │
-├── notebooks/                           # 12 Jupyter notebooks for exploration & visualisation
+├── notebooks/                           # 11 Jupyter notebooks for exploration & visualisation
 │   ├── 01_workload.ipynb                # Alibaba trace analysis
 │   ├── 02_thermal.ipynb                 # Thermal model step response & steady-state
 │   ├── 03_electrical_bess.ipynb         # Electrical chain + BESS cycling
@@ -1149,31 +726,23 @@ C2G-Macro/
 │   ├── 11_baselines_visualization.ipynb # Baseline agent comparison & visualisation
 │   └── 12_workload_deep_dive.ipynb      # Workload queue dynamics & trace statistics
 │
-├── paper/                               # Benchmark manuscript
-│   ├── main.tex                         # 13-page paper
-│   ├── main.pdf                         # Compiled manuscript
-│   ├── references.bib
-│   ├── paper_style.sty
-│   └── figures/                         # fig1–fig4 (.py generators + .pdf + .png)
-│
-├── tests/                               # 560 tests (pytest)
-│   ├── conftest.py                      # Shared fixtures (env factories, tmp dirs)
-│   ├── test_workload.py                 # 40 tests
-│   ├── test_thermal.py                  # 34 tests
-│   ├── test_electrical.py               # 30 tests
-│   ├── test_macro_grid.py               # 40 tests
+├── tests/                               # 531 tests (pytest)
+│   ├── test_workload.py                 # 24 tests
+│   ├── test_thermal.py                  # 32 tests
+│   ├── test_electrical.py               # 27 tests
+│   ├── test_macro_grid.py               # 30 tests
 │   ├── test_weather.py                  # 23 tests
-│   ├── test_gym_api.py                  # 75 tests (API compliance both envs)
-│   ├── test_baselines.py                # 27 tests
-│   ├── test_new_baselines.py            # 46 tests (classical + gradient-free baselines)
-│   ├── test_frequency_voltage.py        # 35 tests (freq/voltage safety signals)
-│   ├── test_hierarchical.py             # 33 tests (HRL, macro agents)
-│   ├── test_safety_shield.py            # 27 tests (Simplex shield, wrappers)
-│   ├── test_ha_safety.py                # 84 tests (3-tier HA safety methods)
+│   ├── test_gym_api.py                  # 72 tests (API compliance both envs)
+│   ├── test_baselines.py                # 18 tests
+│   ├── test_new_baselines.py            # 50 tests (classical + gradient-free baselines)
+│   ├── test_frequency_voltage.py        # 31 tests (freq/voltage safety signals)
+│   ├── test_hierarchical.py             # 22 tests (HRL, macro agents)
+│   ├── test_safety_shield.py            # 24 tests (Simplex shield, wrappers)
+│   ├── test_ha_safety.py                # 70 tests (3-tier HA safety methods)
 │   ├── test_critical_bug_fixes.py       # 50 tests (regression tests)
-│   ├── test_ablation.py                 # 6 tests (action ablation env)
-│   ├── test_readme_smoke.py             # 2 tests (README code snippet validation)
-│   ├── test_datalogging.py              # 8 tests (transition logging schema + smoke tests)
+│   ├── test_ablation.py                 # 18 tests (action ablation env)
+│   ├── test_readme_smoke.py             # 13 tests (README code snippet validation)
+│   ├── test_datalogging.py              # 7 tests (transition logging schema + 5 smoke tests)
 │                                        #   Hardware vs macro column validation
 │                                        #   5 CLI smoke tests: rule_macro, rule_based,
 │                                        #   rule_based+BESS_ablation, ha_rule_based (variants)
@@ -1207,7 +776,7 @@ uv sync --extra dev   # pytest, ruff, mypy
 
 ```bash
 uv run pytest tests/ -q
-# 560 collected (559 passed, 1 skipped)
+# 531 passed
 ```
 
 ### Train a single agent
@@ -1304,122 +873,53 @@ e.g. `ppo_scenario_b_hardware_BESS_0.5.csv` stores evals for hardware PPO agent 
 
 #### Standard benchmark runner
 
-Runs any combination of agents across all four evaluation scenarios and writes per-episode metrics to CSV.
-
+**Basic usage:**
 ```bash
-# Classical hardware controllers (no trained models needed)
 uv run evaluation/run_benchmark.py --agents rule_based bang_bang pid random
-
-# SAC low-level agent (requires a trained model)
-uv run evaluation/run_benchmark.py --agents sac --scenarios default scenario_b \
-    --hw-model-dir trained_models/sac_default_s100
-
-# Hierarchical combos: rule-based macro + hardware controller
-uv run evaluation/run_benchmark.py --agents rule_macro+sac rule_macro+rule_based \
-    rule_macro+pid rule_macro+bang_bang rule_macro+random \
-    --hw-model-dir trained_models/sac_default_s100
-
-# RL macro (Phase 2) + frozen SAC low-level
-uv run evaluation/run_benchmark.py --agents sac_macro+sac \
-    --macro-model-dir trained_models/sac_macro_default_s100 \
-    --hw-model-dir trained_models/sac_default_s100
-
-# LLM macro + hardware controller (requires a running vLLM server)
-uv run evaluation/run_benchmark.py --agents llm_policy_macro+sac \
-    --hw-model-dir trained_models/sac_default_s100 \
-    --llm-api-base http://localhost:8000/v1
-
-# With transition logging (per-step CSV traces)
-uv run evaluation/run_benchmark.py --agents rule_macro+sac --record_transitions \
-    --hw-model-dir trained_models/sac_default_s100
+uv run evaluation/run_benchmark.py --agents ppo sac --scenarios default scenario_b --n_episodes 10
 ```
 
-SAC agents automatically load the model from `trained_models/<algo>_<scenario>_s<seed>/final_model.zip`. Use `--hw-model-dir` or `--macro-model-dir` to override.
+Benchmark runner note: PPO-style agents automatically restore saved
+`VecNormalize` observation statistics from `vec_normalize.pkl` at evaluation
+time for apples-to-apples comparison with their training setup.
+Non-normalized agents such as `SAC` are left unwrapped.
 
-**Agents used in the paper:**
-
-| Agent | Type | Description |
-|-------|------|-------------|
-| `random` | hardware | Uniform random baseline (lower bound) |
-| `bang_bang` | hardware | Hysteresis on/off controller |
-| `pid` | hardware | Multi-loop PID with anti-windup |
-| `rule_based` | hardware | Threshold heuristic controller (`baselines/rule_based_mpc.py`) |
-| `sac` | hardware | Trained SAC low-level controller (Phase 1) |
-| `rule_macro` | macro | Rule-based macro bidding controller |
-| `sac_macro` | macro | Trained SAC macro controller (Phase 2) |
-| `llm_policy_macro` | macro | LLM macro controller (Qwen3-32B, ICRL) |
-| `<macro>+<hardware>` | combo | Macro agent paired with hardware agent, e.g. `rule_macro+sac`, `llm_policy_macro+pid` |
-
-**Fixed-action ablations (Appendix M):**
-
-Pin actuators to fixed setpoints to isolate each lever's contribution:
-
+**Transition Logging:**
 ```bash
-# Disable BESS (throttle + cooling only)
-uv run evaluation/run_benchmark.py --agents rule_macro+sac \
-    --fixed-action bess_dispatch=0.0 \
-    --hw-model-dir trained_models/sac_default_s100
-
-# Disable BESS and fix cooling (throttle only)
-uv run evaluation/run_benchmark.py --agents rule_macro+sac \
-    --fixed-action bess_dispatch=0.0 \
-    --fixed-action pump_speed_A=0.7 \
-    --fixed-action hvac_effort=0.7 \
-    --hw-model-dir trained_models/sac_default_s100
+uv run evaluation/run_benchmark.py --agents ppo --record_transitions
 ```
 
-Action bounds: `throttle_batch ∈ [0, 1]`, `pump_speed_A ∈ [0, 1]`, `hvac_effort ∈ [0, 1]`, `bess_dispatch ∈ [-1, 1]`. Values are validated and clipped to these ranges.
+**Fixed-Action Ablations:**
+Pin physical actuators to fixed setpoints while the RL agent controls the remaining levers:
+```bash
+# Disable BESS, agent controls DVFS + cooling
+uv run evaluation/run_benchmark.py --fixed-action bess_dispatch=0.0
 
-**Key CLI arguments:**
+# HVAC at 80%, BESS disabled, agent controls DVFS + pump
+uv run evaluation/run_benchmark.py \
+  --fixed-action hvac_effort=0.8 \
+  --fixed-action bess_dispatch=0.0
+```
 
-| Argument | Default | Description |
-|----------|---------|-------------|
-| `--agents` | `rule_based bang_bang pid random` | One or more agent names (see table above) |
-| `--scenarios` | all 4 | Subset of `default scenario_a scenario_b scenario_c` |
-| `--n_episodes` | `5` | Episodes per agent × scenario combination |
-| `--seed` | `100` | Starting RNG seed; episode `i` uses `seed + i` |
-| `--hw-model-dir` | `None` | Model directory for the hardware/inner SAC agent |
-| `--macro-model-dir` | `None` | Model directory for the macro-level SAC agent |
-| `--output` | auto-generated | Output CSV path; defaults to `evaluation/results/<algo>_<scenario>_<agent_type>_<ablation>.csv` |
-| `--record_transitions` / `--no-record_transitions` | disabled | Write per-step state/action/reward traces to `runs/<agent>_<scenario>_<type>/episode*.csv` |
-| `--append` | `False` | Append rows to an existing CSV instead of overwriting |
-| `--fixed-action <name>=<value>` | none | Pin an actuator to a fixed setpoint (repeatable) |
-| `--llm-api-base` | `http://localhost:8000/v1` | vLLM / OpenAI-compatible server URL |
-| `--llm-template-path` | `conf/chat_templates/run_benchmark_rbc+ICRL.yaml` | YAML prompt templates for LLM agents |
-| `--llm-max-new-tokens` | `8192` | Maximum tokens per LLM generation step |
-| `--llm-temperature` | `0.0` | Sampling temperature (0 = greedy) |
-| `--llm-no-thinking` | off | Disable `<think>` reasoning blocks |
-| `--llm-context-num-steps` | `10` | ICRL rolling buffer size in past steps (paper uses 5; 0 = disabled) |
-| `--llm-context-stride` | `1` | Store every *K*-th step in the ICRL buffer |
-| `--llm-icrl-mode` | `autonomous` | ICRL instruction mode: `autonomous` (paper default), `preset`, or `exploit` |
+**Key Options:**
+- `--agents`: agents to evaluate
+- `--scenarios`: scenarios to run
+- `--n_episodes`: number of episodes per agent/scenario
+- `--output`: output CSV path (auto-generated if omitted)
+- `--fixed-action action=value`: pin action to fixed setpoint for ablation studies
+- `--record_transitions` / `--no-record_transitions`: per-step transition logging (default: enabled)
+- `--seed`: starting seed (default: 42)
+- `--model_dir`: optional override for trained model directory
 
-**Output metrics:**
+When transition logging is enabled, per-step state, action, observation, and reward traces are written under `runs/<agent>_<scenario>_<agent_type>/episode*.csv`. The `agent_type` path component can be `hardware`, `macro`, or `hardware_ha`, depending on which evaluation runner produced the logs.
 
-For hardware agents, each row in the output CSV contains:
+**Action Bounds (continuous):**
+- `throttle_batch ∈ [0, 1]`
+- `pump_speed_A ∈ [0, 1]`
+- `hvac_effort ∈ [0, 1]`
+- `bess_dispatch ∈ [-1, 1]`
 
-| Column | Description |
-|--------|-------------|
-| `mean_reward` | Mean step reward over the episode |
-| `total_reward` | Sum of step rewards |
-| `tracking_rmse` | RMSE of `ΔP_demanded − ΔP_actual` (kW) |
-| `thermal_viol_rate` | Fraction of ticks with temperature > T_warn (33 °C) |
-| `throughput_ratio` | Mean `p_flex_served / p_flex_nom` |
-| `bess_degradation` | Cumulative capacity fade × 10⁴ |
-| `episode_length` | Ticks completed (< 17 280 indicates early termination) |
-| `survival_rate` | Fraction of episodes surviving to 24 h |
-
-For macro agents, additional columns include:
-
-| Column | Description |
-|--------|-------------|
-| `bid_acceptance_rate` | Fraction of 15-min bids accepted by the grid |
-| `total_reg_revenue` | Cumulative regulation revenue (USD) |
-| `mean_perf_score` | Mean FERC performance score |
-| `mean_committed_mw` | Mean accepted MW commitment per interval |
-
-For hierarchical combo agents (`macro+hardware`), results are split into `*_macro.csv` and `*_hardware.csv` automatically, with a separate hardware-schema row for the inner controller enabling direct comparison with standalone hardware results.
-
-When `--record_transitions` is enabled, per-step logs are written under `runs/<agent>_<scenario>_<agent_type>/episode*.csv`.
+Any `--fixed-action` value is interpreted as a continuous setpoint and clipped to the corresponding action bounds.
 
 #### High-assurance benchmark runner
 
@@ -1639,7 +1139,7 @@ uv run evaluation/statistical_analysis.py
 - **Renewable Integration:** Data centers absorb excess wind/solar, preventing curtailment.
 - **Grid Stability:** The DC acts as a "shock absorber" for the transmission grid, reducing reliance on fossil-fuel peaker plants.
 
-### For AI Research
+### For AI Research (NeurIPS 2026)
 - **Cyber-Physical Benchmark:** The first high-fidelity, multi-market testbed for hierarchical RL on real infrastructure physics.
 - **Six Global Markets:** NYISO, PJM, CAISO, ERCOT, ENTSO-E, AEMO — largest DC hubs on Earth.
 - **DOE Genesis Alignment:** 250 MW–1 GW scale matches the US national AI infrastructure program.
