@@ -70,7 +70,7 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 import numpy as np
 import yaml
@@ -90,6 +90,11 @@ from c2g_env.physics.weather    import WeatherLoader
 _FACILITY_CAP_KW = 250_000.0    # Nameplate IT capacity (kW)
 
 _CONFIG_PATH = Path(__file__).parent / "config.yaml"
+
+_THERMAL_OVERRIDE_KEYS = frozenset({
+    "C_A", "C_B", "K_liq", "K_air", "K_env_A", "K_env_B",
+    "T_supply_A", "T_supply_B", "COP_base", "fault_factor", "T_amb",
+})
 
 
 class C2GFastEnv(gym.Env):
@@ -159,6 +164,7 @@ class C2GFastEnv(gym.Env):
         self,
         scenario: str = "default",
         config_path: str | Path | None = None,
+        thermal_overrides: Mapping[str, float] | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__()
@@ -171,6 +177,14 @@ class C2GFastEnv(gym.Env):
         self._rcfg   = full_cfg["reward"]
         self._scfg   = full_cfg[scenario]
         self._scenario = scenario
+        self._thermal_overrides = {
+            str(key): float(value) for key, value in (thermal_overrides or {}).items()
+        }
+        unknown_thermal_keys = set(self._thermal_overrides) - _THERMAL_OVERRIDE_KEYS
+        if unknown_thermal_keys:
+            raise ValueError(
+                f"Unknown thermal override key(s): {sorted(unknown_thermal_keys)}"
+            )
 
         self.action_space = spaces.Box(
             low=self._ACT_LOW, high=self._ACT_HIGH, dtype=np.float32
@@ -296,6 +310,12 @@ class C2GFastEnv(gym.Env):
                 active=True,
                 fault_factor=float(scfg.get("cooling_fault_factor", 0.4)),
             )
+        for key, value in self._thermal_overrides.items():
+            setattr(self._thermal, key, value)
+        if "fault_factor" in self._thermal_overrides:
+            self._thermal.fault_active = self._thermal.fault_factor < 1.0
+        if "T_amb" in self._thermal_overrides:
+            self._weather_driven = False
         # Override initial BESS SOC if specified
         bess_soc_init = float(scfg.get("bess_soc_init", 0.5))
         self._bess.set_initial_soc(bess_soc_init)
