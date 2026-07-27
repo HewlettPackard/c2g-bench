@@ -2,9 +2,13 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
+
+from c2g_env.experiments.thermal_sensitivity import load_config
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -19,6 +23,16 @@ FAULT_COLUMNS = (
     "soc_fault",
     "sla_fault",
 )
+
+# Grid values annotated **NR** (not recommended) in thermal_sensitivity.md,
+# excluding the nominal ('N') point for each parameter. A row is a "stress
+# condition" only when it deviates from nominal onto one of these
+# not-recommended values; merely-boundary (**B**-only) values do not qualify.
+_STRESS_VALUES: dict[str, frozenset[float]] = {
+    "K_liq": frozenset({18.8, 25.1}),
+    "T_supply_A": frozenset({32.0}),
+    "fault_factor": frozenset({0.8, 0.6, 0.4}),
+}
 
 
 def load_partitions(artifact_dir: Path) -> pd.DataFrame:
@@ -63,6 +77,32 @@ def validate_matrix(frame: pd.DataFrame) -> None:
         raise ValueError("Seed set does not match the configured factorial design")
     if set(frame["hardware_controller"]) != set(CONTROLLERS):
         raise ValueError("Controller set does not match the configured factorial design")
+
+
+def _is_stress_overrides(overrides: dict[str, float], nominal: dict[str, float]) -> bool:
+    """True if ``overrides`` deviates from ``nominal`` onto an NR grid value."""
+    for key, value in overrides.items():
+        nominal_value = nominal.get(key)
+        if nominal_value is not None and np.isclose(value, nominal_value):
+            continue
+        if any(np.isclose(value, sv) for sv in _STRESS_VALUES.get(key, frozenset())):
+            return True
+    return False
+
+
+def add_stress_condition(frame: pd.DataFrame, config_path: Path | None = None) -> pd.DataFrame:
+    """Add a ``stress_condition`` column derived from ``thermal_overrides``.
+
+    True when at least one swept thermal parameter in the row's plant
+    configuration sits at a not-recommended (**NR**) grid value per
+    ``thermal_sensitivity.md``.
+    """
+    nominal = dict(load_config(config_path)["nominal"])
+    annotated = frame.copy()
+    annotated["stress_condition"] = annotated["thermal_overrides"].apply(
+        lambda raw: _is_stress_overrides(json.loads(raw), nominal)
+    )
+    return annotated
 
 
 def normalize_termination_reasons(frame: pd.DataFrame) -> pd.DataFrame:
@@ -131,6 +171,7 @@ def summarize_configurations(frame: pd.DataFrame) -> pd.DataFrame:
     working["warning_episode"] = working["thermal_warning_steps"] > 0
     group_columns = ["config_id", "scenario", "hardware_controller"]
     return working.groupby(group_columns, sort=False).agg(
+        stress_condition=("stress_condition", "first"),
         seeds=("seed", "nunique"),
         survival_rate=("survived", "mean"),
         warning_episode_rate=("warning_episode", "mean"),
@@ -153,6 +194,7 @@ def main() -> None:
     frame = load_partitions(args.artifact_dir)
     validate_matrix(frame)
     frame = normalize_termination_reasons(frame)
+    frame = add_stress_condition(frame)
     seed_summary = summarize_by_seed(frame)
     scenario_summary = summarize_scenarios(seed_summary)
     config_summary = summarize_configurations(frame)

@@ -249,24 +249,32 @@ The table reports mean and sample standard deviation over five seed-level
 fractions. Each seed-level fraction contains the same 36 plant configurations.
 Fault counts are totals over 180 episodes per scenario-controller pair.
 
-| Scenario | Hardware controller | Survival, % | Warning-step fraction, % | Thermal faults | SLA faults |
-| --- | --- | ---: | ---: | ---: | ---: |
-| Default | Bang-bang | 98.89 +/- 1.52 | 0.70 +/- 0.03 | 0 | 2 |
-| Default | PID | 100.00 +/- 0.00 | 2.70 +/- 0.00 | 0 | 0 |
-| Default | Rule-based | 100.00 +/- 0.00 | 0.56 +/- 0.00 | 0 | 0 |
-| Default | SAC | 97.78 +/- 1.24 | 1.57 +/- 0.91 | 4 | 0 |
-| Scenario A | Bang-bang | 98.89 +/- 1.52 | 1.08 +/- 0.03 | 0 | 2 |
-| Scenario A | PID | 100.00 +/- 0.00 | 3.32 +/- 0.00 | 0 | 0 |
-| Scenario A | Rule-based | 100.00 +/- 0.00 | 0.96 +/- 0.00 | 0 | 0 |
-| Scenario A | SAC | 97.22 +/- 1.96 | 7.63 +/- 0.81 | 5 | 0 |
-| Scenario B | Bang-bang | 98.89 +/- 1.52 | 1.08 +/- 0.04 | 0 | 2 |
-| Scenario B | PID | 100.00 +/- 0.00 | 4.09 +/- 0.03 | 0 | 0 |
-| Scenario B | Rule-based | 100.00 +/- 0.00 | 0.99 +/- 0.01 | 0 | 0 |
-| Scenario B | SAC | 97.78 +/- 1.24 | 8.45 +/- 0.96 | 4 | 0 |
-| Scenario C | Bang-bang | 97.78 +/- 3.04 | 3.83 +/- 0.39 | 0 | 4 |
-| Scenario C | PID | 100.00 +/- 0.00 | 6.46 +/- 0.00 | 0 | 0 |
-| Scenario C | Rule-based | 100.00 +/- 0.00 | 3.90 +/- 0.01 | 0 | 0 |
-| Scenario C | SAC | 94.44 +/- 2.78 | 11.13 +/- 1.25 | 10 | 0 |
+| Scenario | Hardware controller | Survival, % | Warning-step fraction, % | Thermal faults | Thermal faults under stress conditions | SLA faults |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| Default | Bang-bang | 98.89 +/- 1.52 | 0.70 +/- 0.03 | 0 | 0 | 2 |
+| Default | PID | 100.00 +/- 0.00 | 2.70 +/- 0.00 | 0 | 0 | 0 |
+| Default | Rule-based | 100.00 +/- 0.00 | 0.56 +/- 0.00 | 0 | 0 | 0 |
+| Default | SAC | 97.78 +/- 1.24 | 1.57 +/- 0.91 | 4 | 4 | 0 |
+| Scenario A | Bang-bang | 98.89 +/- 1.52 | 1.08 +/- 0.03 | 0 | 0 | 2 |
+| Scenario A | PID | 100.00 +/- 0.00 | 3.32 +/- 0.00 | 0 | 0 | 0 |
+| Scenario A | Rule-based | 100.00 +/- 0.00 | 0.96 +/- 0.00 | 0 | 0 | 0 |
+| Scenario A | SAC | 97.22 +/- 1.96 | 7.63 +/- 0.81 | 5 | 5 | 0 |
+| Scenario B | Bang-bang | 98.89 +/- 1.52 | 1.08 +/- 0.04 | 0 | 0 | 2 |
+| Scenario B | PID | 100.00 +/- 0.00 | 4.09 +/- 0.03 | 0 | 0 | 0 |
+| Scenario B | Rule-based | 100.00 +/- 0.00 | 0.99 +/- 0.01 | 0 | 0 | 0 |
+| Scenario B | SAC | 97.78 +/- 1.24 | 8.45 +/- 0.96 | 4 | 4 | 0 |
+| Scenario C | Bang-bang | 97.78 +/- 3.04 | 3.83 +/- 0.39 | 0 | 0 | 4 |
+| Scenario C | PID | 100.00 +/- 0.00 | 6.46 +/- 0.00 | 0 | 0 | 0 |
+| Scenario C | Rule-based | 100.00 +/- 0.00 | 3.90 +/- 0.01 | 0 | 0 | 0 |
+| Scenario C | SAC | 94.44 +/- 2.78 | 11.13 +/- 1.25 | 10 | 10 | 0 |
+
+"Thermal faults under stress conditions" is the subset of the "Thermal faults"
+count whose plant configuration has `stress_condition = True` (see Full-
+Environment Cross-Scenario Evaluation above): at least one swept thermal
+parameter at an **NR** grid value. Across all 16 scenario-controller pairs,
+every recorded thermal fault occurred under such a not-recommended
+configuration; none occurred under the nominal plant, an ordinary/reference
+OAT variant, or the B-only `low_inertia` case.
 
 The nominal plant survived all 80 scenario-controller-seed episodes without a
 fault termination. Its largest observed temperature was 33.994 degC. Default
@@ -295,6 +303,23 @@ The merged episode output is stored in
 `copilot/artifacts/thermal_sensitivity_cross_scenario.csv`. Seed-level,
 scenario-level, and configuration-level summaries are stored alongside it with
 the suffixes `_seed_summary`, `_summary`, and `_config_summary`, respectively.
+
+The configuration-level summary (`_config_summary`) additionally reports a
+`stress_condition` column. This flags a plant configuration as `True` only
+when at least one swept thermal parameter deviates from its nominal value
+onto a grid point annotated **NR** (not recommended) in the Recommended Sweep
+table above. Deviations that only reach a **B**-only (boundary/conditional)
+value, an **S**-only value (currently just $T_{\mathrm{amb}}=40$ degC), or an
+ordinary/nominal value do not set the flag. Under this definition, `nominal`,
+all ordinary OAT variants, and the `low_inertia` coupled case (which only
+touches the B-labeled $C_A=13{,}500$ and $C_B=5{,}000$) are `False`. The OAT
+rows $K_{\mathrm{liq}}\in\{18.8,25.1\}$, $T_{\mathrm{supply},A}=32$,
+$f_{\mathrm{fault}}\in\{0.8,0.6,0.4\}$, and the coupled cases `weak_cooling`,
+`partial_outage`, and `combined_adverse` (each of which touches at least one
+of those NR values) are `True`. The column lets downstream fault analysis
+condition the reported survival, warning, and fault totals on whether a row's
+plant configuration is itself a not-recommended case rather than an ordinary,
+nominal, or merely boundary point.
 
 ## Source Families
 
