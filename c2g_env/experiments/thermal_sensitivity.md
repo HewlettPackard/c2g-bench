@@ -34,44 +34,41 @@ maximum-cooling test crossed 35 degC; **S**, declared stress or failure
 condition. A value carries two labels when a standard permits it but the
 current plant sizing cannot sustain it.
 
+The **NR** values fail the open-loop stress test, in which IT load is pinned
+at the worst-case maximum and cooling at full effort, yet the zone still
+crosses 35 degC. The pure-NR values would not be selected as a sizing basis
+for this 150/100 MW plant; the S/NR values additionally represent runtime
+degradation of an otherwise adequate plant rather than a design choice. We
+retain all of them in the sweep as boundary conditions rather than as
+recommended operating points.
+
 ### Label Basis
 
-Each label combines two independent kinds of evidence rather than a single
-test:
+Each label combines two kinds of evidence rather than a single test:
 
-- **A priori — specification plausibility (N, O, B, S).** Every non-nominal
+- **A priori, specification plausibility (N, O, B, S).** Each non-nominal
   value is checked against a physical reference (ASHRAE 90.1/127/TC 9.9,
   NIST/IAPWS material data, IECC C402, AHRI 550/590 or 551/591, or vendor
-  specs from HPE, CoolIT, and Vertiv) and classified as an ordinary/plausible
-  design point (**O**), a boundary or conditional case that requires an
-  additional physical assumption to justify (**B**), or a declared
-  engineering stress/failure scenario such as an equipment outage or extreme
-  weather (**S**). **N** simply marks the value already used as the
-  benchmark default.
-- **A posteriori — the controller-free maximum-cooling probe (NR).** **NR**
-  is assigned only when the value, run at worst-case constant IT load
-  (150/100 MW) with cooling pinned to maximum effort, still crosses the
-  fixed 35 degC safety line. It is the one label tied directly to a
-  simulation result rather than to a specification. The open-loop harness
-  defines three fixed cooling policies (`pump_speed`, `hvac_effort`):
-  `open_worstcool` (0.15, 0.0), `open_nominal` (0.7, 0.7), and `open_maxcool`
-  (1.0, 1.0). **NR is decided from `open_maxcool` only** — the best-case,
-  full-effort policy — never from `open_worstcool` or `open_nominal`. Those
-  two are feasibility controls, not the NR criterion: minimum cooling
-  crosses 35 degC in all 48 configurations, and fixed 0.7 cooling crosses in
-  45 of 48, so applying either as the NR test would flag almost every value,
-  including the nominal one. NR therefore isolates configurations that are
-  infeasible even under the most favorable cooling effort, not merely under
-  degraded or typical effort.
+  specifications) and classified as ordinary and plausible (**O**), boundary
+  or conditional if it needs a further physical assumption to justify (**B**),
+  or a declared stress or failure case such as an equipment outage or extreme
+  weather (**S**). **N** marks the current benchmark default.
+- **A posteriori, the controller-free maximum-cooling probe (NR).** A value is
+  labelled **NR** when, run at constant worst-case load (150/100 MW) with
+  cooling pinned to maximum effort (`open_maxcool`: `pump_speed=1.0`,
+  `hvac_effort=1.0`), it still crosses the fixed 35 degC line. This is the one
+  label tied to a simulation result rather than a specification. NR is decided
+  from `open_maxcool` alone, the most favourable cooling policy: minimum
+  cooling (0.15, 0.0) crosses in all 48 configurations and fixed 0.7 cooling in
+  45 of 48, so neither would isolate under-provisioning. NR therefore flags
+  configurations that stay infeasible even under the best available cooling.
 - **Dual labels** (`N/B`, `B/NR`, `S/NR`) appear when the two kinds of
-  evidence disagree: a standard or vendor spec permits the value, but the
-  maximum-cooling probe shows the current plant sizing cannot sustain it at
-  continuous nameplate.
+  evidence disagree: a specification permits the value, but the maximum-cooling
+  probe shows the current plant sizing cannot sustain it at nameplate.
 
-These labels are authored directly in the tables below; they are not
-computed by code. The `stress_condition` column added in the
-Full-Environment Cross-Scenario Evaluation mechanically re-derives a
-coarser, NR-only version of this same taxonomy for per-episode fault
+These labels are written by hand in the tables below, not computed. The
+`stress_condition` column in the Full-Environment Cross-Scenario Evaluation
+re-derives a coarser, NR-only version of this taxonomy for per-episode fault
 analysis.
 
 | Parameter | Annotated grid | Physical interpretation | Constituent materials or specification basis |
@@ -83,7 +80,7 @@ analysis.
 | $K_{\mathrm{env},A}$ (MW/K) | 0.05 **[O: passive]**; 0.10 **[O: passive]**; 0.25 **[B: ventilation-inclusive]**; 0.50 **[N/B: ventilation-inclusive]** | Code envelope plus infiltration through ventilation-inclusive ambient coupling. The current 0.50 value is not recommended as a passive-fabric interpretation. | ASHRAE 90.1 and IECC C402 give roof $U\approx0.12$ to 0.22 W/m2/K, wall $U\approx0.21$ to 0.59 W/m2/K, and fixed fenestration $U\approx1.6$ to 2.8 W/m2/K. Compute $K_{\mathrm{env}}=\sum_i U_iA_i+FP+\rho c_p\dot V$. Values 0.25 to 0.50 MW/K require substantial ventilation/economizer coupling for the assumed campus geometry. |
 | $K_{\mathrm{env},B}$ (MW/K) | 0.05 **[O: passive]**; 0.10 **[O: passive]**; 0.25 **[B: ventilation-inclusive]**; 0.50 **[N/B: ventilation-inclusive]** | Same interpretation with separate zone geometry. | Same ASHRAE 90.1, IECC C402, and DOE-PNNL prototype-building basis. The nominal 0.5 MW/K should be treated as ventilation-inclusive, not passive fabric conductance. |
 | $\mathrm{COP}_{\mathrm{air,base}}$ | 2.5 **[B: low efficiency]**; 3.5 **[N]**; 5.0 **[O: high efficiency]** | Low-, nominal-, and high-efficiency air-plant cases. The 2.5 case is not itself beyond the thermal limit at maximum HVAC effort, but is a poor-efficiency boundary and becomes capacity-limited at 0.7 effort. | ASHRAE 127 and AHRI 550/590 or 551/591 define rating methods, not a universal COP interval. The grid is an effective plant-performance assumption pending a declared CRAH/chiller type and manufacturer map. |
-| $T_{\mathrm{supply},A}$ (degC) | 20 **[O: energy-intensive]**; 27 **[O]**; 30 **[N]**; 32 **[B/NR with nominal $K_{\mathrm{liq}}$]** | Cold-water, W27, nominal, and upper W32/ cases. The 32 degC point is standards/product allowed, but the current 35 MW/K conductance crossed the safety limit at continuous 150 MW even with maximum pumping. | ASHRAE liquid classes W27 and W32. Cray EX QuickSpecs specify facility-water supply up to 32 degC. A 40 degC case would require a separate W40-qualified architecture. |
+| $T_{\mathrm{supply},A}$ (degC) | 20 **[O: energy-intensive]**; 27 **[O]**; 30 **[N]**; 32 **[B/NR with nominal $K_{\mathrm{liq}}$]** | Cold-water, W27, nominal, and upper W32 cases. The 32 degC point is standards/product allowed, but the current 35 MW/K conductance crossed the safety limit at continuous 150 MW even with maximum pumping. | ASHRAE liquid classes W27 and W32. Cray EX QuickSpecs specify facility-water supply up to 32 degC. A 40 degC case would require a separate W40-qualified architecture. |
 | $T_{\mathrm{supply},B}$ (degC) | 18 **[O]**; 20 **[N]**; 24 **[O]**; 27 **[B: upper recommended inlet]** | Lower, nominal, intermediate, and upper recommended air-temperature cases. The 27 degC point is conditional because the benchmark variable is CRAH supply rather than measured equipment inlet. | ASHRAE A1 to A4 recommended equipment-inlet range of 18 to 27 degC. The comparison assumes inlet equivalence until a supply-to-inlet rise is specified. |
 | $f_{\mathrm{fault}}$ | 1.0 **[N]**; 0.8 **[S/NR]**; 0.6 **[S/NR]**; 0.4 **[S/NR]** | Zero, 20%, 40%, and 60% aggregate conductance loss. All three degraded cases crossed 35 degC under full nameplate and maximum cooling. | This is not a material specification. A value of 0.8 can represent one of five equivalent units unavailable, although a properly sized N+1 plant should preserve nameplate capacity. Values 0.6 and 0.4 are compound or severe stress cases. The current implementation applies one factor to both zones. |
 | $T_{\mathrm{amb}}$ (degC) | 25 **[N]**; 30 **[O: hot]**; 35 **[B: severe heat]**; 40 **[S: extreme heat]** | Nominal through extreme-hot weather. These values did not independently make the maximum-cooling plant infeasible, but 30 to 40 degC produced warning excursions in all closed-loop controllers. | Exogenous weather/scenario input. The 40 degC point corresponds to the paper's Thermal Squeeze scenario. |
@@ -158,7 +155,7 @@ The completed experiment used the following setup:
 | Closed-loop heat input | Alibaba-derived benchmark workload trace through `WorkloadOrchestrator` |
 | Closed-loop controllers | Frozen bang-bang, PID, and rule-based hardware controllers with their published 30/31/32.5/33/35 degC references unchanged |
 | Closed-loop nonthermal state | Regulation command fixed to zero; SOC, voltage, frequency, and backlog observations held at benign values to isolate thermal feedback |
-| Output | 288 rows in `copilot/artifacts/thermal_sensitivity_full.csv` |
+| Output | 288 rows in `c2g_env/experiments/thermal_tests_raw/thermal_sensitivity_full.csv` |
 
 Each plant configuration receives three open-loop runs at full nameplate:
 
@@ -167,16 +164,17 @@ Each plant configuration receives three open-loop runs at full nameplate:
 3. Maximum pump and HVAC (`open_maxcool`).
 
 It also receives three closed-loop runs, one per frozen controller, against
-the same workload trace. The output reports maximum/final temperatures,
+the same workload trace. The output reports maximum and final temperatures,
 warning-violation rate, headroom, first crossing time above 35 degC,
-terminating zone, and mean actions — one deterministic thermal trajectory per
-configuration and controller, not a five-seed scenario evaluation.
+terminating zone, and mean actions. Each is one deterministic thermal
+trajectory per configuration and controller, not a five-seed scenario
+evaluation.
 
 The harness continues past the first crossing to characterize the full
 24-hour trajectory; `crossed_tsafe=1` marks a row where `C2GFastEnv` would
 have terminated. It does not simulate BESS, grid-frequency, PCC-voltage, or
 backlog termination, so it cannot produce or rule out nonthermal
-terminations — those require a full-environment run.
+terminations; those require a full-environment run.
 
 ## Results: Normal Operating Coefficients
 
@@ -218,7 +216,7 @@ configurations, all first crossing in Zone A:
 | --- | --- | ---: | --- |
 | $K_{\mathrm{liq}}=18.8$ MW/K | **NR** | 24.75 min | Under-sized for continuous 150 MW |
 | $K_{\mathrm{liq}}=25.1$ MW/K | **NR** | 35.50 min | Near-boundary but still under-sized |
-| $T_{\mathrm{supply},A}=32$ degC | **B/NR** | 21.42 min | W32/ boundary is allowed, but not feasible with nominal conductance at 150 MW |
+| $T_{\mathrm{supply},A}=32$ degC | **B/NR** | 21.42 min | W32 boundary is allowed, but not feasible with nominal conductance at 150 MW |
 | $f_{\mathrm{fault}}=0.8$ | **S/NR** | 53.42 min | Plausible 20% degradation; marginally below required effective conductance |
 | $f_{\mathrm{fault}}=0.6$ | **S/NR** | 27.25 min | Severe shared 40% conductance loss |
 | $f_{\mathrm{fault}}=0.4$ | **S/NR** | 20.92 min | Major shared 60% conductance loss |
@@ -333,23 +331,23 @@ failures nonetheless concern declared boundary or stress configurations, not
 the nominal plant.
 
 The merged episode output is stored in
-`copilot/artifacts/thermal_sensitivity_cross_scenario.csv`, with seed-level,
+`c2g_env/experiments/thermal_tests_raw/thermal_sensitivity_cross_scenario.csv`, with seed-level,
 scenario-level, and configuration-level summaries alongside it under the
 suffixes `_seed_summary`, `_summary`, and `_config_summary`.
 
 The configuration-level summary (`_config_summary`) additionally reports a
 `stress_condition` column, `True` only when at least one swept parameter
-deviates from nominal onto a grid point annotated **NR** in the Recommended
-Sweep table above. Deviations reaching only a **B**-only value, an **S**-only
-value (currently $T_{\mathrm{amb}}=40$ degC), or an ordinary/nominal value
-leave it `False` — as do `nominal`, all ordinary OAT variants, and
-`low_inertia` (which touches only the B-labeled $C_A=13{,}500$ and
-$C_B=5{,}000$). It is `True` for $K_{\mathrm{liq}}\in\{18.8,25.1\}$,
+deviates from nominal onto a grid point annotated **NR** in the Sweep table
+above. It is `True` for $K_{\mathrm{liq}}\in\{18.8,25.1\}$,
 $T_{\mathrm{supply},A}=32$, $f_{\mathrm{fault}}\in\{0.8,0.6,0.4\}$, and the
 coupled cases `weak_cooling`, `partial_outage`, and `combined_adverse`, each
-of which touches at least one NR value. The column lets downstream analysis
-condition survival, warning, and fault totals on whether a configuration is
-itself not-recommended rather than ordinary, nominal, or merely boundary.
+of which touches at least one NR value. Deviations reaching only a **B**-only
+value, an **S**-only value (currently $T_{\mathrm{amb}}=40$ degC), or an
+ordinary/nominal value leave it `False`, as do `nominal`, all ordinary OAT
+variants, and `low_inertia` (which touches only the B-labeled $C_A=13{,}500$
+and $C_B=5{,}000$). The column lets downstream analysis condition survival,
+warning, and fault totals on whether a configuration is itself not-recommended
+rather than ordinary, nominal, or merely boundary.
 
 ## Source Families
 
@@ -357,8 +355,8 @@ itself not-recommended rather than ordinary, nominal, or merely boundary.
 2. NIST-JANAF tables for iron, aluminum, and copper heat capacities.
 3. ASHRAE Fundamentals and ISO 10456 for glycol coolants, concrete, building
   materials, and infiltration calculations.
-4. HPE, * Cray Supercomputing EX QuickSpecs*, document a00094635enw,
-  version 21, for CDU capacity, cabinet power, and water-temperature limits.
+4. Cray Supercomputing EX QuickSpecs (document a00094635enw, version 21) for
+  CDU capacity, cabinet power, and water-temperature limits.
 5. CoolIT CHx2000, CHx80, and AHx240 product specifications for alternative
   liquid-cooling equipment scales.
 6. Vertiv Liebert CW specifications for CRAH capacities and airflow.
@@ -373,6 +371,6 @@ itself not-recommended rather than ordinary, nominal, or merely boundary.
 The experiment shows whether benchmark conclusions remain stable across
 physically interpreted thermal cases and where the modeled plant becomes
 infeasible. It does not validate the nominal aggregate parameters against a
-specific facility — that requires a component inventory or measured thermal
+specific facility; that requires a component inventory or measured thermal
 step responses (temperature, IT power, supply conditions, flow/airflow,
 cooling commands, electrical input) under a declared meter boundary.
