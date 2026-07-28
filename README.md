@@ -1400,4 +1400,5 @@ python -m c2g_env.experiments.thermal_sensitivity_cross_scenario
 | Configuration | Agent | RMSE ↓ (kW) | Regulation Revenue ↑ ($) | Macro Reward ↑ | Low-Level Reward ↑ | Thermal Violations ↓ | BESS Degradation ↓ ($\times 10^{-4}$) |
 |---|---|---:|---:|---:|---:|---:|---:|
 | RL Phase 2: RL macro + frozen RL low-level | SAC | $780 \pm 26$ | **$8{,}550 \pm 553$** | $0.94 \pm 0.13$ | $0.85 \pm 0.13$ | **$0.0 \pm 0.0$** | **$18.38 \pm 1.74$** |
-| RL Phase 2: RL macro + frozen RL low-level | PPO | $745 \pm 26$ | **$7{,}345 \pm 688$** | $0.92 \pm 0.13$ | $0.81 \pm 0.13$ | **$0.0 \pm 0.0$** | **$18.38 \pm 1.74$** |
+| RL Phase 2: RL macro + frozen RL low-level | PPO | $745 \pm 34$ | **$7{,}345 \pm 688$** | $0.92 \pm 0.13$ | $0.81 \pm 0.13$ | **$0.0 \pm 0.0$** | **$18.38 \pm 1.74$** |
+
