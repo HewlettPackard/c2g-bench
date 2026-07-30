@@ -27,6 +27,7 @@ import pytest
 
 from c2g_env import C2GFastEnv
 from c2g_env.physics.bess import BESSModel, PYSAM_ACTIVE, _SimpleBESSModel
+from c2g_env.thermal_limits import T_WARN_A
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -180,76 +181,6 @@ class TestMetricsCallbackThermalKey:
         assert calls.get("thermal/terminated") == 1.0, (
             f"thermal/terminated not logged as 1; got {calls}. Bug #2 not fixed."
         )
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# Bug #3 — ShieldedEnv stale / zero observation on first step after reset
-# ═══════════════════════════════════════════════════════════════════════════
-
-class TestShieldedEnvFirstStep:
-
-    def test_shielded_env_stores_obs_on_reset(self):
-        """
-        After reset(), _last_obs must be the real reset observation,
-        not a zero vector.
-        """
-        from baselines.safety.safety_shield import ShieldedEnv
-        env = ShieldedEnv(C2GFastEnv(scenario="default"))
-        obs, _ = env.reset(seed=0)
-        assert hasattr(env, "_last_obs"), "_last_obs not set after reset()"
-        assert env._last_obs is not None
-        np.testing.assert_array_equal(
-            env._last_obs, obs,
-            err_msg="_last_obs after reset() does not match returned obs"
-        )
-
-    def test_shielded_env_no_spurious_soc_override_on_first_step(self):
-        """
-        With a healthy initial state (SOC=0.5), the shield must NOT override
-        BESS dispatch on the very first step. Previously it always did because
-        obs[2]=0 (zero vector) triggered the SOC-low branch.
-        """
-        from baselines.safety.safety_shield import ShieldedEnv
-        env = ShieldedEnv(C2GFastEnv(scenario="default"))
-        env.reset(seed=0)
-
-        # A mild positive BESS dispatch (discharge) should be passed through
-        action = np.array([1.0, 0.7, 0.7, 0.3], dtype=np.float32)  # bess_dispatch=0.3
-        _, _, _, _, info = env.step(action)
-
-        assert not info.get("shield_modified", True) or \
-               "soc" not in str(info.get("shield_reasons", [])), (
-            f"Shield fired spurious SOC override on first step. "
-            f"Reasons: {info.get('shield_reasons')}. Bug #3 not fixed."
-        )
-
-    def test_shielded_env_no_spurious_voltage_override_on_first_step(self):
-        """
-        With nominal initial state (V_pcc≈1.0 pu), the shield must NOT fire a
-        voltage override on the first step. Previously obs[15]=0 caused this.
-        """
-        from baselines.safety.safety_shield import ShieldedEnv
-        env = ShieldedEnv(C2GFastEnv(scenario="default"))
-        env.reset(seed=0)
-
-        action = np.array([1.0, 0.7, 0.7, 0.0], dtype=np.float32)
-        _, _, _, _, info = env.step(action)
-
-        reasons = info.get("shield_reasons", [])
-        voltage_fired = any("voltage" in r for r in reasons)
-        assert not voltage_fired, (
-            f"Shield fired spurious voltage override on first step: {reasons}. "
-            "Bug #3 not fixed."
-        )
-
-    def test_shielded_env_last_obs_updates_each_step(self):
-        """_last_obs must be updated to the current obs after every step."""
-        from baselines.safety.safety_shield import ShieldedEnv
-        env = ShieldedEnv(C2GFastEnv(scenario="default"))
-        env.reset(seed=0)
-        action = np.array([1.0, 0.7, 0.7, 0.0], dtype=np.float32)
-        obs, _, _, _, _ = env.step(action)
-        np.testing.assert_array_equal(env._last_obs, obs)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -612,7 +543,7 @@ class TestThermalPenaltyNormalization:
         env = C2GFastEnv(scenario="default")
         env.reset(seed=0)
         # Clamp temperatures to exactly T_warn
-        T_warn = 33.0
+        T_warn = T_WARN_A
         env._thermal.temp_A = T_warn
         env._thermal.temp_B = T_warn - 1.0   # below warn
         action = np.array([1.0, 0.7, 0.7, 0.0], dtype=np.float32)

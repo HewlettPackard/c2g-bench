@@ -267,6 +267,8 @@ class C2GFastEnv(gym.Env):
             trace_dir=gcfg["trace_dir"], dt_seconds=self._dt, seed=rng_seed
         )
         self._thermal = ThermalTwin(dt_seconds=self._dt)
+        # T_safe is the single-source-of-truth silicon limit from config.yaml.
+        self._thermal.T_safe = float(gcfg.get("T_safe", self._thermal.T_safe))
         # Pass scenario ambient temperature so reset provides a warm-start
         # that matches the physical steady state at the scenario's T_amb.
         # Formula: T_idle ≈ T_amb + P_idle / K  (equilibrium at zero IT load)

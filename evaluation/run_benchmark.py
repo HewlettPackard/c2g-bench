@@ -36,23 +36,8 @@ Agents
   milp         — MILP economic dispatch (macro env)
   ppo          — loads trained_models/ppo_<scenario>_s42/final_model
   sac          — loads trained_models/sac_<scenario>_s42/final_model
-  ppo_lag      — loads trained PPO-Lagrangian model
   random       — np.random uniform (lower bound)
   random_macro — np.random uniform over macro action space (bid MW + price)
-
-High-Assurance Agents
-  simplex_ppo  — PPO + Simplex safety shield (runtime filter)
-  cbf_ppo      — PPO + Control Barrier Function shield
-  hj_ppo       — PPO + Hamilton-Jacobi reachability shield
-  mpcsf_ppo    — PPO + Model-Predictive Safety Filter
-  cpo          — Constrained Policy Optimisation
-  reward_shaping — PPO w/ shield-penalty reward shaping
-  ha_c2g       — HA-C2G (CBM + safe projection + physics shield)
-
-Tier 3 Ablations
-  cbm_only     — PPO + concept bottleneck (no gate, no shield)
-  cbm_gate     — PPO + concept bottleneck + trained gate (no shield)
-  cbm_shield   — PPO + concept bottleneck + physics shield (no gate)
 """
 from __future__ import annotations
 import argparse, csv, json, random as _py_random, re, time
@@ -77,15 +62,10 @@ from baselines.train_llm_agents import (
     LLMPolicyAgent,
     load_prompt_templates,
 )
-
-# ── High-Assurance agents ────────────────────────────────────────
-from baselines.safety.cbf_shield import CBFShield, CBFShieldedAgent
-from baselines.safety.hj_shield import HJShield
-from baselines.safety.mpc_safety_filter import MPCSafetyFilter
-from baselines.safety.safety_shield import SafetyShield
+from c2g_env.thermal_limits import T_SAFE, T_WARN
 
 SCENARIOS    = ["default", "scenario_a", "scenario_b", "scenario_c"]
-T_WARN_NORM  = 33.0 / 35.0   # normalised warning threshold
+T_WARN_NORM  = T_WARN / T_SAFE   # normalised warning threshold
 _RL_ALGOS = {
     "ppo",
     "sac"
@@ -279,12 +259,8 @@ def _resolve_sb3_spec(algo: str):
     if algo_key in ("ppo_macro",):
         return PPO, "ppo_macro", True
     if algo_key in _RL_ALGOS:
-        train_key_map = {
-            "ppo_lag": "ppo_lagrangian",
-            "reward_shaping": "shield_reward_shaping",
-        }
-        return PPO, train_key_map.get(algo_key, algo_key), True
-    raise ValueError(f"Unknown algo '{algo}'. Use ppo, sac, ppo_lag, ppo_lagrangian, or a registered PPO-style benchmark agent.")
+        return PPO, algo_key, True
+    raise ValueError(f"Unknown algo '{algo}'. Use ppo, sac, ppo_macro, or sac_macro.")
 
 
 def _maybe_load_obs_normalizer(stats_path: Path, scenario: str):
@@ -317,20 +293,6 @@ def load_sb3_agent(algo: str, scenario: str, seed: int, model_dir: str | None):
     return SB3Agent(model, algo_name=algo.lower(), obs_normalizer=obs_normalizer)
 
 
-class ShieldedSB3Agent:
-    """Wraps an SB3 model with a runtime safety shield."""
-    def __init__(self, base_agent, shield):
-        self._base_agent = base_agent
-        self._shield = shield
-        self.algo_name = getattr(base_agent, "algo_name", "shielded_sb3")
-
-    def predict(self, obs: np.ndarray, deterministic: bool = True):
-        action, state = self._base_agent.predict(obs, deterministic=deterministic)
-        safe_action, _, _ = self._shield.filter(action, obs)
-        return safe_action, state
-
-
-# ── High-Assurance agents ────────────────────────────────────────
 # Metric collection
 # ---------------------------------------------------------------------------
 
@@ -812,41 +774,6 @@ def benchmark(
                 agent = MILPDispatchController()
             elif agent_name == "random":
                 agent = RandomAgent(env_for_space, algo_name=agent_name)
-            # ── High-Assurance shielded agents ─────────────────
-            elif agent_name == "simplex_ppo":
-                try:
-                    base = load_sb3_agent("ppo", scenario, seed_start, model_dir)
-                    agent = ShieldedSB3Agent(base, SafetyShield())
-                except FileNotFoundError as exc:
-                    print(f"    SKIP: {exc}")
-                    continue
-            elif agent_name == "cbf_ppo":
-                try:
-                    base = load_sb3_agent("ppo", scenario, seed_start, model_dir)
-                    agent = ShieldedSB3Agent(base, CBFShield())
-                except FileNotFoundError as exc:
-                    print(f"    SKIP: {exc}")
-                    continue
-            elif agent_name == "hj_ppo":
-                try:
-                    base = load_sb3_agent("ppo", scenario, seed_start, model_dir)
-                    agent = ShieldedSB3Agent(base, HJShield(precompute=True))
-                except FileNotFoundError as exc:
-                    print(f"    SKIP: {exc}")
-                    continue
-            elif agent_name == "mpcsf_ppo":
-                try:
-                    base = load_sb3_agent("ppo", scenario, seed_start, model_dir)
-                    agent = ShieldedSB3Agent(base, MPCSafetyFilter())
-                except FileNotFoundError as exc:
-                    print(f"    SKIP: {exc}")
-                    continue
-            elif agent_name in ("cpo", "reward_shaping", "ha_c2g", "cbm_only", "cbm_gate", "cbm_shield"):
-                try:
-                    agent = load_sb3_agent(agent_name, scenario, seed_start, model_dir)
-                except FileNotFoundError as exc:
-                    print(f"    SKIP: {exc}")
-                    continue
             elif macro_part in ("sac_macro", "ppo_macro"):
                 try:
                     agent = load_sb3_agent(macro_part, scenario, seed_start, macro_model_dir or model_dir)
@@ -1061,10 +988,7 @@ if __name__ == "__main__":
         "--agents", nargs="+",
         default=["rule_based", "bang_bang", "pid", "random"],
         help="Agents to evaluate: rule_based rule_macro random_macro bang_bang pid mpc_fast "
-             "mpc_macro milp ppo sac ppo_lag random "
-               "simplex_ppo cbf_ppo hj_ppo mpcsf_ppo cpo reward_shaping ha_c2g "
-                             "llm_policy llm_policy_macro "
-             "cbm_only cbm_gate cbm_shield",
+               "mpc_macro milp ppo sac random llm_policy llm_policy_macro",
     )
     parser.add_argument(
         "--scenarios", nargs="+",

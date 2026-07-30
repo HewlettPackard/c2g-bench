@@ -38,10 +38,9 @@ from numpy.typing import NDArray
 from scipy.optimize import minimize
 
 from c2g_env.obs_indices import Fast as _F
+from c2g_env.thermal_limits import T_SAFE as _T_SAFE, T_WARN as _T_WARN
 
 # ── Physical constants (from c2g_env/config.yaml & physics/) ──────────
-_T_SAFE      = 35.0
-_T_WARN      = 33.0
 _T_WARN_NORM = _T_WARN / _T_SAFE
 _DT          = 5.0        # seconds per tick
 _E_NOM_MWH   = 150.0

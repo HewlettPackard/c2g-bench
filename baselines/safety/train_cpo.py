@@ -49,17 +49,18 @@ from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.vec_env import VecNormalize
 
 from c2g_env import C2GFastEnv
+from c2g_env.thermal_limits import T_SAFE as _T_SAFE, T_WARN as _T_WARN
 from baselines.metrics_callback import C2GMetricsCallback
 
 log = logging.getLogger(__name__)
 
-# ── Observation indices ──────────────────────────────────────────
+# ── Observation indices ──────────────────────────────
 _I_TEMP_A = 0
 _I_TEMP_B = 1
 _I_SOC    = 2
 _I_FREQ   = 14
 
-_T_WARN_NORM = 33.0 / 35.0
+_T_WARN_NORM = _T_WARN / _T_SAFE
 _SOC_SAFE_LO = 0.12
 _SOC_SAFE_HI = 0.90
 _FREQ_THRESH = 0.6   # normalised: 0.3 Hz / 0.5 Hz

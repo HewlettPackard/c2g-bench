@@ -29,6 +29,12 @@ global:
   dt_seconds: 5              # Simulation timestep [s]. Must divide 3600 evenly.
   episode_ticks: 17280       # 17280 × 5 s = 24-hour episodes
 
+  # Silicon thermal limit [°C]. Single source of truth for T_safe across the
+  # environment, baselines, safety filters, and evaluation. Used as the
+  # episode-termination threshold, the reward-headroom denominator, and the
+  # observation normalisation scale (temp_*_norm = T / T_safe).
+  T_safe: 35.0
+
   # Data directories (relative to cwd or absolute)
   trace_dir:    "data/processed/workload_traces"
   energy_dir:   "data/processed/energy"

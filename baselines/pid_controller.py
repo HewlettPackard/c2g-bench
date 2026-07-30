@@ -39,9 +39,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from c2g_env.obs_indices import Fast as _F
-
-# Normalisation constant
-_T_SAFE = 35.0
+from c2g_env.thermal_limits import T_SAFE as _T_SAFE
 
 
 class _PIDLoop:

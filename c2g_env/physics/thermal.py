@@ -53,6 +53,8 @@
 
 import numpy as np
 
+from c2g_env.thermal_limits import T_SAFE as _T_SAFE_DEFAULT
+
 
 class ThermalTwin:
     """
@@ -102,7 +104,7 @@ class ThermalTwin:
 
         # -- Environment ---------------------------------------------------
         self.T_amb = 25.0           # Ambient outdoor temperature   (deg C)
-        self.T_safe = 35.0          # High-Assurance Silicon Limit  (deg C)
+        self.T_safe = _T_SAFE_DEFAULT  # High-Assurance Silicon Limit (deg C) — from config.yaml
 
         # -- Cooling fault injection (resilience testing) ------------------
         # fault_factor=1.0  → normal operation
