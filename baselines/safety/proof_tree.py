@@ -49,6 +49,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from c2g_env.obs_indices import Fast as _F
+from c2g_env.thermal_limits import T_SAFE as _T_SAFE, T_WARN_A as _T_WARN_A, T_WARN_B as _T_WARN_B
 
 
 class RuleStatus(Enum):
@@ -125,8 +126,6 @@ class ProofNode:
 
 
 # ─── C2G observation indices ──────────────────────────────────
-_T_SAFE     = 35.0
-_T_WARN     = 33.0
 _SOC_MIN    = 0.10
 _SOC_MAX    = 0.95
 
@@ -181,14 +180,14 @@ class ProofTree:
 
         # ── C1: Thermal A ────────────────────────────────────────
         c1_pass = T_A < _T_SAFE
-        c1_warn = T_A > _T_WARN
+        c1_warn = T_A > _T_WARN_A
         c1_status = (RuleStatus.FAIL if not c1_pass else
                      RuleStatus.WARN if c1_warn else RuleStatus.PASS)
         c1 = ProofNode(
             name="C1_THERMAL_A",
             status=c1_status,
             severity=1.0 if not c1_pass else (0.5 if c1_warn else 0.0),
-            evidence={"T_A": round(T_A, 2), "T_safe": _T_SAFE, "T_warn": _T_WARN},
+            evidence={"T_A": round(T_A, 2), "T_safe": _T_SAFE, "T_warn": _T_WARN_A},
             correction=f"throttle: {raw_action[0]:.2f}→{safe_action[0]:.2f}, "
                        f"pump: {raw_action[1]:.2f}→{safe_action[1]:.2f}"
                        if was_modified and (not c1_pass or c1_warn) else None,
@@ -196,14 +195,14 @@ class ProofTree:
 
         # ── C2: Thermal B ────────────────────────────────────────
         c2_pass = T_B < _T_SAFE
-        c2_warn = T_B > _T_WARN
+        c2_warn = T_B > _T_WARN_B
         c2_status = (RuleStatus.FAIL if not c2_pass else
                      RuleStatus.WARN if c2_warn else RuleStatus.PASS)
         c2 = ProofNode(
             name="C2_THERMAL_B",
             status=c2_status,
             severity=1.0 if not c2_pass else (0.5 if c2_warn else 0.0),
-            evidence={"T_B": round(T_B, 2), "T_safe": _T_SAFE, "T_warn": _T_WARN},
+            evidence={"T_B": round(T_B, 2), "T_safe": _T_SAFE, "T_warn": _T_WARN_B},
             correction=f"hvac: {raw_action[2]:.2f}→{safe_action[2]:.2f}"
                        if was_modified and (not c2_pass or c2_warn) else None,
         )

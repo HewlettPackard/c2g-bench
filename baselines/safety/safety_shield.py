@@ -76,11 +76,10 @@ from numpy.typing import NDArray
 import gymnasium as gym
 
 from c2g_env.obs_indices import Fast as _F
+from c2g_env.thermal_limits import T_SAFE as _T_SAFE, T_WARN as _T_WARN
 
 
 # ─── Safety limit constants (from physics models / config.yaml) ───────────
-_T_SAFE     = 35.0      # °C — Silicon thermal limit (C1, C2)
-_T_WARN     = 33.0      # °C — Soft warning threshold (intervention starts)
 _T_MARGIN   = 1.0       # °C — Shield activates this far below T_safe
 _SOC_MIN    = 0.10      # BESS minimum SOC (C3)
 _SOC_MAX    = 0.95      # BESS maximum SOC (C3)

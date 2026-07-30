@@ -24,6 +24,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from c2g_env.physics.thermal import ThermalTwin
+from c2g_env.thermal_limits import T_SAFE
 
 
 # ---------------------------------------------------------------------------
@@ -45,7 +46,7 @@ def test_initial_temperatures(tw):
 
 
 def test_t_safe_value(tw):
-    assert tw.T_safe == pytest.approx(35.0)
+    assert tw.T_safe == pytest.approx(T_SAFE)
 
 
 # ---------------------------------------------------------------------------

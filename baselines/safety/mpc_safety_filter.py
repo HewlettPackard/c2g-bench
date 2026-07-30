@@ -46,11 +46,10 @@ except ImportError:
     scipy_minimize = None
 
 from c2g_env.obs_indices import Fast as _F
+from c2g_env.thermal_limits import T_SAFE as _T_SAFE, T_WARN as _T_WARN
 
 
-# ─── Physical constants ───────────────────────────────────────────
-_T_SAFE     = 35.0
-_T_WARN     = 33.0
+# ─── Physical constants ──────────────────────────
 _SOC_MIN    = 0.10
 _SOC_MAX    = 0.95
 _FREQ_MAX   = 0.5

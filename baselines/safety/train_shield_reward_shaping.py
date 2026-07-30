@@ -57,8 +57,7 @@ _I_SOC      = 2
 _I_FREQ_DEV = 14
 _I_VPCC     = 15
 
-_T_SAFE = 35.0
-_T_WARN = 33.0
+from c2g_env.thermal_limits import T_SAFE as _T_SAFE, T_WARN as _T_WARN
 _SOC_MIN = 0.10
 _SOC_MAX = 0.95
 

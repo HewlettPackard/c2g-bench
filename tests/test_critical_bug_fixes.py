@@ -27,6 +27,7 @@ import pytest
 
 from c2g_env import C2GFastEnv
 from c2g_env.physics.bess import BESSModel, PYSAM_ACTIVE, _SimpleBESSModel
+from c2g_env.thermal_limits import T_WARN_A
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -612,7 +613,7 @@ class TestThermalPenaltyNormalization:
         env = C2GFastEnv(scenario="default")
         env.reset(seed=0)
         # Clamp temperatures to exactly T_warn
-        T_warn = 33.0
+        T_warn = T_WARN_A
         env._thermal.temp_A = T_warn
         env._thermal.temp_B = T_warn - 1.0   # below warn
         action = np.array([1.0, 0.7, 0.7, 0.0], dtype=np.float32)

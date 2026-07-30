@@ -25,6 +25,7 @@ from baselines.safety.concept_bottleneck import (
     C2GConcepts, C2G_CONCEPT_NAMES,
 )
 from baselines.safety.proof_tree import ProofTree, ProofNode, RuleStatus
+from c2g_env.thermal_limits import T_SAFE
 
 
 # ── Shared test helpers ──────────────────────────────────────────
@@ -32,8 +33,8 @@ from baselines.safety.proof_tree import ProofTree, ProofNode, RuleStatus
 def _safe_obs():
     """Obs representing a completely safe state (normalised)."""
     obs = np.zeros(17, dtype=np.float32)
-    obs[0] = 28.0 / 35.0   # temp_A ~ 0.8 (safe)
-    obs[1] = 27.0 / 35.0   # temp_B
+    obs[0] = 28.0 / T_SAFE   # temp_A ~ 0.8 (safe)
+    obs[1] = 27.0 / T_SAFE   # temp_B
     obs[2] = 0.50           # soc (middle)
     obs[3] = 0.15           # p_base
     obs[4] = 0.10           # p_flex
@@ -47,8 +48,8 @@ def _safe_obs():
 def _hot_obs():
     """Obs near thermal limit."""
     obs = _safe_obs()
-    obs[0] = 34.5 / 35.0   # T_A very close to T_safe
-    obs[1] = 34.0 / 35.0
+    obs[0] = 34.5 / T_SAFE   # T_A very close to T_safe
+    obs[1] = 34.0 / T_SAFE
     return obs
 
 
@@ -356,7 +357,7 @@ class TestSafeProjection:
             def forward(self, concepts):
                 return torch.full((concepts.shape[0], 4), 0.5, dtype=concepts.dtype, device=concepts.device)
 
-        obs = torch.tensor([[34.5 / 35.0, 33.8 / 35.0, 0.5, 0.0, 0.0, 0.0, 0.8,
+        obs = torch.tensor([[34.5 / T_SAFE, 33.8 / T_SAFE, 0.5, 0.0, 0.0, 0.0, 0.8,
                              0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.2, 0.0]], dtype=torch.float32)
         concepts = torch.tensor([[0.1, 0.1, 0.8, 1.0, 1.0, 0.9, 0.7, 0.8, 0.2, 0.4]], dtype=torch.float32)
         policy_action = torch.tensor([[0.05, 0.10, 0.10, 0.0]], dtype=torch.float32)
@@ -799,8 +800,8 @@ class TestFailureAnalysis:
     def test_per_constraint_margins(self):
         from evaluation.failure_analysis import compute_per_constraint_margins
         obs = np.zeros(17, dtype=np.float32)
-        obs[0] = 30.0 / 35.0  # T_A = 30°C → margin = 5°C
-        obs[1] = 34.0 / 35.0  # T_B = 34°C → margin = 1°C
+        obs[0] = 30.0 / T_SAFE  # T_A = 30°C → margin = 5°C
+        obs[1] = 34.0 / T_SAFE  # T_B = 34°C → margin = 1°C
         obs[2] = 0.5           # SOC = 0.5
         obs[14] = 0.0          # freq_dev = 0
         obs[15] = 1.0          # v_pcc = 1.0 pu

@@ -45,12 +45,13 @@ import numpy as np
 from numpy.typing import NDArray
 
 from c2g_env.obs_indices import Fast as _F
+from c2g_env.thermal_limits import T_SAFE as _T_SAFE
 
-# Hysteresis thresholds (normalised: T / T_safe where T_safe = 35°C)
-_PUMP_ON  = 31.0 / 35.0   # ≈ 0.886
-_PUMP_OFF = 29.0 / 35.0   # ≈ 0.829
-_HVAC_ON  = 31.0 / 35.0
-_HVAC_OFF = 29.0 / 35.0
+# Hysteresis thresholds (normalised: T / T_safe)
+_PUMP_ON  = 31.0 / _T_SAFE   # ≈ 0.886
+_PUMP_OFF = 29.0 / _T_SAFE   # ≈ 0.829
+_HVAC_ON  = 31.0 / _T_SAFE
+_HVAC_OFF = 29.0 / _T_SAFE
 
 # SOC guard bands
 _SOC_DISCHARGE_MIN = 0.12

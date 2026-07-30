@@ -49,6 +49,7 @@ import torch
 from tqdm import tqdm
 
 from c2g_env import C2GFastEnv
+from c2g_env.thermal_limits import T_SAFE, T_WARN
 from baselines.metrics_callback import C2GTransitionLoggerCallback, build_ablation_suffix
 from baselines.safety.safety_shield import SafetyShield
 from baselines.safety.cbf_shield import CBFShield
@@ -57,8 +58,7 @@ from baselines.safety.mpc_safety_filter import MPCSafetyFilter
 from baselines.safety.safe_projection import compute_layer2_action
 
 SCENARIOS = ["default", "scenario_a", "scenario_b", "scenario_c"]
-T_WARN_NORM = 33.0 / 35.0
-T_SAFE = 35.0
+T_WARN_NORM = T_WARN / T_SAFE
 SOC_MIN = 0.10
 SOC_MAX = 0.95
 _PPO_LIKE_AGENT_KEYS = {

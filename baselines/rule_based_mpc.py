@@ -56,9 +56,11 @@ from __future__ import annotations
 import numpy as np
 from numpy.typing import NDArray
 
+from c2g_env.thermal_limits import T_SAFE as _T_SAFE, T_WARN as _T_WARN
+
 
 # Thresholds (kept in sync with config.yaml reward section)
-_T_WARN_NORM   = 33.0 / 35.0   # T_warn / T_safe  (obs[0] and [1])
+_T_WARN_NORM   = _T_WARN / _T_SAFE   # T_warn / T_safe  (obs[0] and [1])
 _T_SAFE_NORM   = 1.0            # T_safe / T_safe
 _T_CRITICAL    = 0.98           # 0.5°C below T_safe (obs normalised)
 _SOC_MIN_GUARD = 0.15           # SOC below which we protect BESS

@@ -24,6 +24,7 @@ from baselines.rule_based_macro import RuleBasedMacroController
 from baselines.rule_based_mpc import RuleBasedController
 from c2g_env import C2GMacroEnv
 from c2g_env.experiments.thermal_sensitivity import build_configurations, load_config
+from c2g_env.thermal_limits import T_WARN
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _DEFAULT_OUT = _REPO_ROOT / "copilot" / "artifacts" / "thermal_sensitivity_cross_scenario.csv"
@@ -103,7 +104,7 @@ def _run_episode(
         temp_b = float(info["temp_B"])
         stats["temp_A_max"] = max(stats["temp_A_max"], temp_a)
         stats["temp_B_max"] = max(stats["temp_B_max"], temp_b)
-        stats["thermal_warning_steps"] += int(max(temp_a, temp_b) > 33.0)
+        stats["thermal_warning_steps"] += int(max(temp_a, temp_b) > T_WARN)
         for key in _FAULT_KEYS:
             stats[key] = stats[key] or bool(info.get(key, False))
 

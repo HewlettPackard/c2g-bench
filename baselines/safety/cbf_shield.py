@@ -67,10 +67,10 @@ except ImportError:
     minimize = None  # graceful fallback
 
 from c2g_env.obs_indices import Fast as _F
+from c2g_env.thermal_limits import T_SAFE as _T_SAFE
 
 
 # ─── Physical constants (from C2GFastEnv / config.yaml) ───────────
-_T_SAFE     = 35.0       # °C — Silicon thermal limit
 _T_AMB_NOM  = 25.0       # °C — Default ambient (overridden by obs)
 _SOC_MIN    = 0.10
 _SOC_MAX    = 0.95

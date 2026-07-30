@@ -62,9 +62,8 @@ except ImportError:
     _TORCH_AVAILABLE = False
 
 from c2g_env.obs_indices import Fast as _F
+from c2g_env.thermal_limits import T_SAFE as _T_SAFE, T_WARN_A as _T_WARN_A, T_WARN_B as _T_WARN_B
 
-_T_SAFE = 35.0
-_T_WARN = 33.0
 _SOC_MIN = 0.10
 _SOC_MAX = 0.95
 
@@ -146,11 +145,11 @@ class C2GConcepts:
         voltage_margin = np.clip((v_pcc - 0.90) / 0.10, 0.0, 1.0)
 
         # Cooling demand A: high when T_A > T_warn, or during GenAI spike
-        cool_urgency_A = np.clip((T_A - (_T_WARN - 2.0)) / 4.0, 0.0, 1.0)
+        cool_urgency_A = np.clip((T_A - (_T_WARN_A - 2.0)) / 4.0, 0.0, 1.0)
         cool_urgency_A = min(1.0, cool_urgency_A + 0.3 * is_spike)
 
         # Cooling demand B: high when T_B > T_warn
-        cool_urgency_B = np.clip((T_B - (_T_WARN - 2.0)) / 4.0, 0.0, 1.0)
+        cool_urgency_B = np.clip((T_B - (_T_WARN_B - 2.0)) / 4.0, 0.0, 1.0)
 
         # Grid urgency: how strongly the RegD signal demands response
         grid_urgency = float(np.clip(abs(regd), 0.0, 1.0))

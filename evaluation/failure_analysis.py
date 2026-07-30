@@ -31,6 +31,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from c2g_env import C2GFastEnv
+from c2g_env.thermal_limits import T_SAFE
 
 
 # ── C2G obs indices and constraint params ────────────────────────
@@ -42,7 +43,6 @@ _I_FREQ_DEV = 14
 _I_VPCC     = 15
 _I_BACKLOG  = 16
 
-T_SAFE   = 35.0
 SOC_MIN  = 0.10
 SOC_MAX  = 0.95
 FREQ_MAX = 0.5   # Hz

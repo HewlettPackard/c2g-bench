@@ -19,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from baselines.safety.safety_shield import SafetyShield, ShieldedEnv, ShieldedAgent, ShieldStats
 from c2g_env import C2GFastEnv
+from c2g_env.thermal_limits import T_SAFE
 
 
 # =========================================================================
@@ -34,8 +35,8 @@ class TestSafetyShieldBasic:
     def _safe_obs(self):
         """Obs representing a completely safe state."""
         obs = np.zeros(17, dtype=np.float32)
-        obs[0] = 28.0 / 35.0   # temp_A_norm ~ 0.8 (safe)
-        obs[1] = 27.0 / 35.0   # temp_B_norm
+        obs[0] = 28.0 / T_SAFE   # temp_A_norm ~ 0.8 (safe)
+        obs[1] = 27.0 / T_SAFE   # temp_B_norm
         obs[2] = 0.5            # soc
         obs[14] = 0.0           # freq_dev_norm (nominal)
         obs[15] = 1.0           # v_pcc_pu (nominal)
@@ -77,8 +78,8 @@ class TestThermalOverride:
     def test_high_temp_reduces_throttle(self):
         shield = SafetyShield()
         obs = np.zeros(17, dtype=np.float32)
-        obs[0] = 34.5 / 35.0  # temp_A very close to T_safe
-        obs[1] = 28.0 / 35.0
+        obs[0] = 34.5 / T_SAFE  # temp_A very close to T_safe
+        obs[1] = 28.0 / T_SAFE
         obs[2] = 0.5
         obs[15] = 1.0
         action = np.array([1.0, 0.3, 0.3, 0.0], dtype=np.float32)
@@ -91,8 +92,8 @@ class TestThermalOverride:
     def test_at_tsafe_full_override(self):
         shield = SafetyShield()
         obs = np.zeros(17, dtype=np.float32)
-        obs[0] = 35.0 / 35.0  # exactly at T_safe
-        obs[1] = 28.0 / 35.0
+        obs[0] = T_SAFE / T_SAFE  # exactly at T_safe
+        obs[1] = 28.0 / T_SAFE
         obs[2] = 0.5
         obs[15] = 1.0
         action = np.array([1.0, 0.3, 0.3, 0.0], dtype=np.float32)
@@ -104,8 +105,8 @@ class TestThermalOverride:
     def test_cool_temp_no_thermal_override(self):
         shield = SafetyShield()
         obs = np.zeros(17, dtype=np.float32)
-        obs[0] = 25.0 / 35.0  # well below T_shield
-        obs[1] = 25.0 / 35.0
+        obs[0] = 25.0 / T_SAFE  # well below T_shield
+        obs[1] = 25.0 / T_SAFE
         obs[2] = 0.5
         obs[15] = 1.0
         action = np.array([1.0, 0.3, 0.3, 0.0], dtype=np.float32)
@@ -119,8 +120,8 @@ class TestSOCOverride:
     def test_low_soc_blocks_discharge(self):
         shield = SafetyShield()
         obs = np.zeros(17, dtype=np.float32)
-        obs[0] = 25.0 / 35.0
-        obs[1] = 25.0 / 35.0
+        obs[0] = 25.0 / T_SAFE
+        obs[1] = 25.0 / T_SAFE
         obs[2] = 0.12  # near soc_min + guard
         obs[15] = 1.0
         action = np.array([0.8, 0.5, 0.5, 0.8], dtype=np.float32)  # wants to discharge
@@ -132,8 +133,8 @@ class TestSOCOverride:
     def test_high_soc_blocks_charge(self):
         shield = SafetyShield()
         obs = np.zeros(17, dtype=np.float32)
-        obs[0] = 25.0 / 35.0
-        obs[1] = 25.0 / 35.0
+        obs[0] = 25.0 / T_SAFE
+        obs[1] = 25.0 / T_SAFE
         obs[2] = 0.93  # near soc_max - guard
         obs[15] = 1.0
         action = np.array([0.8, 0.5, 0.5, -0.8], dtype=np.float32)  # wants to charge
@@ -144,8 +145,8 @@ class TestSOCOverride:
     def test_mid_soc_no_override(self):
         shield = SafetyShield()
         obs = np.zeros(17, dtype=np.float32)
-        obs[0] = 25.0 / 35.0
-        obs[1] = 25.0 / 35.0
+        obs[0] = 25.0 / T_SAFE
+        obs[1] = 25.0 / T_SAFE
         obs[2] = 0.5  # healthy SOC
         obs[15] = 1.0
         action = np.array([0.8, 0.5, 0.5, 0.5], dtype=np.float32)
@@ -160,8 +161,8 @@ class TestFrequencyOverride:
         """Under-frequency + agent wants to charge → override to discharge."""
         shield = SafetyShield()
         obs = np.zeros(17, dtype=np.float32)
-        obs[0] = 25.0 / 35.0
-        obs[1] = 25.0 / 35.0
+        obs[0] = 25.0 / T_SAFE
+        obs[1] = 25.0 / T_SAFE
         obs[2] = 0.5
         obs[14] = -0.9  # severe under-frequency deviation
         obs[15] = 1.0
@@ -175,8 +176,8 @@ class TestFrequencyOverride:
         """Over-frequency + agent wants to discharge → override to charge."""
         shield = SafetyShield()
         obs = np.zeros(17, dtype=np.float32)
-        obs[0] = 25.0 / 35.0
-        obs[1] = 25.0 / 35.0
+        obs[0] = 25.0 / T_SAFE
+        obs[1] = 25.0 / T_SAFE
         obs[2] = 0.5
         obs[14] = 0.9  # severe over-frequency deviation
         obs[15] = 1.0
@@ -188,8 +189,8 @@ class TestFrequencyOverride:
     def test_nominal_freq_no_override(self):
         shield = SafetyShield()
         obs = np.zeros(17, dtype=np.float32)
-        obs[0] = 25.0 / 35.0
-        obs[1] = 25.0 / 35.0
+        obs[0] = 25.0 / T_SAFE
+        obs[1] = 25.0 / T_SAFE
         obs[2] = 0.5
         obs[14] = 0.1  # slight deviation, within threshold
         obs[15] = 1.0
@@ -203,8 +204,8 @@ class TestVoltageOverride:
     def test_low_voltage_reduces_throttle(self):
         shield = SafetyShield()
         obs = np.zeros(17, dtype=np.float32)
-        obs[0] = 25.0 / 35.0
-        obs[1] = 25.0 / 35.0
+        obs[0] = 25.0 / T_SAFE
+        obs[1] = 25.0 / T_SAFE
         obs[2] = 0.5
         obs[14] = 0.0
         obs[15] = 0.91  # below v_min_shield (0.92)
@@ -217,8 +218,8 @@ class TestVoltageOverride:
     def test_nominal_voltage_no_override(self):
         shield = SafetyShield()
         obs = np.zeros(17, dtype=np.float32)
-        obs[0] = 25.0 / 35.0
-        obs[1] = 25.0 / 35.0
+        obs[0] = 25.0 / T_SAFE
+        obs[1] = 25.0 / T_SAFE
         obs[2] = 0.5
         obs[14] = 0.0
         obs[15] = 1.0
@@ -272,8 +273,8 @@ class TestShieldedAgent:
         agent = RuleBasedController()
         safe_agent = ShieldedAgent(agent)
         obs = np.zeros(17, dtype=np.float32)
-        obs[0] = 25.0 / 35.0
-        obs[1] = 25.0 / 35.0
+        obs[0] = 25.0 / T_SAFE
+        obs[1] = 25.0 / T_SAFE
         obs[2] = 0.5
         obs[15] = 1.0
         action, state = safe_agent.predict(obs)

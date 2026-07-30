@@ -75,7 +75,7 @@ import numpy as np
 from stable_baselines3.common.callbacks import BaseCallback, EvalCallback
 from stable_baselines3.common.vec_env import sync_envs_normalization
 
-T_WARN = 33.0   # °C — thermal warning threshold (mirrors config.yaml)
+from c2g_env.thermal_limits import T_WARN_A, T_WARN_B
 
 STATE_COLUMNS = [
     "s_temp_A_norm",
@@ -238,8 +238,8 @@ def _accumulate_step(buf: dict, reward: float, info: dict) -> None:
 
     buf["spike"].append(1.0 if info.get("is_spike", False) else 0.0)
     buf["thermal_viol"].append(
-        1.0 if (info.get("temp_A", 0) > T_WARN
-                or info.get("temp_B", 0) > T_WARN) else 0.0
+        1.0 if (info.get("temp_A", 0) > T_WARN_A
+                or info.get("temp_B", 0) > T_WARN_B) else 0.0
     )
     buf["tick"] = info.get("tick", 0)
     if info.get("thermal_fault", False):

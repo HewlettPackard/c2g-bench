@@ -83,9 +83,10 @@ from baselines.safety.cbf_shield import CBFShield, CBFShieldedAgent
 from baselines.safety.hj_shield import HJShield
 from baselines.safety.mpc_safety_filter import MPCSafetyFilter
 from baselines.safety.safety_shield import SafetyShield
+from c2g_env.thermal_limits import T_SAFE, T_WARN
 
 SCENARIOS    = ["default", "scenario_a", "scenario_b", "scenario_c"]
-T_WARN_NORM  = 33.0 / 35.0   # normalised warning threshold
+T_WARN_NORM  = T_WARN / T_SAFE   # normalised warning threshold
 _RL_ALGOS = {
     "ppo",
     "sac"

@@ -54,10 +54,10 @@ from numpy.typing import NDArray
 import gymnasium as gym
 
 from c2g_env.obs_indices import Fast as _F
+from c2g_env.thermal_limits import T_SAFE as _T_SAFE
 
 
-# ─── Physical constants ───────────────────────────────────────
-_T_SAFE     = 35.0
+# ─── Physical constants ───────────────────────
 _T_MIN      = 15.0
 _SOC_MIN    = 0.10
 _SOC_MAX    = 0.95

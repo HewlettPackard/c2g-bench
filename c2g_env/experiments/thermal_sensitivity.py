@@ -47,13 +47,13 @@ import yaml
 from c2g_env.obs_indices import Fast as _F
 from c2g_env.physics.thermal import ThermalTwin
 from c2g_env.physics.workload import WorkloadOrchestrator
+from c2g_env.thermal_limits import T_SAFE, T_WARN
 from baselines.bang_bang import BangBangController
 from baselines.pid_controller import PIDController
 from baselines.rule_based_mpc import RuleBasedController
 
 # --- Fixed safety anchors (physical scoring rubric — never swept) ------------
-T_SAFE = 35.0   # degC — episode-termination / silicon limit
-T_WARN = 33.0   # degC — reward-penalty / violation threshold
+# T_SAFE and T_WARN are the single source of truth from config.yaml.
 
 # ThermalTwin attributes that the sweep is permitted to override.
 _ALLOWED_KEYS: frozenset[str] = frozenset({
