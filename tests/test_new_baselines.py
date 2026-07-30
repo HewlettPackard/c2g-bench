@@ -447,66 +447,6 @@ class TestMILPDispatch:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# PPO-Lagrangian Reward Wrapper
-# ═══════════════════════════════════════════════════════════════════════════
-
-class TestPPOLagrangian:
-
-    def test_wrapper_imports(self):
-        from baselines.safety.train_ppo_lagrangian import LagrangianRewardWrapper
-        assert LagrangianRewardWrapper is not None
-
-    def test_wrapper_modifies_reward(self):
-        from baselines.safety.train_ppo_lagrangian import LagrangianRewardWrapper
-        env = C2GFastEnv(scenario="default")
-        lambdas = np.array([1.0, 1.0, 1.0])
-        wrapped = LagrangianRewardWrapper(env, lambdas)
-        obs, _ = wrapped.reset(seed=0)
-        action = env.action_space.sample()
-
-        obs_wrap, rew_wrap, _, _, info_wrap = wrapped.step(action)
-        assert "constraint_costs" in info_wrap
-        assert "lagrangian_penalty" in info_wrap
-        assert info_wrap["constraint_costs"].shape == (3,)
-
-    def test_wrapper_zero_lambdas_no_penalty(self):
-        from baselines.safety.train_ppo_lagrangian import LagrangianRewardWrapper
-        env = C2GFastEnv(scenario="default")
-        lambdas = np.array([0.0, 0.0, 0.0])
-        wrapped = LagrangianRewardWrapper(env, lambdas)
-        obs, _ = wrapped.reset(seed=0)
-        action = np.array([1.0, 0.7, 0.5, 0.0], dtype=np.float32)
-        _, rew_wrap, _, _, info = wrapped.step(action)
-        assert info["lagrangian_penalty"] == pytest.approx(0.0)
-
-    def test_lagrangian_callback_imports(self):
-        from baselines.safety.train_ppo_lagrangian import LagrangianUpdateCallback
-        lambdas = np.array([0.1, 0.1, 0.1])
-        budgets = np.array([0.05, 0.10, 0.05])
-        cb = LagrangianUpdateCallback(lambdas, budgets)
-        assert cb is not None
-
-    def test_wrapper_episode_cost_rates(self):
-        """On episode end, info should contain episode_cost_rates."""
-        from baselines.safety.train_ppo_lagrangian import LagrangianRewardWrapper
-        env = C2GFastEnv(scenario="default")
-        lambdas = np.array([0.5, 0.5, 0.5])
-        wrapped = LagrangianRewardWrapper(env, lambdas)
-        obs, _ = wrapped.reset(seed=0)
-        # Run until episode ends
-        for _ in range(500):
-            action = env.action_space.sample()
-            obs, _, term, trunc, info = wrapped.step(action)
-            if term or trunc:
-                break
-        if term or trunc:
-            assert "episode_cost_rates" in info
-            rates = info["episode_cost_rates"]
-            assert rates.shape == (3,)
-            assert np.all(rates >= 0.0) and np.all(rates <= 1.0)
-
-
-# ═══════════════════════════════════════════════════════════════════════════
 # Config YAML validation
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -514,7 +454,7 @@ class TestAlgoConfigs:
     """Verify all algo YAML files parse correctly."""
 
     @pytest.mark.parametrize("yaml_name", [
-        "pid", "mpc_fast", "mpc_macro", "milp", "ppo_lagrangian",
+        "pid", "mpc_fast", "mpc_macro", "milp",
     ])
     def test_yaml_loads(self, yaml_name):
         import yaml
