@@ -1439,3 +1439,11 @@ Reproduce with:
 python -m c2g_env.experiments.thermal_sensitivity
 python -m c2g_env.experiments.thermal_sensitivity_cross_scenario
 ```
+## PPO vs SAC
+
+We also trained and evaluated a PPO macro agent on the default scenario, paired with the same frozen RL low-level controller. Its tracking, revenue, and safety are broadly comparable to SAC, with no thermal violations under either algorithm, which suggests that the staged 2-Phase (Sec. 7, Main paper) result does not appear to hinge on a single choice of macro learner.
+
+| Configuration | Agent | RMSE ↓ (kW) | Regulation Revenue ↑ ($) | Macro Reward ↑ | Low-Level Reward ↑ | Thermal Violations ↓ | BESS Degradation ↓ ($\times 10^{-4}$) |
+|---|---|---:|---:|---:|---:|---:|---:|
+| RL Phase 2: RL macro + frozen RL low-level | SAC | 780 ± 26 | 8,550 ± 553 | 0.94 ± 0.13 | 0.85 ± 0.13 | 0.0 ± 0.0 | 18.38 ± 1.74 |
+| RL Phase 2: RL macro + frozen RL low-level | PPO | 745 ± 34 | 7,345 ± 688 | 0.92 ± 0.13 | 0.81 ± 0.13 | 0.0 ± 0.0 | 18.38 ± 1.74 |

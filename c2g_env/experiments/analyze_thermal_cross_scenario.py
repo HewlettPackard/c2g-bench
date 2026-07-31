@@ -34,6 +34,14 @@ _STRESS_VALUES: dict[str, frozenset[float]] = {
     "fault_factor": frozenset({0.8, 0.6, 0.4}),
 }
 
+# Thermal degradations that the evaluation scenarios themselves impose before
+# any sweep override is applied (see ``conf/scenario/*.yaml``). Scenario C
+# declares ``cooling_fault_factor: 0.6``, an **S/NR** value in the same
+# taxonomy, so every Scenario C episode already runs a degraded plant.
+_SCENARIO_STRESS_OVERRIDES: dict[str, dict[str, float]] = {
+    "scenario_c": {"fault_factor": 0.6},
+}
+
 
 def load_partitions(artifact_dir: Path) -> pd.DataFrame:
     paths = {
@@ -59,7 +67,20 @@ def load_partitions(artifact_dir: Path) -> pd.DataFrame:
     return pd.concat(frames, ignore_index=True)
 
 
-def validate_matrix(frame: pd.DataFrame) -> None:
+def load_inputs(paths: list[Path]) -> pd.DataFrame:
+    """Concatenate arbitrary sweep partitions, e.g. one file per controller."""
+    missing = [str(path) for path in paths if not path.is_file()]
+    if missing:
+        raise FileNotFoundError(f"Missing sweep partitions: {missing}")
+    return pd.concat([pd.read_csv(path) for path in paths], ignore_index=True)
+
+
+def validate_matrix(
+    frame: pd.DataFrame,
+    scenarios: tuple[str, ...] = SCENARIOS,
+    seeds: tuple[int, ...] = SEEDS,
+    controllers: tuple[str, ...] = CONTROLLERS,
+) -> None:
     key = ["config_id", "scenario", "seed", "hardware_controller"]
     duplicated = frame.duplicated(key, keep=False)
     if duplicated.any():
@@ -68,14 +89,14 @@ def validate_matrix(frame: pd.DataFrame) -> None:
         raise ValueError(f"Found {int((~frame['completed']).sum())} incomplete episodes")
 
     configs = tuple(sorted(frame["config_id"].unique()))
-    expected = len(configs) * len(SCENARIOS) * len(SEEDS) * len(CONTROLLERS)
+    expected = len(configs) * len(scenarios) * len(seeds) * len(controllers)
     if len(frame) != expected:
         raise ValueError(f"Expected {expected} rows, found {len(frame)}")
-    if set(frame["scenario"]) != set(SCENARIOS):
+    if set(frame["scenario"]) != set(scenarios):
         raise ValueError("Scenario set does not match the configured factorial design")
-    if set(frame["seed"]) != set(SEEDS):
+    if set(frame["seed"]) != set(seeds):
         raise ValueError("Seed set does not match the configured factorial design")
-    if set(frame["hardware_controller"]) != set(CONTROLLERS):
+    if set(frame["hardware_controller"]) != set(controllers):
         raise ValueError("Controller set does not match the configured factorial design")
 
 
@@ -101,6 +122,14 @@ def add_stress_condition(frame: pd.DataFrame, config_path: Path | None = None) -
     annotated = frame.copy()
     annotated["stress_condition"] = annotated["thermal_overrides"].apply(
         lambda raw: _is_stress_overrides(json.loads(raw), nominal)
+    )
+    annotated["scenario_stress_condition"] = annotated["scenario"].map(
+        lambda scenario: _is_stress_overrides(
+            _SCENARIO_STRESS_OVERRIDES.get(scenario, {}), nominal
+        )
+    )
+    annotated["any_stress_condition"] = (
+        annotated["stress_condition"] | annotated["scenario_stress_condition"]
     )
     return annotated
 
@@ -172,6 +201,8 @@ def summarize_configurations(frame: pd.DataFrame) -> pd.DataFrame:
     group_columns = ["config_id", "scenario", "hardware_controller"]
     return working.groupby(group_columns, sort=False).agg(
         stress_condition=("stress_condition", "first"),
+        scenario_stress_condition=("scenario_stress_condition", "first"),
+        any_stress_condition=("any_stress_condition", "first"),
         seeds=("seed", "nunique"),
         survival_rate=("survived", "mean"),
         warning_episode_rate=("warning_episode", "mean"),
@@ -189,21 +220,42 @@ def summarize_configurations(frame: pd.DataFrame) -> pd.DataFrame:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--artifact-dir", type=Path, default=ARTIFACT_DIR)
+    parser.add_argument(
+        "--inputs",
+        type=Path,
+        nargs="+",
+        help="Explicit sweep partitions to merge instead of the scenario files.",
+    )
+    parser.add_argument(
+        "--output-prefix",
+        default="thermal_sensitivity_cross_scenario",
+        help="Basename prefix for the merged and summarized CSV outputs.",
+    )
     args = parser.parse_args()
 
-    frame = load_partitions(args.artifact_dir)
-    validate_matrix(frame)
+    if args.inputs:
+        frame = load_inputs(list(args.inputs))
+        validate_matrix(
+            frame,
+            scenarios=tuple(sorted(frame["scenario"].unique())),
+            seeds=tuple(sorted(frame["seed"].unique())),
+            controllers=tuple(sorted(frame["hardware_controller"].unique())),
+        )
+    else:
+        frame = load_partitions(args.artifact_dir)
+        validate_matrix(frame)
     frame = normalize_termination_reasons(frame)
     frame = add_stress_condition(frame)
     seed_summary = summarize_by_seed(frame)
     scenario_summary = summarize_scenarios(seed_summary)
     config_summary = summarize_configurations(frame)
 
+    prefix = args.output_prefix
     outputs = {
-        "thermal_sensitivity_cross_scenario.csv": frame,
-        "thermal_sensitivity_cross_scenario_seed_summary.csv": seed_summary,
-        "thermal_sensitivity_cross_scenario_summary.csv": scenario_summary,
-        "thermal_sensitivity_cross_scenario_config_summary.csv": config_summary,
+        f"{prefix}.csv": frame,
+        f"{prefix}_seed_summary.csv": seed_summary,
+        f"{prefix}_summary.csv": scenario_summary,
+        f"{prefix}_config_summary.csv": config_summary,
     }
     for name, output in outputs.items():
         path = args.artifact_dir / name
