@@ -975,6 +975,53 @@ For hierarchical combo agents (`macro+hardware`), results are split into `*_macr
 
 When `--record_transitions` is enabled, per-step logs are written under `runs/<agent>_<scenario>_<agent_type>/episode*.csv`.
 
+#### Multiple facility capacities (50 / 100 / 250 / 500 MW)
+
+C2G-Bench ships with **capacity-generalization profiles** so any agent or experiment can be evaluated on data centers of different nameplate sizes without retraining. Profiles live under `conf/plant_profiles/` and override the plant sizing (rack counts, transformer rating, thermal masses, cooling coefficients, BESS energy/power, and market commitments). Extensive quantities scale linearly with capacity; intensive quantities (per-rack power, COP, C/K time constants, SOC bounds, setpoints) are unchanged, so the thermal margin to the fixed 35 °C limit is identical across sizes.
+
+| Profile | Nameplate | Scale | `committed_mw_max` | Zone A × B racks | BESS (`E_NOM_MWH` / `P_MAX_MW`) |
+|---------|-----------|-------|--------------------|------------------|---------------------------------|
+| `plant_50mw` | 50 MW | 0.2× | 6.0 | 240+160 × 500 | 3.0 / 1.0 |
+| `plant_100mw` | 100 MW | 0.4× | 12.0 | 480+320 × 1000 | 6.0 / 2.0 |
+| `none` *(default)* | 250 MW | 1.0× | 30.0 | built-in (150 MW A + 100 MW B) | 15.0 / 5.0 |
+| `plant_500mw` | 500 MW | 2.0× | 60.0 | 2400+1600 × 5000 | 30.0 / 10.0 |
+
+`none` = the built-in 250 MW facility (no override). Profile names are discovered automatically from `conf/plant_profiles/*.yaml`.
+
+**Benchmark evaluation at a chosen capacity** — pass `--plant_profile`:
+
+```bash
+# Evaluate the classical controllers on a 500 MW facility
+uv run evaluation/run_benchmark.py --agents rule_based bang_bang pid \
+    --plant_profile plant_500mw
+
+# Sweep every capacity in one run; each output row is tagged with `plant_profile`
+uv run evaluation/run_benchmark.py --agents sac_macro+sac \
+    --macro-model-dir trained_models/sac_macro_default_s100 \
+    --hw-model-dir trained_models/sac_default_s100 \
+    --plant_profile all
+```
+
+`--plant_profile` accepts `none` (default), `plant_50mw`, `plant_100mw`, `plant_500mw`, or `all`. When `all` is used, every row in the output CSV carries a `plant_profile` column so results can be grouped by capacity.
+
+**Thermal-sensitivity sweep at a chosen capacity** — the cross-scenario thermal runner takes `--plant-profile` (extensive sweep values are automatically rescaled to match the selected size):
+
+```bash
+uv run python -m c2g_env.experiments.thermal_sensitivity_cross_scenario \
+    --plant-profile plant_100mw \
+    --macro-controller sac_macro \
+    --controllers sac \
+    --out copilot/artifacts/thermal_cross_sacsac_plant_100mw.csv
+```
+
+**Hydra / training runs** — the same profiles are exposed as a Hydra config group (`conf/config.yaml` selects `plant_profiles: none` by default). Override on the command line to train or run at a different size:
+
+```bash
+uv run baselines/train_sac.py plant_profiles=plant_500mw
+```
+
+Standalone (non-Hydra) callers can pass the override dict directly: `C2GFastEnv(plant_overrides=load_plant_profile("plant_100mw"))`.
+
 #### High-assurance benchmark runner
 
 ```bash

@@ -98,8 +98,6 @@ def _make_hardware_controller(name: str, env: C2GMacroEnv, sac_model: Any) -> An
         return RuleBasedController(
             committed_mw_max=float(fast_env._scfg.get("committed_mw_max", 30.0)),
             bess_p_max_mw=float(fast_env._bess.P_MAX_MW),
-            p_flex_service_mw=float(fast_env._workload.p_flex_max_kw) / 1000.0,
-            reward_mode=fast_env._reward_mode,
         )
     if name == "sac":
         return sac_model
@@ -116,6 +114,7 @@ def _predict_fn(controller: Any) -> Callable[[np.ndarray, np.ndarray], np.ndarra
 
 def _run_episode(
     config: dict[str, Any], scenario: str, seed: int, hardware: str, sac_model: Any,
+    macro_controller: Any, macro_name: str,
     plant_overrides: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     stats: dict[str, Any] = {
@@ -145,7 +144,6 @@ def _run_episode(
     obs, _ = env.reset(seed=seed)
     controller = _make_hardware_controller(hardware, env, sac_model)
     env._inner_action_fn = _predict_fn(controller)
-    macro_controller = RuleBasedMacroController()
     started = time.perf_counter()
     total_reward = 0.0
     macro_steps = 0
@@ -173,7 +171,7 @@ def _run_episode(
         "thermal_overrides": json.dumps(config["overrides"], sort_keys=True),
         "scenario": scenario,
         "seed": seed,
-        "macro_controller": "rule_macro",
+        "macro_controller": macro_name,
         "hardware_controller": hardware,
         "completed": True,
         "terminated": bool(terminated),
@@ -222,6 +220,15 @@ def main() -> None:
         "--sac-model",
         help="Override the SAC low-level checkpoint from conf/experiments.yaml.",
     )
+    parser.add_argument(
+        "--macro-controller",
+        choices=["rule_macro", "sac_macro"],
+        help="High-level controller. Default from conf/experiments.yaml.",
+    )
+    parser.add_argument(
+        "--sac-macro-model",
+        help="Override the SAC macro checkpoint from conf/experiments.yaml.",
+    )
     parser.add_argument("--max-runs", type=int)
     parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args()
@@ -244,6 +251,15 @@ def main() -> None:
         from stable_baselines3 import SAC
         sac_model = SAC.load(str(_REPO_ROOT / (args.sac_model or run_cfg["sac_model"])))
 
+    macro_name = args.macro_controller or run_cfg["macro_controller"]
+    if macro_name == "sac_macro":
+        from stable_baselines3 import SAC
+        macro_controller = SAC.load(
+            str(_REPO_ROOT / (args.sac_macro_model or run_cfg["sac_macro_model"]))
+        )
+    else:
+        macro_controller = RuleBasedMacroController()
+
     args.out.parent.mkdir(parents=True, exist_ok=True)
     if args.overwrite and args.out.exists():
         args.out.unlink()
@@ -261,7 +277,7 @@ def main() -> None:
     print(
         f"Running {len(pending)} episodes ({len(configs)} unique plant configs, "
         f"{len(scenarios)} scenarios, {len(seeds)} seeds, {len(controllers)} controllers) "
-        f"on plant profile '{args.plant_profile}'"
+        f"on plant profile '{args.plant_profile}' with macro '{macro_name}'"
     )
 
     write_header = not args.out.exists()
@@ -270,7 +286,7 @@ def main() -> None:
         if write_header:
             writer.writeheader()
         for index, (config, scenario, seed, controller) in enumerate(pending, 1):
-            row = _run_episode(config, scenario, seed, controller, sac_model, plant_overrides)
+            row = _run_episode(config, scenario, seed, controller, sac_model, macro_controller, macro_name, plant_overrides)
             writer.writerow(row)
             handle.flush()
             print(
