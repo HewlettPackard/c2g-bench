@@ -51,6 +51,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import baselines._hydra_compat  # noqa: F401  # Hydra 1.3.x + Python ≥3.14 fix
+from baselines._hydra_compat import plant_overrides_from_cfg
 
 import hydra
 from hydra.core.hydra_config import HydraConfig
@@ -69,9 +70,9 @@ from baselines.metrics_callback import C2GMetricsCallback
 # Env factory
 # ======================================================================
 
-def make_env_fn(scenario: str, seed: int):
+def make_env_fn(scenario: str, seed: int, plant_overrides: dict | None = None):
     def _init():
-        fast_env = C2GFastEnv(scenario=scenario)
+        fast_env = C2GFastEnv(scenario=scenario, plant_overrides=plant_overrides)
         env = RuleMacroWrappedEnv(fast_env)
         env.reset(seed=seed)
         return env
@@ -91,15 +92,16 @@ def train(cfg: DictConfig) -> None:
     seed     = cfg.experiment.seed
     algo_cfg = cfg.algo
     log_cfg  = cfg.logging
+    plant_overrides = plant_overrides_from_cfg(cfg)
 
     print(f"[RuleMacro+SAC] scenario={scenario}  seed={seed}  "
           f"timesteps={algo_cfg.timesteps:,}")
 
     # ── Environments ──────────────────────────────────────────────────
     # SAC is off-policy: single env is fine; no VecNormalize needed
-    env = make_env_fn(scenario, seed)()
+    env = make_env_fn(scenario, seed, plant_overrides)()
 
-    eval_env = make_vec_env(make_env_fn(scenario, seed + 999),
+    eval_env = make_vec_env(make_env_fn(scenario, seed + 999, plant_overrides),
                             n_envs=1, seed=seed + 999)
 
     # ── Callbacks ─────────────────────────────────────────────────────

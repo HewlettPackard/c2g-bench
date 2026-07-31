@@ -114,5 +114,6 @@ thermal_sensitivity:
     seeds: [100, 101, 102, 103, 104]
     macro_controller: rule_macro
     hardware_controllers: [bang_bang, pid, rule_based, sac]
-    sac_model: "trained_models/BestCheckpoints/RuleHighlevel_SacLowlevel/final_model.zip"
+    sac_model: "trained_models/BestCheckpoints/sac_default_s100/final_model.zip"
+    sac_macro_model: "trained_models/BestCheckpoints/sac_macro_default_s100/final_model.zip"
     deduplicate_plant_configs: true

@@ -975,6 +975,53 @@ For hierarchical combo agents (`macro+hardware`), results are split into `*_macr
 
 When `--record_transitions` is enabled, per-step logs are written under `runs/<agent>_<scenario>_<agent_type>/episode*.csv`.
 
+#### Multiple facility capacities (50 / 100 / 250 / 500 MW)
+
+C2G-Bench ships with **capacity-generalization profiles** so any agent or experiment can be evaluated on data centers of different nameplate sizes without retraining. Profiles live under `conf/plant_profiles/` and override the plant sizing (rack counts, transformer rating, thermal masses, cooling coefficients, BESS energy/power, and market commitments). Extensive quantities scale linearly with capacity; intensive quantities (per-rack power, COP, C/K time constants, SOC bounds, setpoints) are unchanged, so the thermal margin to the fixed 35 °C limit is identical across sizes.
+
+| Profile | Nameplate | Scale | `committed_mw_max` | Zone A × B racks | BESS (`E_NOM_MWH` / `P_MAX_MW`) |
+|---------|-----------|-------|--------------------|------------------|---------------------------------|
+| `plant_50mw` | 50 MW | 0.2× | 6.0 | 240+160 × 500 | 3.0 / 1.0 |
+| `plant_100mw` | 100 MW | 0.4× | 12.0 | 480+320 × 1000 | 6.0 / 2.0 |
+| `none` *(default)* | 250 MW | 1.0× | 30.0 | built-in (150 MW A + 100 MW B) | 15.0 / 5.0 |
+| `plant_500mw` | 500 MW | 2.0× | 60.0 | 2400+1600 × 5000 | 30.0 / 10.0 |
+
+`none` = the built-in 250 MW facility (no override). Profile names are discovered automatically from `conf/plant_profiles/*.yaml`.
+
+**Benchmark evaluation at a chosen capacity** — pass `--plant_profile`:
+
+```bash
+# Evaluate the classical controllers on a 500 MW facility
+uv run evaluation/run_benchmark.py --agents rule_based bang_bang pid \
+    --plant_profile plant_500mw
+
+# Sweep every capacity in one run; each output row is tagged with `plant_profile`
+uv run evaluation/run_benchmark.py --agents sac_macro+sac \
+    --macro-model-dir trained_models/sac_macro_default_s100 \
+    --hw-model-dir trained_models/sac_default_s100 \
+    --plant_profile all
+```
+
+`--plant_profile` accepts `none` (default), `plant_50mw`, `plant_100mw`, `plant_500mw`, or `all`. When `all` is used, every row in the output CSV carries a `plant_profile` column so results can be grouped by capacity.
+
+**Thermal-sensitivity sweep at a chosen capacity** — the cross-scenario thermal runner takes `--plant-profile` (extensive sweep values are automatically rescaled to match the selected size):
+
+```bash
+uv run python -m c2g_env.experiments.thermal_sensitivity_cross_scenario \
+    --plant-profile plant_100mw \
+    --macro-controller sac_macro \
+    --controllers sac \
+    --out copilot/artifacts/thermal_cross_sacsac_plant_100mw.csv
+```
+
+**Hydra / training runs** — the same profiles are exposed as a Hydra config group (`conf/config.yaml` selects `plant_profiles: none` by default). Override on the command line to train or run at a different size:
+
+```bash
+uv run baselines/train_sac.py plant_profiles=plant_500mw
+```
+
+Standalone (non-Hydra) callers can pass the override dict directly: `C2GFastEnv(plant_overrides=load_plant_profile("plant_100mw"))`.
+
 #### High-assurance benchmark runner
 
 ```bash
@@ -1393,12 +1440,11 @@ python -m c2g_env.experiments.thermal_sensitivity
 python -m c2g_env.experiments.thermal_sensitivity_cross_scenario
 ```
 
-## PPO v/s SAC Macro results
+## PPO vs SAC
 
-### Table 1. Evaluation results on the `default` scenario
+We also trained and evaluated a PPO macro agent on the default scenario, paired with the same frozen RL low-level controller. Its tracking, revenue, and safety are broadly comparable to SAC, with no thermal violations under either algorithm, which suggests that the staged 2-Phase (Sec. 7, Main paper) result does not appear to hinge on a single choice of macro learner.
 
 | Configuration | Agent | RMSE ↓ (kW) | Regulation Revenue ↑ ($) | Macro Reward ↑ | Low-Level Reward ↑ | Thermal Violations ↓ | BESS Degradation ↓ ($\times 10^{-4}$) |
 |---|---|---:|---:|---:|---:|---:|---:|
-| RL Phase 2: RL macro + frozen RL low-level | SAC | $780 \pm 26$ | **$8{,}550 \pm 553$** | $0.94 \pm 0.13$ | $0.85 \pm 0.13$ | **$0.0 \pm 0.0$** | **$18.38 \pm 1.74$** |
-| RL Phase 2: RL macro + frozen RL low-level | PPO | $745 \pm 34$ | **$7{,}345 \pm 688$** | $0.92 \pm 0.13$ | $0.81 \pm 0.13$ | **$0.0 \pm 0.0$** | **$18.38 \pm 1.74$** |
-
+| RL Phase 2: RL macro + frozen RL low-level | SAC | 780 ± 26 | 8,550 ± 553 | 0.94 ± 0.13 | 0.85 ± 0.13 | 0.0 ± 0.0 | 18.38 ± 1.74 |
+| RL Phase 2: RL macro + frozen RL low-level | PPO | 745 ± 34 | 7,345 ± 688 | 0.92 ± 0.13 | 0.81 ± 0.13 | 0.0 ± 0.0 | 18.38 ± 1.74 |

@@ -50,6 +50,7 @@ import yaml
 from tqdm import tqdm
 
 from c2g_env import C2GFastEnv, C2GMacroEnv
+from c2g_env.plant_profiles import available_plant_profiles, load_plant_profile
 from baselines.rule_based_mpc import RuleBasedController
 from baselines.rule_based_macro import RuleBasedMacroController
 from baselines.bang_bang import BangBangController
@@ -66,6 +67,9 @@ from c2g_env.thermal_limits import T_SAFE, T_WARN
 
 SCENARIOS    = ["default", "scenario_a", "scenario_b", "scenario_c"]
 T_WARN_NORM  = T_WARN / T_SAFE   # normalised warning threshold
+# Facility-capacity override applied to every constructed env; set from the
+# --plant_profile CLI flag. None = built-in 250 MW facility.
+_PLANT_OVERRIDES: dict | None = None
 _RL_ALGOS = {
     "ppo",
     "sac"
@@ -85,6 +89,7 @@ def _make_env(
     **kwargs,
 ) -> C2GFastEnv:
     """Return ActionAblationFastEnv when fixed-action overrides are active."""
+    kwargs.setdefault("plant_overrides", _PLANT_OVERRIDES)
     if fixed_action_values:
         from c2g_env.experiments.action_ablation_env import ActionAblationFastEnv
         return ActionAblationFastEnv(
@@ -97,6 +102,7 @@ def _make_env(
 
 def _make_macro_env(scenario: str, sub_step_callback=None, **kwargs) -> C2GMacroEnv:
     """Return a C2GMacroEnv for macro-level agent evaluation."""
+    kwargs.setdefault("plant_overrides", _PLANT_OVERRIDES)
     return C2GMacroEnv(scenario=scenario, sub_step_callback=sub_step_callback, **kwargs)
 
 
@@ -998,6 +1004,14 @@ if __name__ == "__main__":
     parser.add_argument("--n_episodes", type=int, default=5)
     parser.add_argument("--seed",       type=int, default=100)
     parser.add_argument(
+        "--plant_profile",
+        default="none",
+        choices=available_plant_profiles() + ["all"],
+        help="Facility capacity profile from conf/plant_profiles/ "
+             "(e.g. plant_50mw, plant_100mw, plant_500mw). Default 'none' = 250 MW. "
+             "Use 'all' to sweep every profile and tag each row with plant_profile.",
+    )
+    parser.add_argument(
         "--model_dir", default=None,
         help="Override model directory for SB3 agents (fallback for both macro and hardware).",
     )
@@ -1107,6 +1121,14 @@ if __name__ == "__main__":
     if not (evaluation_results_dir.exists() and evaluation_results_dir.is_dir()):
         evaluation_results_dir.mkdir(parents=True, exist_ok=True)
 
+    # Apply the capacity profile globally so every constructed env re-instantiates
+    # at the requested nameplate (e.g. --plant_profile plant_500mw).
+    plant_profiles = (
+        available_plant_profiles()
+        if args.plant_profile == "all"
+        else [args.plant_profile]
+    )
+
     try:
         fixed_action_values = _parse_fixed_action_args(args.fixed_action)
     except ValueError as exc:
@@ -1119,27 +1141,33 @@ if __name__ == "__main__":
     # the explicit combo form: --agents rule_macro rule_macro+pid
     agents = list(args.agents)
 
-    rows = benchmark(
-        agents     = agents,
-        scenarios  = args.scenarios,
-        n_episodes = args.n_episodes,
-        seed_start = args.seed,
-        model_dir  = args.model_dir,
-        macro_model_dir = args.macro_model_dir,
-        hw_model_dir    = args.hw_model_dir,
-        record_transitions = args.record_transitions,
-        fixed_action_values = fixed_action_values,
-        llm_api_base = args.llm_api_base,
-        llm_mode = args.llm_mode,
-        llm_template_path = args.llm_template_path,
-        llm_max_new_tokens = args.llm_max_new_tokens,
-        llm_temperature = args.llm_temperature,
-        llm_enable_thinking = args.llm_enable_thinking,
-        llm_context_num_steps = args.llm_context_num_steps,
-        llm_context_stride    = args.llm_context_stride,
-        llm_icrl_mode         = args.llm_icrl_mode,
-        llm_skip_episodes     = args.llm_skip_episodes,
-    )
+    rows = []
+    for plant_profile in plant_profiles:
+        _PLANT_OVERRIDES = load_plant_profile(plant_profile)
+        profile_rows = benchmark(
+            agents     = agents,
+            scenarios  = args.scenarios,
+            n_episodes = args.n_episodes,
+            seed_start = args.seed,
+            model_dir  = args.model_dir,
+            macro_model_dir = args.macro_model_dir,
+            hw_model_dir    = args.hw_model_dir,
+            record_transitions = args.record_transitions,
+            fixed_action_values = fixed_action_values,
+            llm_api_base = args.llm_api_base,
+            llm_mode = args.llm_mode,
+            llm_template_path = args.llm_template_path,
+            llm_max_new_tokens = args.llm_max_new_tokens,
+            llm_temperature = args.llm_temperature,
+            llm_enable_thinking = args.llm_enable_thinking,
+            llm_context_num_steps = args.llm_context_num_steps,
+            llm_context_stride    = args.llm_context_stride,
+            llm_icrl_mode         = args.llm_icrl_mode,
+            llm_skip_episodes     = args.llm_skip_episodes,
+        )
+        for row in profile_rows:
+            row["plant_profile"] = plant_profile
+        rows.extend(profile_rows)
     print_results_table(rows)
     output_path = (
         Path(args.output)

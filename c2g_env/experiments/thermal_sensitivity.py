@@ -64,6 +64,7 @@ _ALLOWED_KEYS: frozenset[str] = frozenset({
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _DEFAULT_CONFIG = _REPO_ROOT / "conf" / "experiments.yaml"
 _DEFAULT_TRACE_DIR = _REPO_ROOT / "data" / "processed" / "workload_traces"
+_SCENARIO_DIR = _REPO_ROOT / "conf" / "scenario"
 
 _CONTROLLER_FACTORIES: dict[str, Callable[[], Any]] = {
     "bang_bang": BangBangController,

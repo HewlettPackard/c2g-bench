@@ -22,6 +22,7 @@ defaults:
   - scenario: default
   - algo: rule_macro_ppo
   - market: nyiso_nyc
+  - plant_profiles: none
   - logging: tensorboard
   - _self_
 
