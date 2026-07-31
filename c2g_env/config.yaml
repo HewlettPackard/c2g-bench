@@ -216,3 +216,13 @@ scenario_c:
   grid_stress_scale: 1.2
   dr_baseline_mw: 5.0        # Standing DR contract capacity [MW]
   dr_rate_usd_mw: 5.0        # DR compensation rate [$/MW·h]
+
+# ------------------------------------------------------------------------------
+# Capacity-generalization plants (50 / 100 / 500 MW)
+# ------------------------------------------------------------------------------
+# Defined as a separate Hydra config group under conf/plant_profiles/ and
+# injected at runtime as ``plant_overrides`` (env kwarg), so they compose with
+# any scenario/market rather than duplicating scenario fields here. See
+# conf/plant_profiles/*.yaml. Standalone (non-Hydra) callers can pass the same
+# dict directly: ``C2GFastEnv(plant_overrides={...})``.
+# ------------------------------------------------------------------------------

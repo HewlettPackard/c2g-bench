@@ -181,17 +181,20 @@ class C2GMacroEnv(gym.Env):
         # Inner environment
         _fixed_action_values = kwargs.pop("fixed_action_values", None)
         _thermal_overrides = kwargs.pop("thermal_overrides", None)
+        _plant_overrides = kwargs.pop("plant_overrides", None)
         if _fixed_action_values:
             from c2g_env.experiments.action_ablation_env import ActionAblationFastEnv
             self._fast_env = ActionAblationFastEnv(
                 scenario=scenario, config_path=cfg_path,
                 fixed_action_values=_fixed_action_values,
                 thermal_overrides=_thermal_overrides,
+                plant_overrides=_plant_overrides,
             )
         else:
             self._fast_env = C2GFastEnv(
                 scenario=scenario, config_path=cfg_path,
                 thermal_overrides=_thermal_overrides,
+                plant_overrides=_plant_overrides,
             )
 
         # Episode tracking

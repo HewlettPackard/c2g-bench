@@ -96,6 +96,25 @@ _THERMAL_OVERRIDE_KEYS = frozenset({
     "T_supply_A", "T_supply_B", "COP_base", "fault_factor", "T_amb",
 })
 
+# Plant capacity overrides — re-instantiate the facility at a different
+# nameplate without editing physics defaults. Keys map to engine attributes;
+# rack counts drive both the workload profile and the electrical model so IT
+# nameplate and the observation-normalisation denominator stay consistent.
+_PLANT_THERMAL_KEYS = frozenset({
+    "C_A", "C_B", "K_liq", "K_air", "K_env_A", "K_env_B",
+    "max_hvac_mw", "P_PUMP_MAX_MW",
+})
+_PLANT_ELEC_KEYS = frozenset({"S_xfmr_mva", "p_iron_mw", "p_lighting_mw", "p_network_mw"})
+_PLANT_BESS_KEYS = frozenset({"E_NOM_MWH", "P_MAX_MW"})
+_PLANT_RACK_KEYS = frozenset({"n_racks_a_flex", "n_racks_a_base", "n_racks_b"})
+# Market-commitment terms scale with capacity too; they patch the scenario
+# config (not an engine) so commit_norm stays scale-invariant.
+_PLANT_SCENARIO_KEYS = frozenset({"committed_mw_max", "dr_baseline_mw"})
+_PLANT_OVERRIDE_KEYS = (
+    _PLANT_RACK_KEYS | _PLANT_ELEC_KEYS | _PLANT_THERMAL_KEYS
+    | _PLANT_BESS_KEYS | _PLANT_SCENARIO_KEYS
+)
+
 
 class C2GFastEnv(gym.Env):
     """
@@ -108,6 +127,11 @@ class C2GFastEnv(gym.Env):
         ``"scenario_b"``, or ``"scenario_c"``.
     config_path : str or Path, optional
         Override path to ``config.yaml``.
+    plant_overrides : mapping, optional
+        Runtime facility-capacity overrides (rack counts + electrical/thermal/
+        BESS sizing). Takes precedence over any ``plant`` block in the scenario
+        config, letting a Hydra ``plant_profiles`` group re-instantiate the
+        plant without editing ``config.yaml``.
     """
 
     metadata = {"render_modes": []}
@@ -165,6 +189,7 @@ class C2GFastEnv(gym.Env):
         scenario: str = "default",
         config_path: str | Path | None = None,
         thermal_overrides: Mapping[str, float] | None = None,
+        plant_overrides: Mapping[str, float] | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__()
@@ -184,6 +209,14 @@ class C2GFastEnv(gym.Env):
         if unknown_thermal_keys:
             raise ValueError(
                 f"Unknown thermal override key(s): {sorted(unknown_thermal_keys)}"
+            )
+        self._plant_overrides = {
+            str(key): value for key, value in dict(plant_overrides or {}).items()
+        }
+        unknown_plant_keys = set(self._plant_overrides) - _PLANT_OVERRIDE_KEYS
+        if unknown_plant_keys:
+            raise ValueError(
+                f"Unknown plant override key(s): {sorted(unknown_plant_keys)}"
             )
 
         self.action_space = spaces.Box(
@@ -206,9 +239,19 @@ class C2GFastEnv(gym.Env):
         self._prev_throttle  = 1.0
         self._prev_pump_speed = 1.0
         self._prev_regd_signal = 0.0
-        self._committed_mw   = float(self._scfg["dr_baseline_mw"])
+        # Market commitments scale with capacity; plant overrides win over the
+        # scenario config so commit_norm and tracking stay scale-invariant.
+        self._committed_mw_max = float(
+            self._plant_overrides.get("committed_mw_max", self._scfg["committed_mw_max"])
+        )
+        self._dr_baseline_mw = float(
+            self._plant_overrides.get("dr_baseline_mw", self._scfg["dr_baseline_mw"])
+        )
+        self._committed_mw   = self._dr_baseline_mw
         self._episode_ticks  = int(self._gcfg["episode_ticks"])
         self._dt             = float(self._gcfg["dt_seconds"])
+        # IT-nameplate normalisation denominator; recomputed per-plant in reset().
+        self._facility_cap_kw = _FACILITY_CAP_KW
 
     # ------------------------------------------------------------------
     # Public API helpers
@@ -222,7 +265,7 @@ class C2GFastEnv(gym.Env):
     @committed_mw.setter
     def committed_mw(self, value: float) -> None:
         """Set regulation capacity commitment, clamped to [0, committed_mw_max]."""
-        cap = float(self._scfg["committed_mw_max"])
+        cap = self._committed_mw_max
         self._committed_mw = float(np.clip(value, 0.0, cap))
 
     # ------------------------------------------------------------------
@@ -263,8 +306,18 @@ class C2GFastEnv(gym.Env):
         gcfg = self._gcfg
 
         # --- Build / reset simulators ------------------------------------
+        # Runtime plant_overrides (e.g. a Hydra plant_profiles group) win over
+        # any ``plant`` block carried in the scenario config.
+        plant = self._plant_overrides or scfg.get("plant") or {}
+        # Re-derive capacity-scaled market commitments (survives a per-episode
+        # scenario override via options).
+        self._committed_mw_max = float(plant.get("committed_mw_max", scfg["committed_mw_max"]))
+        self._dr_baseline_mw   = float(plant.get("dr_baseline_mw", scfg["dr_baseline_mw"]))
         self._workload = WorkloadOrchestrator(
-            trace_dir=gcfg["trace_dir"], dt_seconds=self._dt, seed=rng_seed
+            trace_dir=gcfg["trace_dir"], dt_seconds=self._dt, seed=rng_seed,
+            n_racks_a_flex=plant.get("n_racks_a_flex"),
+            n_racks_a_base=plant.get("n_racks_a_base"),
+            n_racks_b=plant.get("n_racks_b"),
         )
         self._thermal = ThermalTwin(dt_seconds=self._dt)
         # T_safe is the single-source-of-truth silicon limit from config.yaml.
@@ -282,11 +335,38 @@ class C2GFastEnv(gym.Env):
         self._elec.reset()
         self._bess = BESSModel(dt_seconds=self._dt)
         self._bess.reset()
+
+        # --- Apply plant capacity overrides ------------------------------
+        # Rack counts set IT nameplate; keep the electrical model in sync with
+        # the workload so the round-trip util inversion and UPS loading stay
+        # consistent. Extensive thermal/BESS/transformer terms scale together.
+        if plant:
+            if "n_racks_a_flex" in plant or "n_racks_a_base" in plant:
+                self._elec.n_racks_A = int(
+                    plant.get("n_racks_a_flex", 0) + plant.get("n_racks_a_base", 0)
+                )
+            if "n_racks_b" in plant:
+                self._elec.n_racks_B = int(plant["n_racks_b"])
+            for key in _PLANT_ELEC_KEYS:
+                if key in plant:
+                    setattr(self._elec, key, float(plant[key]))
+            for key in _PLANT_THERMAL_KEYS:
+                if key in plant:
+                    setattr(self._thermal, key, float(plant[key]))
+            for key in _PLANT_BESS_KEYS:
+                if key in plant:
+                    setattr(self._bess, key, float(plant[key]))
+        # IT nameplate (kW) drives observation normalisation; derive it from the
+        # electrical model so it can never desync from the rack counts.
+        self._facility_cap_kw = (
+            self._elec.n_racks_A * self._elec.p_max_rack_A_kw
+            + self._elec.n_racks_B * self._elec.p_max_rack_B_kw
+        )
         self._grid = MacroGridSignal(
             energy_dir=gcfg["energy_dir"],
             zone=gcfg["nyiso_zone"],
             dt_seconds=self._dt,
-            committed_mw=float(scfg["dr_baseline_mw"]),
+            committed_mw=self._dr_baseline_mw,
             seed=rng_seed,
             market=gcfg.get("grid_market", "nyiso_nyc"),
         )
@@ -322,7 +402,7 @@ class C2GFastEnv(gym.Env):
         bess_soc_init = float(scfg.get("bess_soc_init", 0.5))
         self._bess.set_initial_soc(bess_soc_init)
 
-        self._committed_mw   = float(scfg["dr_baseline_mw"])
+        self._committed_mw   = self._dr_baseline_mw
         self._tick           = 0
         self._prev_throttle  = 1.0
         self._prev_pump_speed = 1.0
@@ -606,9 +686,9 @@ class C2GFastEnv(gym.Env):
             temp_A / T_safe,
             temp_B / T_safe,
             bess_out["soc_fraction"],
-            w.p_base_kw        / _FACILITY_CAP_KW,
-            w.p_flex_nom_kw    / _FACILITY_CAP_KW,
-            min(elec["p_facility_mw"] * 1_000.0 / _FACILITY_CAP_KW, 2.0),
+            w.p_base_kw        / self._facility_cap_kw,
+            w.p_flex_nom_kw    / self._facility_cap_kw,
+            min(elec["p_facility_mw"] * 1_000.0 / self._facility_cap_kw, 2.0),
             float(np.clip(gs["regd_signal"], -1.0, 1.0)),
             min(gs["lmp_usd_mwh"] / 200.0, 1.0),
             float(gs["load_norm"]),
@@ -620,7 +700,7 @@ class C2GFastEnv(gym.Env):
             float(np.clip((f_grid_hz - f_nom) / 0.5, -1.0, 1.0)),  # freq_dev_norm
             float(np.clip(v_pcc_pu, 0.0, 1.1)),                     # v_pcc_pu
             min(w.backlog_kw / self._workload.p_flex_max_kw, 2.0),  # backlog_norm
-            self._committed_mw / float(self._scfg["committed_mw_max"]),  # committed_mw_norm
+            self._committed_mw / self._committed_mw_max,  # committed_mw_norm
         ], dtype=np.float32)
 
     def _build_obs_at_reset(self) -> np.ndarray:
@@ -679,9 +759,9 @@ class C2GFastEnv(gym.Env):
             self._thermal.temp_A / T_safe,
             self._thermal.temp_B / T_safe,
             self._bess.soc_fraction,
-            w.p_base_kw        / _FACILITY_CAP_KW,
-            w.p_flex_nom_kw    / _FACILITY_CAP_KW,
-            min(elec["p_facility_mw"] * 1_000.0 / _FACILITY_CAP_KW, 2.0),
+            w.p_base_kw        / self._facility_cap_kw,
+            w.p_flex_nom_kw    / self._facility_cap_kw,
+            min(elec["p_facility_mw"] * 1_000.0 / self._facility_cap_kw, 2.0),
             float(np.clip(gs["regd_signal"], -1.0, 1.0)),
             min(gs["lmp_usd_mwh"] / 200.0, 1.0),
             float(gs["load_norm"]),
@@ -693,5 +773,5 @@ class C2GFastEnv(gym.Env):
             0.0,   # freq_dev_norm (nominal frequency at reset)
             1.0,   # v_pcc_pu (nominal voltage at reset)
             0.0,   # backlog_norm (no deferred work at reset)
-            self._committed_mw / float(self._scfg["committed_mw_max"]),  # committed_mw_norm
+            self._committed_mw / self._committed_mw_max,  # committed_mw_norm
         ], dtype=np.float32)

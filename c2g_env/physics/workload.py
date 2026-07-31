@@ -129,6 +129,11 @@ class WorkloadOrchestrator:
     seed:
         Random seed for stochastic fallback (used only if trace files are
         unavailable).
+    n_racks_a_flex, n_racks_a_base, n_racks_b:
+        Optional rack-count overrides for re-instantiating the facility at a
+        different nameplate capacity.  Traces are capacity-agnostic utilisation
+        profiles, so only the rack counts (and per-rack power) set absolute MW.
+        Defaults to the 250 MW module constants when None.
     """
 
     _TRACE_FILES = {
@@ -142,9 +147,15 @@ class WorkloadOrchestrator:
         trace_dir: str | Path = "data/processed/workload_traces",
         dt_seconds: float = 300.0,
         seed: int = 42,
+        n_racks_a_flex: int | None = None,
+        n_racks_a_base: int | None = None,
+        n_racks_b: int | None = None,
     ) -> None:
         self.dt = dt_seconds
         self._rng = np.random.default_rng(seed)
+        self._n_racks_a_flex = int(n_racks_a_flex) if n_racks_a_flex is not None else _ZONE_A_N_RACKS_FLEX
+        self._n_racks_a_base = int(n_racks_a_base) if n_racks_a_base is not None else _ZONE_A_N_RACKS_BASE
+        self._n_racks_b      = int(n_racks_b)      if n_racks_b      is not None else _ZONE_B_N_RACKS
         self._tick: int = 0
         # Traces are at 300-s resolution; this many env steps share each tick.
         self._steps_per_trace_tick: int = max(1, round(300.0 / dt_seconds))
@@ -177,11 +188,11 @@ class WorkloadOrchestrator:
                      ).clip(0.0, 1.0)
 
         # --- Convert to power (kW) ----------------------------------------
-        self._p_flex_arr   = _rack_power_kw(util_batch, _ZONE_A_N_RACKS_FLEX,
+        self._p_flex_arr   = _rack_power_kw(util_batch, self._n_racks_a_flex,
                                              _P_IDLE_A_KW, _P_MAX_A_KW, _ALPHA_A)
-        self._p_base_a_arr = _rack_power_kw(util_genai, _ZONE_A_N_RACKS_BASE,
+        self._p_base_a_arr = _rack_power_kw(util_genai, self._n_racks_a_base,
                                              _P_IDLE_A_KW, _P_MAX_A_KW, _ALPHA_A)
-        self._p_base_b_arr = _rack_power_kw(util_dlrm,  _ZONE_B_N_RACKS,
+        self._p_base_b_arr = _rack_power_kw(util_dlrm,  self._n_racks_b,
                                              _P_IDLE_B_KW, _P_MAX_B_KW, _ALPHA_B)
         self._p_base_arr   = self._p_base_a_arr + self._p_base_b_arr
 
@@ -191,7 +202,7 @@ class WorkloadOrchestrator:
         self._n = n
         # Hardware ceiling — precomputed once
         self._p_flex_max_kw: float = float(_rack_power_kw(
-            1.0, _ZONE_A_N_RACKS_FLEX, _P_IDLE_A_KW, _P_MAX_A_KW, _ALPHA_A
+            1.0, self._n_racks_a_flex, _P_IDLE_A_KW, _P_MAX_A_KW, _ALPHA_A
         ))
 
     # ------------------------------------------------------------------

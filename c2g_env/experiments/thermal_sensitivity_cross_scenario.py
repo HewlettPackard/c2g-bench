@@ -24,11 +24,15 @@ from baselines.rule_based_macro import RuleBasedMacroController
 from baselines.rule_based_mpc import RuleBasedController
 from c2g_env import C2GMacroEnv
 from c2g_env.experiments.thermal_sensitivity import build_configurations, load_config
+from c2g_env.plant_profiles import available_plant_profiles, load_plant_profile
 from c2g_env.thermal_limits import T_WARN
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _DEFAULT_OUT = _REPO_ROOT / "copilot" / "artifacts" / "thermal_sensitivity_cross_scenario.csv"
 _FAULT_KEYS = ("thermal_fault", "freq_fault", "voltage_fault", "soc_fault", "sla_fault")
+# Thermal terms proportional to facility size; the rest are intensive and
+# stay fixed when the nameplate changes.
+_EXTENSIVE_THERMAL_KEYS = ("C_A", "C_B", "K_liq", "K_air", "K_env_A", "K_env_B")
 _FIELDS = (
     "config_id", "config_aliases", "param", "value", "thermal_overrides",
     "scenario", "seed", "macro_controller", "hardware_controller",
@@ -61,6 +65,29 @@ def _explicit_configurations(cfg: dict[str, Any]) -> list[dict[str, Any]]:
     return list(unique.values())
 
 
+def _rescale_thermal_grid(cfg: dict[str, Any], plant: dict[str, Any]) -> dict[str, Any]:
+    """Return ``cfg`` with the extensive thermal grid scaled to the profile.
+
+    The capacity ratio is read off the profile's own ``C_A`` so the sweep keeps
+    the time constants and cooling approaches that the 250 MW grid encodes.
+    """
+    scale = float(plant["C_A"]) / float(cfg["nominal"]["C_A"])
+
+    def _scaled(key: str, value: float) -> float:
+        return float(value) * scale if key in _EXTENSIVE_THERMAL_KEYS else float(value)
+
+    scaled = dict(cfg)
+    scaled["nominal"] = {k: _scaled(k, v) for k, v in cfg["nominal"].items()}
+    scaled["sweep"] = {
+        k: [_scaled(k, v) for v in values] for k, values in cfg.get("sweep", {}).items()
+    }
+    scaled["coupled_cases"] = {
+        case: {k: _scaled(k, v) for k, v in overrides.items()}
+        for case, overrides in cfg.get("coupled_cases", {}).items()
+    }
+    return scaled
+
+
 def _make_hardware_controller(name: str, env: C2GMacroEnv, sac_model: Any) -> Any:
     if name == "bang_bang":
         return BangBangController()
@@ -88,7 +115,8 @@ def _predict_fn(controller: Any) -> Callable[[np.ndarray, np.ndarray], np.ndarra
 
 
 def _run_episode(
-    config: dict[str, Any], scenario: str, seed: int, hardware: str, sac_model: Any
+    config: dict[str, Any], scenario: str, seed: int, hardware: str, sac_model: Any,
+    plant_overrides: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     stats: dict[str, Any] = {
         "fast_steps": 0,
@@ -111,6 +139,7 @@ def _run_episode(
     env = C2GMacroEnv(
         scenario=scenario,
         thermal_overrides=config["overrides"],
+        plant_overrides=plant_overrides,
         sub_step_callback=collect,
     )
     obs, _ = env.reset(seed=seed)
@@ -182,12 +211,26 @@ def main() -> None:
     parser.add_argument("--seeds", nargs="+", type=int)
     parser.add_argument("--controllers", nargs="+")
     parser.add_argument("--configs", nargs="+")
+    parser.add_argument(
+        "--plant-profile",
+        default="none",
+        choices=available_plant_profiles(),
+        help="Facility capacity profile from conf/plant_profiles/. Default "
+             "'none' = 250 MW. Extensive thermal sweep values are rescaled to match.",
+    )
+    parser.add_argument(
+        "--sac-model",
+        help="Override the SAC low-level checkpoint from conf/experiments.yaml.",
+    )
     parser.add_argument("--max-runs", type=int)
     parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args()
 
     cfg = load_config(args.config)
     run_cfg = cfg["cross_scenario"]
+    plant_overrides = load_plant_profile(args.plant_profile)
+    if plant_overrides:
+        cfg = _rescale_thermal_grid(cfg, plant_overrides)
     configs = _explicit_configurations(cfg)
     if args.configs:
         selected = set(args.configs)
@@ -199,7 +242,7 @@ def main() -> None:
     sac_model = None
     if "sac" in controllers:
         from stable_baselines3 import SAC
-        sac_model = SAC.load(str(_REPO_ROOT / run_cfg["sac_model"]))
+        sac_model = SAC.load(str(_REPO_ROOT / (args.sac_model or run_cfg["sac_model"])))
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     if args.overwrite and args.out.exists():
@@ -217,7 +260,8 @@ def main() -> None:
         pending = pending[:args.max_runs]
     print(
         f"Running {len(pending)} episodes ({len(configs)} unique plant configs, "
-        f"{len(scenarios)} scenarios, {len(seeds)} seeds, {len(controllers)} controllers)"
+        f"{len(scenarios)} scenarios, {len(seeds)} seeds, {len(controllers)} controllers) "
+        f"on plant profile '{args.plant_profile}'"
     )
 
     write_header = not args.out.exists()
@@ -226,7 +270,7 @@ def main() -> None:
         if write_header:
             writer.writeheader()
         for index, (config, scenario, seed, controller) in enumerate(pending, 1):
-            row = _run_episode(config, scenario, seed, controller, sac_model)
+            row = _run_episode(config, scenario, seed, controller, sac_model, plant_overrides)
             writer.writerow(row)
             handle.flush()
             print(

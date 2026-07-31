@@ -33,3 +33,21 @@ if sys.version_info >= (3, 14) and hasattr(argparse.ArgumentParser, "_check_help
             pass
 
     argparse.ArgumentParser._check_help = _safe_check_help  # type: ignore[attr-defined]
+
+
+def plant_overrides_from_cfg(cfg) -> dict | None:
+    """Return the plant-capacity override dict from a Hydra cfg, or None.
+
+    Reads the selected ``plant_profiles`` group's ``plant`` block and converts
+    it to a plain dict for the env's ``plant_overrides`` kwarg. Returns None for
+    the default ``none`` profile (built-in 250 MW facility).
+    """
+    from omegaconf import OmegaConf
+
+    pp = cfg.get("plant_profiles") if hasattr(cfg, "get") else None
+    if not pp:
+        return None
+    plant = pp.get("plant")
+    if not plant:
+        return None
+    return OmegaConf.to_container(plant, resolve=True)
