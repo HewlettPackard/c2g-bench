@@ -24,21 +24,24 @@ FAULT_COLUMNS = (
     "sla_fault",
 )
 
-# Grid values annotated **NR** (not recommended) in thermal_sensitivity.md,
-# excluding the nominal ('N') point for each parameter. A row is a "stress
-# condition" only when it deviates from nominal onto one of these
-# not-recommended values; merely-boundary (**B**-only) values do not qualify.
+# Grid values annotated **S** (declared stress condition) or **NR** (not
+# recommended) in thermal_sensitivity.md, excluding the nominal ('N') point for
+# each parameter. A row is a "stress condition" only when it deviates from
+# nominal onto one of these values; merely-boundary (**B**-only) values do not
+# qualify. T_amb=40 is the sweep's only S-without-NR value.
 _STRESS_VALUES: dict[str, frozenset[float]] = {
     "K_liq": frozenset({18.8, 25.1}),
     "T_supply_A": frozenset({32.0}),
     "fault_factor": frozenset({0.8, 0.6, 0.4}),
+    "T_amb": frozenset({40.0}),
 }
 
-# Thermal degradations that the evaluation scenarios themselves impose before
-# any sweep override is applied (see ``conf/scenario/*.yaml``). Scenario C
-# declares ``cooling_fault_factor: 0.6``, an **S/NR** value in the same
-# taxonomy, so every Scenario C episode already runs a degraded plant.
+# Adverse conditions that the evaluation scenarios themselves impose before any
+# sweep override is applied (see ``conf/scenario/*.yaml``). Scenario B runs at
+# 40 degC ambient (**S**) and Scenario C declares ``cooling_fault_factor: 0.6``
+# (**S/NR**), so their episodes already run a declared stress condition.
 _SCENARIO_STRESS_OVERRIDES: dict[str, dict[str, float]] = {
+    "scenario_b": {"T_amb": 40.0},
     "scenario_c": {"fault_factor": 0.6},
 }
 
@@ -101,7 +104,7 @@ def validate_matrix(
 
 
 def _is_stress_overrides(overrides: dict[str, float], nominal: dict[str, float]) -> bool:
-    """True if ``overrides`` deviates from ``nominal`` onto an NR grid value."""
+    """True if ``overrides`` deviates from ``nominal`` onto an S or NR value."""
     for key, value in overrides.items():
         nominal_value = nominal.get(key)
         if nominal_value is not None and np.isclose(value, nominal_value):
@@ -115,8 +118,8 @@ def add_stress_condition(frame: pd.DataFrame, config_path: Path | None = None) -
     """Add a ``stress_condition`` column derived from ``thermal_overrides``.
 
     True when at least one swept thermal parameter in the row's plant
-    configuration sits at a not-recommended (**NR**) grid value per
-    ``thermal_sensitivity.md``.
+    configuration sits at a declared-stress (**S**) or not-recommended
+    (**NR**) grid value per ``thermal_sensitivity.md``.
     """
     nominal = dict(load_config(config_path)["nominal"])
     annotated = frame.copy()
