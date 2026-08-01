@@ -1447,4 +1447,4 @@ We also trained and evaluated a PPO macro agent on the default scenario, paired 
 | Configuration | Agent | RMSE ↓ (kW) | Regulation Revenue ↑ ($) | Macro Reward ↑ | Low-Level Reward ↑ | Thermal Violations ↓ | BESS Degradation ↓ ($\times 10^{-4}$) |
 |---|---|---:|---:|---:|---:|---:|---:|
 | RL Phase 2: RL macro + frozen RL low-level | SAC | 780 ± 26 | 8,550 ± 553 | 0.94 ± 0.13 | 0.85 ± 0.13 | 0.0 ± 0.0 | 18.38 ± 1.74 |
-| RL Phase 2: RL macro + frozen RL low-level | PPO | 745 ± 34 | 7,345 ± 688 | 0.92 ± 0.13 | 0.81 ± 0.13 | 0.0 ± 0.0 | 18.38 ± 1.74 |
+| RL Phase 2: RL macro + frozen RL low-level | PPO | 745 ± 34 | 7,345 ± 688 | 0.92 ± 0.13 | 0.81 ± 0.17 | 0.0 ± 0.0 | 21.22 ± 2.25 |
